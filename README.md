@@ -51,13 +51,54 @@ So `--strategy cascade` and `--strategy leonardo` are the same thing.
 
 ---
 
+## Requirements
+
+Splinter is the conductor, not the models. You bring the two CLIs it drives:
+
+- **[uv](https://github.com/astral-sh/uv)** the Python project manager Splinter
+  is built on
+- **Python 3.11+** (uv can install it for you)
+- **[Claude Code](https://docs.claude.com/en/docs/claude-code/overview)** the
+  `claude` CLI, authenticated, with access to `sonnet` and `opus-4.8`
+- **[opencode](https://opencode.ai)** the `opencode` CLI, authenticated on the
+  `opencode-go` provider
+- **programming languages [optional]** python is required, but you must check if the language you're working is working, like GoLang, rust, etc.
+
+## Setup
+
+```bash
+# 1. clone and install with uv
+git clone https://github.com/evertontomalok/splinter.git
+cd splinter
+uv sync
+
+# 2. authenticate the two providers (one time)
+claude            # sign in to Claude Code
+opencode auth login
+
+# 3. let Splinter verify everything is wired up
+uv run splinter setup
+```
+
+`splinter setup` does not just check the binaries exist, it pings each provider
+for real:
+
+```
+checking providers...
+  claude -p (sonnet) ..... OK
+  opencode models ........ OK (14 models)
+  ladder vs roster ....... OK
+environment ready.
+```
+
+If a provider is missing or not authenticated, setup tells you exactly which one
+and exits non zero, so you can drop it in CI too.
+
 ## Quickstart
 
 ```bash
-pip install splinter-harness
-
 # the direct strategy: one task, loop until it passes
-splinter run --strategy raphael --task task.yaml
+uv run splinter run --strategy raphael --task task.yaml
 ```
 
 ```yaml
@@ -120,7 +161,7 @@ critical calls included. Powerful, occasionally chaotic, exactly as the name
 suggests.
 
 ```bash
-splinter run --strategy raphael --prd prd.md --cowabunga
+uv run splinter run --strategy raphael --prd prd.md --cowabunga
 ```
 
 ---
