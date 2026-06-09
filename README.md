@@ -71,6 +71,10 @@ dense, high signal context and writes tasks that point straight at the right fil
 Think of it as RAG, but the retrieval is done by LLMs steering actual code tooling
 instead of embedding similarity.
 
+```
+PRD  ->  LOCATE (recall -> precision)  ->  PLAN  ->  RUN  ->  GATE  ->  EVAL  ->  🔁
+```
+
 Two more things make the loop cheap and honest: a **deterministic gate** (compile,
 test, type check, lint, build) runs before the expensive judge, so mechanical
 breakage never wastes a judgment call. And the **judge runs on a different model
