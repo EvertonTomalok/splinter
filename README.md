@@ -8,9 +8,30 @@ should act like a sensei (plan the work, pick the right student, and only step
 in when the students fail). Everything else runs on cheap, fast models until
 proven otherwise.
 
+```mermaid
+flowchart LR
+    PRD["📄 PRD"] --> LOCATE["🔍 LOCATE"]
+    LOCATE --> PLAN["🧠 PLAN"]
+    PLAN --> RUN["⚡ RUN"]
+    RUN --> GATE["🚧 GATE"]
+    GATE --> EVAL["⚖️ EVAL"]
+    EVAL -- "retry (same model + fixes)" --> RUN
+    EVAL -- "escalate (higher model + fixes)" --> RUN
+    EVAL -- "✅ pass" --> DONE["🎉 Done"]
 ```
-PRD  ->  PLAN  ->  RUN  ->  EVAL  ->  🔁 loop until the judge is happy
-```
+
+**How the loop works:**
+
+1. **PRD** — you describe what needs to be built
+2. **LOCATE** — two phases: a cheap flash model does broad recall (grep, ctags, LSP, AST) to find every plausible candidate, then a mid model does precise filter to confirm relevance and emit a clean list of `file, symbol, reason`
+3. **PLAN** — the sensei reads the map and writes the plan. This happens **once** per session
+4. **RUN** — a student model receives the plan (or the plan + corrections from a previous eval) and implements
+5. **GATE** — deterministic checks run first (compile, test, lint, typecheck). If it breaks here, no expensive judge is called
+6. **EVAL** — the judge evaluates the output against acceptance criteria and returns what needs to be fixed
+
+If the eval fails, it returns the necessary corrections. The runner gets those fixes and tries again in the same session, reading from the session memory to avoid re-discovering context. On **retry**, the same model tries again with the corrections. On **escalate**, a higher model on the ladder takes over — but it still goes straight to RUN with the fixes, not back to PLAN.
+
+The loop continues until the judge is satisfied or you hit `opus-4.8` at the top of the ladder.
 
 ---
 
@@ -32,6 +53,57 @@ Splitter splits the brain from the hands.
   model flails, the judge climbs the ladder: `qwen -> sonnet -> sonnet max -> opus-4.8`.
 
 You only pay for intelligence when the work actually demands it.
+
+## Cheap models do the legwork, the expensive one just thinks
+
+The real trick is what happens *before* planning. Splinter does not dump your repo
+(or a generic RAG blob) into the expensive model's context. Instead, fast cheap
+models build a tight map of exactly where the work needs to happen:
+
+1. **Broad recall** (a flash model) drives the real code tools (grep, ctags, LSP,
+   AST) to list every plausible candidate. Coverage over precision.
+2. **Precise filter** (a mid model) confirms relevance and emits a clean list of
+   `file, symbol, reason`.
+
+The expensive planner then opens with that map already in hand. It does not go
+spelunking through your codebase burning frontier tokens. It reasons about a small,
+dense, high signal context and writes tasks that point straight at the right files.
+Think of it as RAG, but the retrieval is done by LLMs steering actual code tooling
+instead of embedding similarity.
+
+Two more things make the loop cheap and honest: a **deterministic gate** (compile,
+test, type check, lint, build) runs before the expensive judge, so mechanical
+breakage never wastes a judgment call. And the **judge runs on a different model
+family** than the one that wrote the code, so it never just rubber stamps its own
+work.
+
+## Session memory is what makes it cheap
+
+Every run keeps a local memory folder of plain markdown files
+(`.splinter/sessions/<id>/`). The localization map, the plan, what each loop tried,
+what the gate broke on, every eval verdict... all written to disk as `.md`.
+
+Why markdown, why on disk: the whole point of Splinter is spending fewer tokens.
+Without persisted memory, every loop re-discovers context (re-runs the localizer,
+re-reads files, re-explains what already failed) and burns exactly the tokens the
+project promises to save. Memory turns "discover it again" into "read a markdown
+file." A small `index.md` is read first as a cheap map, so a model opens only the
+one file it needs instead of paying to rebuild context.
+
+The localizer (LLM steering code tools, plus a local RAG index) writes its findings
+here too, so the expensive planner reads a ready made map instead of re-scanning the
+repo on every iteration.
+
+## Watch a run from another shell
+
+```bash
+uv run splinter analyze            # most recent session
+uv run splinter analyze --session <id>
+```
+
+Because the state lives in those markdown files, `analyze` barely touches an LLM. It
+reads the session memory off disk and prints where things stand: current step, which
+model is running, what passed or failed, cost so far.
 
 ---
 
@@ -62,7 +134,9 @@ Splinter is the conductor, not the models. You bring the two CLIs it drives:
   `claude` CLI, authenticated, with access to `sonnet` and `opus-4.8`
 - **[opencode](https://opencode.ai)** the `opencode` CLI, authenticated on the
   `opencode-go` provider
-- **programming languages [optional]** python is required, but you must check if the language you're working is working, like GoLang, rust, etc.
+
+No extra language toolchains required. The validation tasks are all Python, which
+uv already gives you.
 
 ## Setup
 
@@ -76,9 +150,25 @@ uv sync
 claude            # sign in to Claude Code
 opencode auth login
 
-# 3. let Splinter verify everything is wired up
+# 3. let opencode edit files non-interactively (one time)
+mkdir -p ~/.config/opencode
+cat > ~/.config/opencode/opencode.json <<'JSON'
+{
+  "permission": {
+    "edit": "allow"
+  }
+}
+JSON
+
+# 4. let Splinter verify everything is wired up
 uv run splinter setup
 ```
+
+The disciples write code by editing files directly. opencode needs
+`permission.edit: allow` in `~/.config/opencode/opencode.json` (step 3) so it can
+do that without prompting; Splinter also passes `--agent build` and
+`--dangerously-skip-permissions`, and drives `claude -p` with
+`--dangerously-skip-permissions`.
 
 `splinter setup` does not just check the binaries exist, it pings each provider
 for real:
@@ -88,6 +178,7 @@ checking providers...
   claude -p (sonnet) ..... OK
   opencode models ........ OK (14 models)
   ladder vs roster ....... OK
+  python (uv run) ........ OK (3.11.x)
 environment ready.
 ```
 
@@ -96,19 +187,38 @@ and exits non zero, so you can drop it in CI too.
 
 ## Quickstart
 
+Create a PRD interactively, then run it. `splinter prd` asks a few lettered
+questions (including which turtle to use), writes the PRD into the session, and
+records the strategy in its frontmatter:
+
 ```bash
-# the direct strategy: one task, loop until it passes
+# describe the work; answer the clarifying questions it asks
+uv run splinter prd "add priority levels to tasks"
+
+# the strategy lives in the PRD, so run just points at it
+uv run splinter run --prd .splinter/sessions/<id>/prd.md
+```
+
+For a quick single task without a full PRD, the `direct` strategy takes a task
+file straight away:
+
+```bash
 uv run splinter run --strategy raphael --task task.yaml
 ```
 
 ```yaml
 # task.yaml
-description: "write a hello world in rust, compile it, run it"
-acceptance: "binary compiles with exit 0 and prints something containing 'hello'"
-effort: trivial          # task difficulty, sets the starting tier
-reasoning_effort: auto   # how hard the model thinks, or let the agent decide
+description: "write a hello world in python and run it"
+acceptance: "the script runs with exit 0 and prints something containing 'hello'"
+eval_skill: "run_python"   # runs the script, captures stdout and exit code
+effort: trivial            # task difficulty, sets the starting tier
+reasoning_effort: auto     # how hard the model thinks, or let the agent decide
 suggested_tier: 0
 ```
+
+The `run_python` skill just executes the generated file with the project
+interpreter (`uv run python <file>`), so the first task needs zero extra
+toolchains beyond what setup already verified.
 
 That run will: ask the sensei for a plan, hand it to a flash tier model, let it
 create the folder, write the Rust, compile and execute, then let the judge
@@ -121,16 +231,23 @@ tries again.
 
 Splinter never starts at the top. It earns its way there.
 
+No weak models on the bench — the floor is already capable.
+
 ```
-T0  flash      deepseek-v4-flash · mimo-v2.5 · qwen3.6-plus · glm-5
-T1  mid        qwen3.7-plus · glm-5.1 · minimax-m2.5 · kimi-k2.5 · mimo-v2.5-pro
-T2  strong     qwen3.7-max · deepseek-v4-pro · kimi-k2.6 · minimax-m2.7 · minimax-m3
-T3  premium    sonnet  ->  sonnet (variant max)
+T0  easy       glm-5.1 · kimi-k2.6              (easy → moderate-easy)
+T1  moderate   deepseek-v4-pro                  (default for normal work)
+T2  hard       qwen3.7-max                      (moderate+)
+T3  premium    sonnet  ->  sonnet (effort max)
 T4  top        opus-4.8
 ```
 
-The plan tags each task with an effort hint, so trivial work starts at T0 and a
-gnarly refactor can start higher. The judge owns the climb from there.
+The plan tags each task with an effort hint, so trivial work starts at T0, normal
+work defaults to T1 (deepseek-v4-pro), and a gnarly refactor can start higher. The
+judge owns the climb from there.
+
+**Localizer roster** (separate from execution): recall/search runs on
+deepseek-v4-flash, escalating to **minimax-m3** for its huge context window on
+large repos; **kimi-k2.6** qualifies and filters the candidate locations.
 
 ---
 
@@ -178,6 +295,59 @@ Every loop, the evaluator returns one of five verdicts:
 
 Evaluation runs two ways: a written acceptance check, or a real skill/script
 (think `go test` or a custom validator) plus a judgment on top.
+
+---
+
+## Under the hood
+
+The loop is built from a few deliberate patterns so each piece swaps cleanly.
+
+**One iteration is a Chain of Responsibility.** A single pass is
+`Run → Gate → Eval`. The gate (`ruff`/`mypy`/`pytest`, configurable) is a
+short-circuit link: when its mechanical checks fail, the chain stops *before* the
+expensive LLM eval ever runs. State rides through the chain on one
+`IterationContext`.
+
+**Plan once, run is the loop.** The sensei writes the plan a single time; it is
+reused for every retry and every escalation — never regenerated.
+
+```
+        ┌──────────────── corrections (same opencode session) ──────────────┐
+        ▼                                                                    │
+plan ─► run ─► gate ──fail──► retry          eval ──PASS──► done            │
+ (once)        │                              │                              │
+              pass ──────────────────────► eval ──RETRY (same model)─────────┘
+                                            │
+                                            └──ESCALATE──► tier+1, fresh session,
+                                               corrections + session knowledge
+                                               handed to the stronger model
+                                               (plan reused, no replan)
+```
+
+- **Same model fails** → re-run in the *same* opencode session with the
+  evaluator's corrections. Cheapest retry; the model keeps its context.
+- **Fails again** → climb one tier. The stronger model starts a fresh session and
+  receives the corrections **plus the session knowledge memory** directly. The
+  plan is not rewritten.
+- Climbing stops at the ceiling tier, `--budget`, or `--max-iterations`.
+
+**Models are a Strategy.** Each backend (`claude -p`, `opencode run`) is a
+`ModelProvider` resolved by name from a registry, so the runner never branches on
+which CLI it is calling. Adding a backend means adding a strategy.
+
+**Strategies (turtles) self-register.** A `@register` decorator keeps each
+strategy's canonical name and turtle alias in sync — no hand-maintained map.
+
+**Prompts are editable markdown.** Every prompt the harness sends a model lives
+as a `.md` template. Project overrides in `./.splinter/prompts/` win over the
+packaged defaults, so you can rewrite the wording without touching code:
+
+```bash
+# scaffold the templates into ./.splinter/prompts/ and edit them
+uv run splinter configure --init-prompts
+# overwrite existing copies with the shipped defaults
+uv run splinter configure --init-prompts --force
+```
 
 ---
 
