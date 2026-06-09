@@ -97,6 +97,7 @@ def run_pipeline(
     effort: str | None = None,
     budget: float | None = None,
     max_iterations: int = 5,
+    cowabunga: bool = False,
     session: Session | None = None,
 ) -> int:
     ladder = load_ladder()
@@ -146,7 +147,8 @@ def run_pipeline(
         idx_lines.append(f"- prd: {prd_path}")
     session.update_index("\n".join(idx_lines) + "\n")
 
-    log.info("session %s · strategy %s · %d task(s)", session.id, strategy_name, len(tasks))
+    log.info("session %s · strategy %s · %d task(s)%s", session.id, strategy_name,
+             len(tasks), " · 🤙 cowabunga" if cowabunga else "")
 
     try:
         prd_text = ""
@@ -170,6 +172,7 @@ def run_pipeline(
             budget=budget,
             max_iterations=max_iterations,
             localization=localization,
+            cowabunga=cowabunga,
         )
     except BaseException:
         session.set_status("failed")

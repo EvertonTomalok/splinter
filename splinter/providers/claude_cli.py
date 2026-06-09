@@ -17,6 +17,23 @@ class ClaudeResult:
     raw: dict[str, Any]
 
 
+#: The ``claude`` CLI accepts only these reasoning-effort values. The harness
+#: speaks a slightly different vocabulary (``minimal``/``auto``); map onto the
+#: CLI's set here so an unknown value never reaches the subprocess.
+_CLI_EFFORTS = {"low", "medium", "high", "xhigh", "max"}
+_EFFORT_ALIASES = {"minimal": "low", "auto": None}
+
+
+def _normalize_effort(effort: str | None) -> str | None:
+    if effort is None:
+        return None
+    if effort in _EFFORT_ALIASES:
+        return _EFFORT_ALIASES[effort]
+    if effort in _CLI_EFFORTS:
+        return effort
+    return None  # unknown → let the CLI use its default rather than crash
+
+
 def run(
     prompt: str,
     model: str,
@@ -25,19 +42,27 @@ def run(
     output_format: str = "json",
     resume: str | None = None,
     session_id: str | None = None,
-    timeout: int = 300,
+    timeout: int | None = None,
 ) -> ClaudeResult:
+    if timeout is None:
+        from splinter.configure import configured_timeout
+
+        timeout = configured_timeout()
     cmd: list[str] = [
-        "claude", "-p", prompt, "--model", model,
+        "claude", "-p", "--model", model,
         "--output-format", output_format,
         "--dangerously-skip-permissions",
     ]
+    effort = _normalize_effort(effort)
     if effort is not None:
         cmd.extend(["--effort", effort])
     if resume is not None:
         cmd.extend(["--resume", resume])
     if session_id is not None:
         cmd.extend(["--session-id", session_id])
+    # `--` terminates option parsing so a prompt starting with '-' (e.g. a PRD
+    # whose first line is the '---' YAML fence) isn't mistaken for a CLI flag.
+    cmd.extend(["--", prompt])
 
     proc = run_subprocess(cmd, timeout=timeout)
     if proc.returncode != 0:
@@ -50,6 +75,13 @@ def run(
             raw = json.loads(text)
         except json.JSONDecodeError:
             raw = {"result": text}
+        # The CLI exits 0 even on API errors (e.g. a bad --model 404s) and tucks
+        # the message into `result`. Surface it as a failure instead of letting
+        # the error string flow downstream as if it were a real response.
+        if raw.get("is_error"):
+            status = raw.get("api_error_status", "")
+            msg = raw.get("result", "claude returned an error")
+            raise RuntimeError(f"claude API error{f' {status}' if status else ''}: {msg}")
     else:
         raw = {"result": text}
 
@@ -89,7 +121,7 @@ class ClaudeProvider(ModelProvider):
         *,
         variant: str | None = None,
         session: str | None = None,
-        timeout: int = 600,
+        timeout: int | None = None,
     ) -> ProviderResponse:
         result = run(prompt, model, effort=variant, resume=session, timeout=timeout)
         return ProviderResponse(

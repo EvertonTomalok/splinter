@@ -33,7 +33,7 @@ tiers:
     level: 4
     provider: claude
     models:
-      - opus-4.8
+      - opus   # claude CLI alias; 'opus-4.8' is not a valid --model id (404)
 
 # Task difficulty → starting tier + reasoning variant.
 effort_map:

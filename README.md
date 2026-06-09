@@ -144,17 +144,45 @@ uv already gives you.
 
 ## Setup
 
+### Option 1 — install with uv (recommended)
+
+If you already have [uv](https://github.com/astral-sh/uv):
+
 ```bash
-# 1. clone and install with uv
+uv tool install git+https://github.com/evertontomalok/splinter.git
+```
+
+That is it. The `splinter` command is now available globally.
+
+<details>
+<summary>Don't have uv yet?</summary>
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+</details>
+
+### Option 2 — clone and install locally
+
+```bash
 git clone https://github.com/evertontomalok/splinter.git
 cd splinter
 uv sync
+```
 
-# 2. authenticate the two providers (one time)
+With a local install, prefix every command with `uv run` (e.g. `uv run splinter setup`).
+
+### Authenticate the providers (one time)
+
+```bash
 claude            # sign in to Claude Code
 opencode auth login
+```
 
-# 3. let opencode edit files non-interactively (one time)
+### Let opencode edit files non-interactively (one time)
+
+```bash
 mkdir -p ~/.config/opencode
 cat > ~/.config/opencode/opencode.json <<'JSON'
 {
@@ -163,9 +191,12 @@ cat > ~/.config/opencode/opencode.json <<'JSON'
   }
 }
 JSON
+```
 
-# 4. let Splinter verify everything is wired up
-uv run splinter setup
+### Verify everything is wired up
+
+```bash
+splinter setup        # or: uv run splinter setup (local install)
 ```
 
 The disciples write code by editing files directly. opencode needs

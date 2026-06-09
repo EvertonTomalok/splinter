@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -11,13 +10,13 @@ from typing import Any
 def _base_dir() -> Path:
     """Where session memory lives.
 
-    ``SPLINTER_HOME`` overrides; otherwise a ``splinter`` dir under the system
-    temp folder, so runs don't litter the working tree.
+    ``SPLINTER_HOME`` overrides; otherwise a ``.splinter`` dir under the current
+    working directory — sessions live where ``splinter`` was invoked.
     """
     env = os.environ.get("SPLINTER_HOME")
     if env:
         return Path(env)
-    return Path(tempfile.gettempdir()) / "splinter"
+    return Path.cwd() / ".splinter"
 
 
 def _sessions_dir() -> Path:

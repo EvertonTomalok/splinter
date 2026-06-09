@@ -41,12 +41,24 @@ EFFORT_TO_VARIANT: dict[str, str] = {
 }
 
 
-def resolve_variant(task: Task, effort_override: str | None, ladder: Ladder) -> str:
-    """Pick the reasoning variant: CLI override > task setting > ladder effort map."""
+def resolve_variant(
+    task: Task,
+    effort_override: str | None,
+    ladder: Ladder,
+    tier_level: int | None = None,
+) -> str:
+    """Pick the reasoning variant.
+
+    Precedence: CLI override > task setting > per-tier config > ladder effort map.
+    """
     if effort_override and effort_override != Variant.AUTO:
         return effort_override
     if task.reasoning_effort and task.reasoning_effort != Variant.AUTO:
         return task.reasoning_effort
+    if tier_level is not None:
+        configured = ladder.tier_variant(tier_level)
+        if configured:
+            return configured
     em = ladder.effort_mapping(task.effort)
     if em:
         return em.variant
@@ -87,10 +99,12 @@ def run_task(
     localization: str = "",
     corrections: str = "",
     opencode_session: str | None = None,
-    timeout: int = 600,
+    timeout: int | None = None,
 ) -> RunResult:
     model_id, provider_name = resolve_model(tier_level, ladder)
-    variant = resolve_variant(task, effort_override, ladder)
+    variant = resolve_variant(task, effort_override, ladder, tier_level)
+    if timeout is None:
+        timeout = ladder.tier_timeout(tier_level)
     prompt = _build_prompt(task, plan, localization, corrections)
 
     provider = get_provider(provider_name)

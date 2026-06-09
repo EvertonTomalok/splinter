@@ -9,9 +9,11 @@ from splinter.agents.gate import GateResult
 from splinter.agents.runner import Task, resolve_model, resolve_variant
 from splinter.analyze import (
     _iterations,
+    _prd_phases,
     _run_state,
     _trace_metrics,
     render_iteration,
+    render_overview,
     render_trajectory,
 )
 from splinter.configure import DEFAULT_CONFIG, init_prompt_templates
@@ -65,6 +67,79 @@ def test_localizer_roster() -> None:
     assert ladder.localizer_recall_model == "opencode-go/deepseek-v4-flash"
     assert ladder.localizer_recall_large_model == "opencode-go/minimax-m3"
     assert ladder.localizer_precision_model == "opencode-go/kimi-k2.6"
+
+
+def test_config_model_overrides_apply_to_ladder(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
+) -> None:
+    from splinter.configure import write_model_config
+
+    monkeypatch.chdir(tmp_path)
+    write_model_config(
+        {
+            "planner": "opus-4.8",
+            "localizer_precision": "opencode-go/minimax-m3",
+            "tiers": ["opencode-go/kimi-k2.6"],
+        }
+    )
+    ladder = load_ladder()
+    assert ladder.planner_model == "opus-4.8"
+    assert ladder.localizer_precision_model == "opencode-go/minimax-m3"
+    t0 = ladder.tier_by_level(0)
+    assert t0.models[0] == "opencode-go/kimi-k2.6"
+    assert t0.provider == "opencode"
+    assert ladder.eval_model == "sonnet"  # untouched step keeps its default
+
+
+def test_config_effort_overrides_apply_to_ladder(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
+) -> None:
+    from splinter.configure import write_model_config
+
+    monkeypatch.chdir(tmp_path)
+    write_model_config(
+        {},
+        {
+            "planner": "max",
+            "eval": "low",
+            "localizer_recall": "high",
+            "tiers": ["high", "", "", "", ""],  # blank tiers fall back to effort_map
+        },
+    )
+    ladder = load_ladder()
+    assert ladder.planner_effort == "max"
+    assert ladder.eval_effort == "low"
+    assert ladder.localizer_recall_variant == "high"
+    assert ladder.tier_variant(0) == "high"
+    assert ladder.tier_variant(1) is None  # blank → no override
+
+
+def test_configure_tui_saves_models_and_efforts(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
+) -> None:
+    import asyncio
+
+    from textual.widgets import Select
+
+    from splinter.tui import ConfigureApp
+
+    monkeypatch.chdir(tmp_path)
+
+    async def drive() -> None:
+        app = ConfigureApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one("#planner__eff", Select).value = "max"
+            await pilot.pause()
+            await pilot.press("s")
+            await pilot.pause()
+        assert app.saved
+
+    asyncio.run(drive())
+    text = (tmp_path / ".splinter" / "config.yaml").read_text()
+    assert "Select.NULL" not in text and "NoSelection" not in text
+    ladder = load_ladder()
+    assert ladder.planner_effort == "max"
 
 
 def test_ladder_effort_mapping() -> None:
@@ -375,6 +450,50 @@ def test_render_trajectory_lists_iterations(
     out = render_trajectory(session)
     assert "1. T0 · RETRY" in out
     assert "2. T1 · PASS" in out
+
+
+def test_prd_phases_parse() -> None:
+    md = "- clarify\n- finalize · 3 stories\n- run · direct\n"
+    assert _prd_phases(md) == [
+        ("clarify", ""),
+        ("finalize", "3 stories"),
+        ("run", "direct"),
+    ]
+
+
+def test_render_trajectory_includes_prd_phases(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
+) -> None:
+    monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
+    session = Session("ses_test")
+    session.append("prd_phases.md", "- clarify")
+    session.append("prd_phases.md", "- finalize · 2 stories")
+    out = render_trajectory(session)
+    assert "P1. clarify" in out
+    assert "P2. finalize · 2 stories" in out
+
+
+def test_render_trajectory_prd_then_iterations(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
+) -> None:
+    monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
+    session = Session("ses_test")
+    session.append("prd_phases.md", "- run · direct")
+    session.append("loop.md", "## Iteration 1\n- model: flash (tier 0)\n- verdict: PASS — ok\n\n")
+    out = render_trajectory(session)
+    assert "P1. run · direct" in out
+    assert "1. T0 · PASS" in out
+
+
+def test_render_overview_trajectory_shows_prd_phases_without_iterations(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
+) -> None:
+    monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
+    session = Session("ses_test")
+    session.append("prd_phases.md", "- clarify")
+    session.append("prd_phases.md", "- finalize · 1 stories")
+    out = render_overview(session, "REFINING")
+    assert "Trajectory: clarify → finalize" in out
 
 
 def test_render_iteration_includes_runner_and_eval(

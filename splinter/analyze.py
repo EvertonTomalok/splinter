@@ -71,6 +71,18 @@ def _iterations(loop_md: str) -> list[tuple[int, str, str]]:
     return out
 
 
+def _prd_phases(phases_md: str) -> list[tuple[str, str]]:
+    """Parse prd_phases.md into ordered (phase, detail) pairs."""
+    out: list[tuple[str, str]] = []
+    for raw in phases_md.splitlines():
+        line = raw.strip()
+        if not line.startswith("- "):
+            continue
+        name, _, detail = line[2:].partition(" · ")
+        out.append((name.strip(), detail.strip()))
+    return out
+
+
 def _loop_block(loop_md: str, n: int) -> str:
     blocks = re.split(r"^## Iteration (\d+)\s*$", loop_md, flags=re.MULTILINE)
     for i in range(1, len(blocks), 2):
@@ -160,21 +172,27 @@ def render_overview(session: Session, state: str) -> str:
         lines.append(step(mark(False, current_stage == "run"), "run"))
         lines.append(step(mark(False, False), "eval"))
 
-    if iters:
-        trajectory = " → ".join(f"{tier}·{verdict}" for _, tier, verdict in iters)
-        lines.append(f"\nTrajectory: {trajectory}")
+    phases = _prd_phases(session.read("prd_phases.md"))
+    if phases or iters:
+        steps = [phase for phase, _ in phases]
+        steps += [f"{tier}·{verdict}" for _, tier, verdict in iters]
+        lines.append(f"\nTrajectory: {' → '.join(steps)}")
 
     return "\n".join(lines)
 
 
 def render_trajectory(session: Session) -> str:
+    phases = _prd_phases(session.read("prd_phases.md"))
     iters = _iterations(session.read("loop.md"))
-    if not iters:
+    if not phases and not iters:
         return "no iterations yet."
     lines = ["Trajectory:"]
+    for i, (phase, detail) in enumerate(phases, 1):
+        lines.append(f"  P{i}. {phase}" + (f" · {detail}" if detail else ""))
     for n, tier, verdict in iters:
         lines.append(f"  {n}. {tier} · {verdict}")
-    lines.append("\nexpand one with: iter <n>")
+    if iters:
+        lines.append("\nexpand one with: iter <n>")
     return "\n".join(lines)
 
 

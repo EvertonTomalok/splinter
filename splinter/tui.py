@@ -15,15 +15,31 @@ import logging
 import re
 from typing import Any
 
+from rich.markup import escape
 from textual.app import App, ComposeResult
-from textual.containers import Horizontal, VerticalScroll
-from textual.widgets import DataTable, Footer, Header, Markdown, RichLog, Static, Tree
+from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.screen import ModalScreen
+from textual.widgets import (
+    Button,
+    DataTable,
+    Footer,
+    Header,
+    Input,
+    Label,
+    Markdown,
+    RichLog,
+    Select,
+    Static,
+    TextArea,
+    Tree,
+)
 from textual.widgets.tree import TreeNode
 from textual.worker import Worker, WorkerState
 
 from splinter.analyze import (
     _iterations,
     _loop_block,
+    _prd_phases,
     _run_state,
     _trace_metrics,
     render_overview,
@@ -74,10 +90,13 @@ def _overview_md(session: Session, state: str) -> str:
     else:
         lines.append("- run/eval — pending")
 
-    if iters:
+    phases = _prd_phases(session.read("prd_phases.md"))
+    if phases or iters:
         lines.append("")
         lines.append("## Trajectory")
-        lines.append(" → ".join(f"`{tier}·{verdict}`" for _, tier, verdict in iters))
+        steps = [f"`{phase}`" for phase, _ in phases]
+        steps += [f"`{tier}·{verdict}`" for _, tier, verdict in iters]
+        lines.append(" → ".join(steps))
     return "\n".join(lines)
 
 
@@ -113,6 +132,14 @@ def _file_md(session: Session, label: str, filename: str) -> str:
     if not content:
         return f"# {label}\n\n_empty_"
     return f"# {label}\n\n{content}"
+
+
+def _prd_phase_md(session: Session, phase: str, detail: str) -> str:
+    """Detail for a PRD refinement phase: the phase header + the PRD as it stands."""
+    prd = session.read("prd.md").strip()
+    head = f"# PRD · {phase}" + (f" — {detail}" if detail else "")
+    body = prd if prd else "_PRD draft not captured yet._"
+    return f"{head}\n\n{body}"
 
 
 class AnalyzeApp(App[None]):
@@ -157,6 +184,8 @@ class AnalyzeApp(App[None]):
         overview.allow_expand = False
 
         steps = tree.root.add("🧩 Steps", expand=True)
+        if self.session.read("prd.md"):
+            steps.add_leaf("prd", data={"kind": "file", "label": "PRD", "file": "prd.md"})
         steps.add_leaf("localize", data={"kind": "file", "label": "Localization",
                                          "file": "localization.md"})
         steps.add_leaf("plan", data={"kind": "file", "label": "Plan", "file": "plan.md"})
@@ -169,6 +198,11 @@ class AnalyzeApp(App[None]):
         if self._traj_node is None:
             return
         self._traj_node.remove_children()
+        for phase, detail in _prd_phases(self.session.read("prd_phases.md")):
+            label = f"📝 {phase}" + (f" · {detail}" if detail else "")
+            self._traj_node.add_leaf(
+                label, data={"kind": "prd_phase", "phase": phase, "detail": detail}
+            )
         for n, tier, verdict in _iterations(self.session.read("loop.md")):
             self._traj_node.add_leaf(
                 f"#{n} · {tier} · {verdict}", data={"kind": "iter", "n": n}
@@ -188,6 +222,8 @@ class AnalyzeApp(App[None]):
         kind = data.get("kind")
         if kind == "iter":
             self._detail().update(_iteration_md(self.session, data["n"]))
+        elif kind == "prd_phase":
+            self._detail().update(_prd_phase_md(self.session, data["phase"], data["detail"]))
         elif kind == "file":
             self._detail().update(_file_md(self.session, data["label"], data["file"]))
         else:
@@ -402,11 +438,17 @@ class RunApp(App[int]):
             self.set_timer(1.5, lambda: self.exit(self.rc))
 
 
-def run_with_tui(run_kwargs: dict[str, Any]) -> int:
-    """Create a fresh session, run the pipeline on a worker thread under RunApp."""
+def run_with_tui(run_kwargs: dict[str, Any], session: Session | None = None) -> int:
+    """Run the pipeline on a worker thread under RunApp.
+
+    A ``session`` may be supplied (e.g. the one the PRD conversation just wrote
+    into) so the PRD draft and its execution live in the same session dir;
+    otherwise a fresh session is created.
+    """
     from splinter.memory.session import new_session_id
 
-    session = Session(new_session_id())
+    if session is None:
+        session = Session(new_session_id())
     app = RunApp(session, {**run_kwargs, "session": session})
     app.run()
     if app.rc != 0:
@@ -414,3 +456,700 @@ def run_with_tui(run_kwargs: dict[str, Any]) -> int:
     else:
         print(f"run complete. session: {session.id}")
     return app.rc
+
+
+# --- configure -------------------------------------------------------------
+
+
+class ConfigureApp(App[bool]):
+    """Pick a model per pipeline step, then write config.yaml on save."""
+
+    CSS = """
+    #rows { padding: 0 1; }
+    .step {
+        height: 3;
+        border-left: thick $primary;
+        padding-left: 1;
+    }
+    .step.run { border-left: thick $success; }
+    .step-info { width: 40; height: 3; }
+    .step-name { text-style: bold; height: 1; }
+    .step-desc { color: $text-muted; height: 1; }
+    .model-sel { width: 1fr; height: 3; }
+    .effort-sel { width: 14; height: 3; margin-left: 1; }
+    .timeout-inp { width: 14; height: 3; margin-left: 1; }
+    Select > SelectCurrent { height: 3; }
+    """
+
+    BINDINGS = [
+        ("s", "save", "Save"),
+        ("q", "quit", "Quit"),
+        ("ctrl+c", "quit", "Quit"),
+    ]
+
+    def __init__(self) -> None:
+        super().__init__()
+        from splinter.configure import available_models, current_model_selections
+
+        self.saved = False
+        self.saved_path = ""
+        self._models = available_models()
+        current = current_model_selections()
+        self._cur_models = current["models"]
+        self._cur_efforts = current["efforts"]
+        self._cur_timeouts = current["timeouts"]
+
+    @staticmethod
+    def _select(
+        options: list[tuple[str, str]], current: object, choices: list[str], **kwargs: Any
+    ) -> Select[str]:
+        # Pass value= only for a real selection; this Textual rejects value=BLANK.
+        if current in choices:
+            return Select(options, value=str(current), **kwargs)
+        return Select(options, **kwargs)
+
+    def _row(
+        self, sid: str, name: str, desc: str, model: object, effort: object,
+        timeout: object = None, *, run: bool = False
+    ) -> Horizontal:
+        from splinter.configure import EFFORT_CHOICES
+
+        model_opts = [(m, m) for m in self._models]
+        effort_opts = [(e, e) for e in EFFORT_CHOICES]
+        info = Vertical(
+            Label(name, classes="step-name"),
+            Label(desc, classes="step-desc"),
+            classes="step-info",
+        )
+        model_sel = self._select(
+            model_opts, model, self._models, id=sid, tooltip=desc, classes="model-sel"
+        )
+        effort_sel = self._select(
+            effort_opts, effort, EFFORT_CHOICES, id=f"{sid}__eff",
+            prompt="effort", tooltip="reasoning effort", classes="effort-sel",
+        )
+        timeout_inp = Input(
+            value=str(timeout) if timeout else "", id=f"{sid}__to", type="integer",
+            placeholder="3600", tooltip="per-call timeout (seconds)", classes="timeout-inp",
+        )
+        return Horizontal(
+            info, model_sel, effort_sel, timeout_inp,
+            classes="step run" if run else "step",
+        )
+
+    def compose(self) -> ComposeResult:
+        from splinter.configure import MODEL_STEPS, TIER_STEPS
+
+        rows: list[Horizontal] = [
+            self._row(
+                key, label, desc,
+                self._cur_models.get(key), self._cur_efforts.get(key),
+                self._cur_timeouts.get(key),
+            )
+            for key, label, desc in MODEL_STEPS
+        ]
+        tier_models = self._cur_models.get("tiers", [])
+        tier_efforts = self._cur_efforts.get("tiers", [])
+        tier_timeouts = self._cur_timeouts.get("tiers", [])
+        for i, (label, desc) in enumerate(TIER_STEPS):
+            rows.append(
+                self._row(
+                    f"tier_{i}", label, desc,
+                    tier_models[i] if i < len(tier_models) else None,
+                    tier_efforts[i] if i < len(tier_efforts) else None,
+                    tier_timeouts[i] if i < len(tier_timeouts) else None,
+                    run=True,
+                )
+            )
+
+        yield Header()
+        yield VerticalScroll(*rows, id="rows")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self.title = "splinter · configure"
+        self.sub_title = "model · effort · timeout per step — s: save · q: cancel"
+
+    def action_save(self) -> None:
+        from splinter.configure import MODEL_STEPS, TIER_STEPS, write_model_config
+
+        def sel_value(sid: str) -> str:
+            value = self.query_one(f"#{sid}", Select).value
+            # A blank Select yields the BLANK sentinel (not a str) — treat as "".
+            return value if isinstance(value, str) else ""
+
+        def to_value(sid: str) -> int | None:
+            raw = self.query_one(f"#{sid}", Input).value.strip()
+            return int(raw) if raw.isdigit() and int(raw) > 0 else None
+
+        models: dict[str, Any] = {}
+        efforts: dict[str, Any] = {}
+        timeouts: dict[str, Any] = {}
+        for key, _, _ in MODEL_STEPS:
+            if sel_value(key):
+                models[key] = sel_value(key)
+            efforts[key] = sel_value(f"{key}__eff")
+            timeouts[key] = to_value(f"{key}__to")
+
+        tier_models: list[str] = []
+        tier_efforts: list[str] = []
+        tier_timeouts: list[int | None] = []
+        for i in range(len(TIER_STEPS)):
+            model = sel_value(f"tier_{i}") or self._cur_models["tiers"][i]
+            tier_models.append(model)
+            tier_efforts.append(sel_value(f"tier_{i}__eff"))
+            tier_timeouts.append(to_value(f"tier_{i}__to"))
+        models["tiers"] = tier_models
+        efforts["tiers"] = tier_efforts
+        timeouts["tiers"] = tier_timeouts
+
+        self.saved_path = str(write_model_config(models, efforts, timeouts=timeouts))
+        self.saved = True
+        self.exit(True)
+
+
+def run_configure_tui() -> int:
+    app = ConfigureApp()
+    app.run()
+    if app.saved:
+        print(f"config written to {app.saved_path}")
+    else:
+        print("configure cancelled — nothing written.")
+    return 0
+
+
+# --- interactive PRD session -----------------------------------------------
+
+
+def _fm_block(prd_text: str) -> tuple[dict[str, Any], str]:
+    """Split a PRD into (frontmatter dict, body)."""
+    import yaml
+
+    if prd_text.startswith("---"):
+        parts = prd_text.split("---", 2)
+        if len(parts) >= 3:
+            try:
+                fm = yaml.safe_load(parts[1]) or {}
+            except yaml.YAMLError:
+                fm = {}
+            return (fm if isinstance(fm, dict) else {}), parts[2]
+    return {}, prd_text
+
+
+def _set_fm_strategy(prd_text: str, strategy: str) -> str:
+    """Force the ``strategy:`` field in the PRD frontmatter to ``strategy``."""
+    fm, body = _fm_block(prd_text)
+    if not fm:
+        return prd_text
+    fm["strategy"] = strategy
+    import yaml
+
+    return f"---\n{yaml.safe_dump(fm, sort_keys=False).strip()}\n---{body}"
+
+
+class ConfirmQuit(ModalScreen[bool]):
+    """Are-you-sure dialog before abandoning a PRD session."""
+
+    CSS = """
+    ConfirmQuit { align: center middle; }
+    #box {
+        width: 60; height: auto; padding: 1 2;
+        border: thick $warning; background: $surface;
+    }
+    #qbuttons { height: 3; align-horizontal: center; }
+    #qbuttons Button { margin: 0 1; }
+    """
+
+    BINDINGS = [("escape", "stay", "Stay")]
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="box"):
+            yield Label("Leave this PRD session?\n\n"
+                        "The draft is saved — resume later with `splinter resume`.")
+            with Horizontal(id="qbuttons"):
+                yield Button("Leave", id="leave", variant="error")
+                yield Button("Stay", id="stay", variant="primary")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.dismiss(event.button.id == "leave")
+
+    def action_stay(self) -> None:
+        self.dismiss(False)
+
+
+class PrdSessionApp(App[dict[str, Any] | None]):
+    """Refine a PRD with the user, pick a strategy, then hand off to the runner.
+
+    Left pane: the evolving PRD draft. Right pane: the conversation + an input box.
+    Phases: ``chat`` (clarify) → ``strategy`` (pick a turtle) → ``review`` (eyeball
+    the user stories) → exit with the run kwargs. Typing ``cowabunga`` at any prompt
+    hands that decision to the model; passing ``--cowabunga`` skips the chat entirely.
+    """
+
+    CSS = """
+    #draftpane { width: 50%; border-right: solid $primary; padding: 0 1; }
+    #draft { width: 100%; }
+    #chatpane { width: 1fr; }
+    #convo { height: 1fr; padding: 0 1; }
+    #composer { dock: bottom; height: auto; }
+    #entry { height: 8; border: round $primary; }
+    #actions { height: 3; padding: 0 1; }
+    #actions Button { margin: 0 1 0 0; }
+    """
+
+    BINDINGS = [
+        ("ctrl+c", "abort", "Abort"),
+        ("escape", "abort", "Abort"),
+        ("ctrl+s", "send", "Send"),
+    ]
+
+    def __init__(self, session: Session, run_kwargs: dict[str, Any]) -> None:
+        super().__init__()
+        self.session = session
+        self.run_kwargs = run_kwargs
+        self.cowabunga = bool(run_kwargs.get("cowabunga"))
+        self.resuming = bool(run_kwargs.get("resume"))
+        self.phase = "init"
+        self.claude_session = ""
+        self.final_prd = ""
+        self.strategy: str | None = run_kwargs.get("strategy")
+        self._busy = False
+        self._initial_prd = ""
+        self._desc = ""
+
+    def _save_state(self) -> None:
+        """Persist enough to resume this refinement: conversation id, phase, strategy."""
+        self.session.set_status(
+            "refining",
+            source="prd",
+            phase=self.phase,
+            claude_session=self.claude_session,
+            strategy=self.strategy or "?",
+        )
+
+    # --- layout ---
+    def compose(self) -> ComposeResult:
+        yield Header(show_clock=True)
+        with Horizontal():
+            with VerticalScroll(id="draftpane"):
+                yield Markdown(id="draft")
+            with Vertical(id="chatpane"):
+                yield RichLog(id="convo", markup=True, wrap=True)
+                with Vertical(id="composer"):
+                    yield TextArea(id="entry", soft_wrap=True)
+                    with Horizontal(id="actions"):
+                        yield Button("Send (⌃S)", id="send", variant="primary")
+                        yield Button("Fulfilled", id="fulfilled", variant="success")
+                        yield Button("Cowabunga", id="cowabunga", variant="warning")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        from pathlib import Path
+
+        self.title = "splinter · PRD"
+        self.sub_title = "🤙 cowabunga" if self.cowabunga else "refining"
+        # Don't stamp status on resume — it would clobber the saved phase/strategy
+        # before _resume() can read them.
+        if not self.resuming:
+            self.session.set_status("refining", strategy=self.strategy or "?", source="prd")
+        path = self.run_kwargs.get("prd_path")
+        try:
+            self._initial_prd = Path(path).read_text() if path else ""
+        except OSError as exc:
+            self._fail(f"cannot read PRD: {exc}")
+            return
+        # On resume, the session's own prd.md holds the latest draft.
+        if not self._initial_prd.strip():
+            self._initial_prd = self.session.read("prd.md")
+        fm, _ = _fm_block(self._initial_prd)
+        self._desc = str(fm.get("feature", "")) or self._first_line(self._initial_prd)
+        self._set_draft(self._initial_prd)
+
+        if self.resuming:
+            self._resume()
+            return
+
+        if self.cowabunga:
+            self._set_busy(True, "cowabunga — the model is deciding everything…")
+            self._say("[magenta]🤙 cowabunga — no questions, finalizing the PRD myself.[/]")
+            self._spawn(self._finalize_worker, autodecide=True)
+        else:
+            self._set_busy(True, "reading the PRD, drafting questions…")
+            self._say("[dim]reading the PRD, drafting clarifying questions…[/]")
+            self._spawn(self._questions_worker)
+
+    @staticmethod
+    def _first_line(text: str) -> str:
+        for ln in text.splitlines():
+            if ln.strip() and not ln.strip().startswith("---"):
+                return ln.strip()
+        return "feature"
+
+    def _resume(self) -> None:
+        """Re-enter a saved refinement at its last phase, reusing the conversation."""
+        from splinter.strategies.registry import available_strategies
+
+        status = self.session.read_status()
+        self.claude_session = str(status.get("claude_session", "") or "")
+        saved = status.get("strategy")
+        if saved and saved != "?":
+            self.strategy = str(saved)
+        self.final_prd = self.session.read("prd.md")
+        phase = str(status.get("phase") or "chat")
+
+        self._say(f"[magenta]⟳ resumed {self.session.id} at phase '{phase}'.[/]")
+        if not self.claude_session:
+            self._say("[yellow]No saved conversation id — prior context may be lost; "
+                      "answers still apply to the current draft.[/]")
+
+        if phase == "review":
+            self.phase = "review"
+            self._show_stories()
+            self._say("[green]Type 'run' to execute, 'cowabunga' to run as-is, "
+                      "or describe changes.[/]")
+            self._set_busy(False, "run / describe changes / cowabunga")
+        elif phase == "strategy":
+            self.phase = "strategy"
+            self._say("Pick a strategy "
+                      f"({', '.join(available_strategies())}), or 'cowabunga' to let me decide.")
+            self._set_busy(False, "strategy name / cowabunga")
+        else:  # clarify / refine both live in the chat phase
+            self.phase = "chat"
+            self._say("[green]Continue: answer, 'fulfilled' to finalize, or 'cowabunga'.[/]")
+            self._set_busy(False, "your answers / fulfilled / cowabunga")
+        self._save_state()
+
+    # --- ui helpers ---
+    def _say(self, msg: str) -> None:
+        self.query_one("#convo", RichLog).write(msg)
+
+    def _set_busy(self, busy: bool, placeholder: str = "") -> None:
+        self._busy = busy
+        entry = self.query_one("#entry", TextArea)
+        entry.disabled = busy
+        for btn in self.query("#actions Button"):
+            btn.disabled = busy
+        if placeholder:
+            entry.border_title = placeholder
+        if not busy:
+            entry.focus()
+
+    def _set_draft(self, md: str) -> None:
+        self.query_one("#draft", Markdown).update(md or "_(empty)_")
+        # Persist the live draft so `splinter analyze` shows the PRD under review
+        # (and each refinement phase) instead of an empty pane while we iterate.
+        if md.strip():
+            self.session.write("prd.md", md)
+
+    def _fail(self, msg: str) -> None:
+        self._say(f"[red]ERROR: {escape(msg)}[/]")
+        self.set_timer(2.0, lambda: self.exit(None))
+
+    def _spawn(self, fn: Any, **kw: Any) -> None:
+        from functools import partial
+
+        self.run_worker(partial(fn, **kw), thread=True, name="prd")
+
+    def _seed(self) -> str | None:
+        """Draft to re-anchor the model when the saved conversation id was lost.
+
+        Returns ``None`` while a conversation is live (server keeps the context);
+        only kicks in for a resumed session with no ``claude_session`` id.
+        """
+        if self.claude_session:
+            return None
+        return self.final_prd or self._initial_prd or None
+
+    # --- workers (run off the UI thread) ---
+    def _questions_worker(self) -> None:
+        from splinter import prd_session
+
+        try:
+            turn = prd_session.open_questions(self._initial_prd, strategy=self.strategy)
+        except Exception as exc:  # noqa: BLE001
+            self.call_from_thread(self._fail, f"PRD model: {exc}")
+            return
+        self.call_from_thread(self._after_questions, turn.text, turn.session_id)
+
+    def _refine_worker(self, answers: str) -> None:
+        from splinter import prd_session
+
+        try:
+            turn = prd_session.refine(
+                answers, resume=self.claude_session, prd_text=self._seed()
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.call_from_thread(self._fail, f"PRD model: {exc}")
+            return
+        self.call_from_thread(self._after_refine, turn.text, turn.session_id)
+
+    def _finalize_worker(self, autodecide: bool) -> None:
+        from splinter import prd_session
+
+        try:
+            turn = prd_session.finalize(
+                resume=self.claude_session, strategy=self.strategy,
+                autodecide=autodecide, prd_text=self._seed(),
+            )
+            prd = prd_session.ensure_frontmatter(
+                turn.text, description=self._desc, strategy=self.strategy
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.call_from_thread(self._fail, f"PRD model: {exc}")
+            return
+        self.call_from_thread(self._after_finalize, prd, turn.session_id)
+
+    def _revise_worker(self, instructions: str) -> None:
+        from splinter import prd_session
+
+        try:
+            turn = prd_session.revise_final(
+                instructions, resume=self.claude_session, prd_text=self._seed()
+            )
+            prd = prd_session.ensure_frontmatter(
+                turn.text, description=self._desc, strategy=self.strategy
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.call_from_thread(self._fail, f"PRD model: {exc}")
+            return
+        self.call_from_thread(self._after_revise, prd, turn.session_id)
+
+    # --- worker callbacks (back on the UI thread) ---
+    def _after_questions(self, questions: str, sid: str) -> None:
+        from splinter import prd_session
+
+        self.claude_session = sid
+        prd_session.log_phase(self.session, "clarify")
+        self.phase = "chat"
+        self._save_state()
+        self._set_draft(self._initial_prd)
+        self._say(escape(questions))
+        self._say(
+            "[green]Answer (e.g. 1A,2C), or type 'fulfilled' to finalize, "
+            "or 'cowabunga' to let me decide.[/]"
+        )
+        self.phase = "chat"
+        self._set_busy(False, "your answers / fulfilled / cowabunga")
+
+    def _after_refine(self, draft: str, sid: str) -> None:
+        from splinter import prd_session
+
+        self.claude_session = sid
+        prd_session.log_phase(self.session, "refine")
+        self.phase = "chat"
+        self._save_state()
+        self._set_draft(draft)
+        self._say("[green]Updated. Answer remaining questions, 'fulfilled', or 'cowabunga'.[/]")
+        self._set_busy(False, "your answers / fulfilled / cowabunga")
+
+    def _after_finalize(self, prd: str, sid: str) -> None:
+        from splinter import prd_session
+
+        self.claude_session = sid
+        self.final_prd = prd
+        n_stories = len(prd_session.user_story_titles(prd))
+        prd_session.log_phase(self.session, "finalize", f"{n_stories} stories")
+        self._set_draft(prd)
+        if self.cowabunga:
+            # Full autonomy: the model already chose a strategy; just run it.
+            self._begin_run(autopick=True)
+            return
+        from splinter.strategies.registry import available_strategies
+
+        self._say("[green]✅ PRD finalized.[/]")
+        self._say(
+            "Pick a strategy "
+            f"({', '.join(available_strategies())}), or 'cowabunga' to let me decide & run."
+        )
+        self.phase = "strategy"
+        self._save_state()
+        self._set_busy(False, "strategy name / cowabunga")
+
+    def _after_revise(self, prd: str, sid: str) -> None:
+        from splinter import prd_session
+
+        self.claude_session = sid
+        self.final_prd = prd
+        prd_session.log_phase(self.session, "revise")
+        self.phase = "review"
+        self._save_state()
+        self._set_draft(prd)
+        self._show_stories()
+        self._say("[green]Revised. Type 'run' to execute, or describe more changes.[/]")
+        self._set_busy(False, "run / describe changes / cowabunga")
+
+    def _show_stories(self) -> None:
+        from splinter import prd_session
+
+        titles = prd_session.user_story_titles(self.final_prd)
+        if titles:
+            self._say("[bold]Tasks:[/]")
+            for t in titles:
+                self._say(f"  • {escape(t)}")
+        else:
+            self._say("[yellow]No US-NNN stories found — the PRD runs as a single task.[/]")
+
+    # --- input dispatch ---
+    def action_send(self) -> None:
+        """⌃S / Send button — submit whatever is in the text box."""
+        entry = self.query_one("#entry", TextArea)
+        self._submit(entry.text)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "send":
+            self.action_send()
+        elif event.button.id == "fulfilled":
+            self._submit("fulfilled")
+        elif event.button.id == "cowabunga":
+            self._submit("cowabunga")
+
+    def _submit(self, raw: str) -> None:
+        if self._busy:
+            return
+        text = raw.strip()
+        self.query_one("#entry", TextArea).text = ""
+        if not text:
+            return
+        self._say(f"[cyan]> {escape(text)}[/]")
+        handler = {
+            "chat": self._on_chat,
+            "strategy": self._on_strategy,
+            "review": self._on_review,
+        }.get(self.phase)
+        if handler:
+            handler(text)
+
+    def _on_chat(self, text: str) -> None:
+        from splinter import prd_session
+
+        if prd_session.is_cowabunga(text):
+            self._set_busy(True, "cowabunga — finalizing…")
+            self._spawn(self._finalize_worker, autodecide=True)
+        elif prd_session.is_done(text):
+            self._set_busy(True, "finalizing the PRD…")
+            self._spawn(self._finalize_worker, autodecide=False)
+        else:
+            self._set_busy(True, "incorporating your answers…")
+            self._spawn(self._refine_worker, answers=text)
+
+    def _on_strategy(self, text: str) -> None:
+        from splinter import prd_session
+        from splinter.strategies.registry import available_strategies
+
+        if prd_session.is_cowabunga(text):
+            self._begin_run(autopick=True)
+            return
+        if text.lower() not in available_strategies():
+            self._say(f"[yellow]Unknown strategy. Pick: {', '.join(available_strategies())}[/]")
+            return
+        self.strategy = text.lower()
+        prd_session.log_phase(self.session, "strategy", self.strategy)
+        self.final_prd = _set_fm_strategy(self.final_prd, self.strategy)
+        self.phase = "review"
+        self._save_state()
+        self._set_draft(self.final_prd)
+        self._show_stories()
+        self._say("[green]Type 'run' to execute, 'cowabunga' to run as-is, "
+                  "or describe changes.[/]")
+        self._set_busy(False, "run / describe changes / cowabunga")
+
+    def _on_review(self, text: str) -> None:
+        from splinter import prd_session
+
+        if prd_session.is_cowabunga(text) or text.lower() in {"run", "yes", "go", "y"}:
+            self._begin_run()
+            return
+        self._set_busy(True, "applying your changes…")
+        self._spawn(self._revise_worker, instructions=text)
+
+    # --- finish ---
+    def _begin_run(self, autopick: bool = False) -> None:
+        from splinter import prd_session
+
+        if autopick or not self.strategy:
+            fm, _ = _fm_block(self.final_prd)
+            self.strategy = self.strategy or str(fm.get("strategy") or "") or "direct"
+            self.final_prd = _set_fm_strategy(self.final_prd, self.strategy)
+        prd_session.log_phase(self.session, "run", self.strategy or "direct")
+        prd_path = self.session.write("prd.md", self.final_prd)
+        self.session.update_index(
+            f"# Session {self.session.id}\n- prd: prd.md\n- strategy: {self.strategy}\n"
+        )
+        self._say(f"[green]▶ running with strategy '{self.strategy}'…[/]")
+        self.exit(
+            {
+                **self.run_kwargs,
+                "strategy": self.strategy,
+                "prd_path": str(prd_path),
+                "task_path": None,
+            }
+        )
+
+    def action_abort(self) -> None:
+        # Confirm first — the draft is recoverable, but a stray ESC shouldn't nuke the run.
+        if isinstance(self.screen, ConfirmQuit):
+            return  # dialog already up
+
+        def _decide(leave: bool | None) -> None:
+            if leave:
+                from splinter import procreg
+
+                procreg.terminate_all()
+                self.exit(None)
+
+        self.push_screen(ConfirmQuit(), _decide)
+
+
+def run_prd_interactive(run_kwargs: dict[str, Any]) -> int:
+    """Refine the PRD in a TUI, then execute it under RunApp in the same session."""
+    from splinter.memory.session import new_session_id
+
+    session = Session(new_session_id())
+    result = PrdSessionApp(session, run_kwargs).run()
+    if not result:
+        print(f"PRD session aborted — resume later: splinter resume {session.id}")
+        return 0
+    return run_with_tui(result, session=session)
+
+
+def resume_session(session_id: str | None) -> int:
+    """Resume an interrupted PRD refinement; on finalize, run it like a fresh session."""
+    from splinter.memory.session import list_sessions
+
+    sid = session_id
+    if sid is None:
+        for cand in list_sessions():
+            if Session(cand).read_status().get("state") == "refining":
+                sid = cand
+                break
+        if sid is None:
+            print("no resumable PRD session found (none in state 'refining').")
+            return 1
+
+    if sid not in list_sessions():
+        print(f"no such session: {sid}")
+        return 1
+
+    session = Session(sid)
+    status = session.read_status()
+    if status.get("state") != "refining":
+        print(f"session {sid} is not resumable (state: {status.get('state', 'unknown')}). "
+              "Only PRD refinement sessions can be resumed.")
+        return 1
+
+    saved_strategy = status.get("strategy")
+    run_kwargs: dict[str, Any] = {
+        "strategy": saved_strategy if saved_strategy and saved_strategy != "?" else None,
+        "prd_path": str(session.dir / "prd.md"),
+        "task_path": None,
+        "effort": None,
+        "budget": None,
+        "max_iterations": 5,
+        "cowabunga": False,
+        "resume": True,
+    }
+    result = PrdSessionApp(session, run_kwargs).run()
+    if not result:
+        print(f"PRD session aborted — resume later: splinter resume {session.id}")
+        return 0
+    return run_with_tui(result, session=session)

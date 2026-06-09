@@ -29,8 +29,12 @@ def run(
     variant: str | None = None,
     fmt: str = "json",
     session: str | None = None,
-    timeout: int = 600,
+    timeout: int | None = None,
 ) -> OpencodeResult:
+    if timeout is None:
+        from splinter.configure import configured_timeout
+
+        timeout = configured_timeout()
     cmd: list[str] = [
         "opencode",
         "run",
@@ -229,7 +233,7 @@ class OpencodeProvider(ModelProvider):
         *,
         variant: str | None = None,
         session: str | None = None,
-        timeout: int = 600,
+        timeout: int | None = None,
     ) -> ProviderResponse:
         result = run(prompt, model, variant=variant, session=session, timeout=timeout)
         session_id = session or result.raw.get("session_id") or result.raw.get("session")

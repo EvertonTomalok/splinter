@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from splinter.memory.knowledge import KnowledgeStore
 from splinter.memory.session import Session
 from splinter.models.roster import Ladder
-from splinter.providers import claude_cli
+from splinter.providers.dispatch import run_text
 from splinter.tools import search as search_tools
 
 log = logging.getLogger("splinter.localizer")
@@ -122,7 +122,10 @@ def _run_search_tools(prd_text: str, repo_path: str = ".") -> str:
     return "\n".join(lines)
 
 
-def _recall_phase(prd_text: str, search_results: str, model: str) -> str:
+def _recall_phase(
+    prd_text: str, search_results: str, model: str, variant: str = "minimal",
+    timeout: int | None = None,
+) -> str:
     """Cheap model filters the raw search results to a candidate list."""
     text = _strip_frontmatter(prd_text)
     prompt = (
@@ -133,11 +136,13 @@ def _recall_phase(prd_text: str, search_results: str, model: str) -> str:
         "Return a concise list of candidate locations. For each, note: file, symbol, "
         "and why it is relevant. Be thorough — coverage over precision."
     )
-    result = claude_cli.run(prompt, model, effort="minimal", output_format="text")
-    return result.text
+    return run_text(prompt, model, variant=variant, output_format="text", timeout=timeout)
 
 
-def _precision_phase(recall_output: str, prd_text: str, model: str) -> list[CodeAnchor]:
+def _precision_phase(
+    recall_output: str, prd_text: str, model: str, variant: str = "low",
+    timeout: int | None = None,
+) -> list[CodeAnchor]:
     """Mid-tier model filters recall results to structured CodeAnchors."""
     text = _strip_frontmatter(prd_text)
     prompt = (
@@ -149,8 +154,8 @@ def _precision_phase(recall_output: str, prd_text: str, model: str) -> list[Code
         "(0.0-1.0). Include only truly relevant results. Example:\n"
         '[{"file": "src/foo.py", "symbol": "Foo.bar", "reason": "handles X", "confidence": 0.9}]'
     )
-    result = claude_cli.run(prompt, model, effort="low", output_format="json")
-    return _parse_anchors(result.text)
+    text = run_text(prompt, model, variant=variant, output_format="json", timeout=timeout)
+    return _parse_anchors(text)
 
 
 def localize(
@@ -175,14 +180,23 @@ def localize(
 
     # Big repos blow past a small context — switch to the large-context model.
     recall_model = ladder.localizer_recall_model
+    recall_variant = ladder.localizer_recall_variant
+    recall_timeout = ladder.localizer_recall_timeout
     if len(search_results) > LARGE_CONTEXT_CHARS and ladder.localizer_recall_large_model:
         recall_model = ladder.localizer_recall_large_model
+        recall_variant = ladder.localizer_recall_large_variant
+        recall_timeout = ladder.localizer_recall_large_timeout
         log.info("localize: large search context → %s", recall_model)
 
     log.info("localize: recall via %s", recall_model)
-    recall_output = _recall_phase(prd_text, search_results, recall_model)
+    recall_output = _recall_phase(
+        prd_text, search_results, recall_model, recall_variant, recall_timeout
+    )
     log.info("localize: precision via %s", precision_model)
-    anchors = _precision_phase(recall_output, prd_text, precision_model)
+    anchors = _precision_phase(
+        recall_output, prd_text, precision_model, ladder.localizer_precision_variant,
+        ladder.localizer_precision_timeout,
+    )
     log.info("localize: %d anchor(s)", len(anchors))
 
     lines: list[str] = ["# Localization\n"]

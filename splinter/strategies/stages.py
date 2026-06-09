@@ -20,7 +20,7 @@ from splinter.memory.knowledge import KnowledgeStore
 from splinter.memory.session import Session
 from splinter.models.roster import Ladder
 from splinter.obs.trace import Trace, log_run
-from splinter.providers import claude_cli
+from splinter.providers.dispatch import run_text
 from splinter.strategies.base import EvalVerdict
 from splinter.templating import render, section
 
@@ -178,6 +178,7 @@ class EvalStage(Stage):
             ctx.ladder.eval_model,
             eval_effort,
             previous_evals="\n".join(ctx.eval_history[-2:]),
+            timeout=ctx.ladder.eval_timeout,
         )
         ctx.verdict = verdict
         log.info("iter %d · eval %s — %s", ctx.iteration, verdict.decision, verdict.reason)
@@ -214,6 +215,7 @@ def _evaluate(
     eval_effort: str,
     *,
     previous_evals: str = "",
+    timeout: int | None = None,
 ) -> EvalVerdict:
     prompt = render(
         "eval",
@@ -222,8 +224,8 @@ def _evaluate(
         output_section=section("Implementation Output", run_output),
         previous_evals_section=section("Previous Eval Feedback", previous_evals),
     )
-    result = claude_cli.run(prompt, eval_model, effort=eval_effort)
-    return _parse_verdict(result.text)
+    text = run_text(prompt, eval_model, variant=eval_effort, timeout=timeout)
+    return _parse_verdict(text)
 
 
 def _parse_verdict(text: str) -> EvalVerdict:

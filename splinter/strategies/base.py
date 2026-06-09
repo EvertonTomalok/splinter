@@ -40,5 +40,6 @@ class Strategy(ABC):
         budget: float | None = None,
         max_iterations: int = 5,
         localization: str = "",
+        cowabunga: bool = False,
     ) -> list[RunResult]:
         ...

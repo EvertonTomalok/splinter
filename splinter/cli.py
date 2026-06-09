@@ -51,6 +51,13 @@ def run(
     effort: Annotated[str | None, typer.Option(help="Override reasoning effort")] = None,
     budget: Annotated[float | None, typer.Option(help="Max cost in dollars")] = None,
     max_iterations: Annotated[int, typer.Option(help="Max loop iterations")] = 5,
+    cowabunga: Annotated[
+        bool,
+        typer.Option(
+            "--cowabunga",
+            help="Full autonomy: skip the PRD Q&A and never wake the human on ASK_USER",
+        ),
+    ] = False,
     quiet: Annotated[
         bool, typer.Option(help="Plain log output instead of the live TUI")
     ] = False,
@@ -66,6 +73,7 @@ def run(
         "effort": effort,
         "budget": budget,
         "max_iterations": max_iterations,
+        "cowabunga": cowabunga,
     }
 
     tty = sys.stdin.isatty() and sys.stdout.isatty()
@@ -77,9 +85,29 @@ def run(
         logging.basicConfig(level=logging.INFO, format="%(message)s")
         raise typer.Exit(run_pipeline(**run_kwargs))  # type: ignore[arg-type]
 
+    # A PRD on a TTY gets refined interactively before it runs. --cowabunga is
+    # honoured inside the session: it decides everything and runs without asking.
+    if prd and not task:
+        from splinter.tui import run_prd_interactive
+
+        raise typer.Exit(run_prd_interactive(run_kwargs))
+
     from splinter.tui import run_with_tui
 
     raise typer.Exit(run_with_tui(run_kwargs))
+
+
+@app.command()
+def resume(
+    session: Annotated[
+        str | None,
+        typer.Argument(help="Session id to resume (default: latest refining session)"),
+    ] = None,
+) -> None:
+    """Resume an interrupted PRD refinement session."""
+    from splinter.tui import resume_session
+
+    raise typer.Exit(resume_session(session))
 
 
 @app.command()
@@ -111,18 +139,30 @@ def configure(
     gate_checks: Annotated[
         str | None, typer.Option(help="Comma-separated gate commands")
     ] = None,
+    timeout: Annotated[
+        int | None, typer.Option(help="Per-model-call timeout in seconds (default 3600)")
+    ] = None,
     init_prompts: Annotated[
         bool, typer.Option(help="Scaffold editable prompt templates into ./.splinter/prompts/")
     ] = False,
     force: Annotated[
         bool, typer.Option(help="Overwrite existing prompt templates with --init-prompts")
     ] = False,
+    no_interactive: Annotated[
+        bool, typer.Option("--no-interactive", help="Skip the model-selection TUI")
+    ] = False,
 ) -> None:
-    """Write project config and scaffold prompt templates."""
+    """Pick per-step models in a TUI (default), then write config.yaml."""
     from splinter.configure import run_configure
 
     raise typer.Exit(
-        run_configure(gate_checks=gate_checks, init_prompts=init_prompts, force=force)
+        run_configure(
+            gate_checks=gate_checks,
+            timeout=timeout,
+            init_prompts=init_prompts,
+            force=force,
+            interactive=False if no_interactive else None,
+        )
     )
 
 

@@ -19,14 +19,16 @@ from __future__ import annotations
 import logging
 
 from splinter.agents.runner import RunResult, Task
+from splinter.enums import Decision
 from splinter.memory.knowledge import KnowledgeStore
 from splinter.memory.session import Session
 from splinter.models.roster import Ladder
 from splinter.obs.trace import Trace
-from splinter.providers import claude_cli
+from splinter.providers.dispatch import run_text
 from splinter.strategies.base import Strategy
 from splinter.strategies.registry import register
 from splinter.strategies.stages import (
+    PREMIUM_TIER,
     EvalStage,
     GateStage,
     IterationContext,
@@ -58,6 +60,7 @@ class DirectStrategy(Strategy):
         budget: float | None = None,
         max_iterations: int = 5,
         localization: str = "",
+        cowabunga: bool = False,
     ) -> list[RunResult]:
         trace = Trace()
         knowledge = KnowledgeStore(session)
@@ -74,6 +77,7 @@ class DirectStrategy(Strategy):
                 budget=budget,
                 max_iterations=max_iterations,
                 localization=localization,
+                cowabunga=cowabunga,
             )
             if result is not None:
                 results.append(result)
@@ -93,6 +97,7 @@ class DirectStrategy(Strategy):
         budget: float | None,
         max_iterations: int,
         localization: str,
+        cowabunga: bool = False,
     ) -> RunResult | None:
         tier = self._start_tier(task, ladder)
 
@@ -154,6 +159,32 @@ class DirectStrategy(Strategy):
                 log.info("task PASSED at T%d after %d iteration(s)", tier, iteration)
                 return ctx.run_result
 
+            # 🙋 ASK_USER — too important to guess. Hand it to the human and stop,
+            # unless --cowabunga said the turtles run fully autonomous.
+            if verdict.decision == Decision.ASK_USER and not cowabunga:
+                log.warning("iter %d · ASK_USER — needs human input, stopping task",
+                            iteration)
+                session.append(
+                    "loop.md",
+                    f"## ASK_USER (iter {iteration}) — needs human input\n"
+                    f"{verdict.reason}\n\n",
+                )
+                knowledge.write_note(f"ask-user-iter-{iteration}", verdict.reason)
+                return ctx.run_result
+
+            # 🚀 JUMP_PREMIUM — skip the ladder, go straight to the premium tier.
+            if verdict.decision == Decision.JUMP_PREMIUM and tier < PREMIUM_TIER:
+                tier = PREMIUM_TIER
+                log.info("jumping straight to premium tier T%d", tier)
+                session.append("loop.md", f"## Jump to premium tier {tier}\n\n")
+                oc_session = None
+                consecutive_fails = 0
+                corrections = _correction_context(knowledge, verdict.corrections)
+                if budget is not None and trace.total_cost >= budget:
+                    session.append("loop.md", f"## Budget exhausted (${trace.total_cost:.4f})\n")
+                    return ctx.run_result
+                continue
+
             consecutive_fails += 1
             # Same-model retry reuses the live session; corrections alone suffice.
             corrections = verdict.corrections
@@ -210,5 +241,7 @@ def _make_plan(task: Task, ladder: Ladder, localization: str) -> str:
         acceptance_section=section("Acceptance Criteria", task.acceptance),
         code_context_section=section("Code Context", localization),
     )
-    result = claude_cli.run(prompt, ladder.planner_model, effort=ladder.planner_effort)
-    return result.text
+    return run_text(
+        prompt, ladder.planner_model, variant=ladder.planner_effort,
+        timeout=ladder.planner_timeout,
+    )

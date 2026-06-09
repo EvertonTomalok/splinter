@@ -38,7 +38,7 @@ class ModelProvider(ABC):
         *,
         variant: str | None = None,
         session: str | None = None,
-        timeout: int = 600,
+        timeout: int | None = None,
     ) -> ProviderResponse:
         """Execute ``prompt`` against ``model`` and return a normalised response."""
         ...
