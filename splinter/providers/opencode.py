@@ -52,7 +52,9 @@ def run(
         cmd.extend(["-s", session])
 
     # The prompt is the positional message (NOT `-c`, which means --continue).
-    cmd.append(prompt)
+    # `--` stops flag parsing so a prompt starting with `-` isn't read as an option
+    # (yargs prints usage and exits 1 otherwise).
+    cmd.extend(["--", prompt])
 
     proc = run_subprocess(cmd, timeout=timeout)
     if proc.returncode != 0:

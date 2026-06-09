@@ -33,3 +33,14 @@ def get_strategy(name: str) -> Strategy:
 def available_strategies() -> list[str]:
     """All registered strategy names and aliases."""
     return sorted(_REGISTRY)
+
+
+def registered_strategies() -> list[type[Strategy]]:
+    """Unique strategy classes (deduped across name + aliases), sorted by name."""
+    seen: set[str] = set()
+    out: list[type[Strategy]] = []
+    for cls in _REGISTRY.values():
+        if cls.name not in seen:
+            seen.add(cls.name)
+            out.append(cls)
+    return sorted(out, key=lambda c: c.name)

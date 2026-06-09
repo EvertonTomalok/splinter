@@ -16,6 +16,8 @@ import re
 from typing import Any
 
 from rich.markup import escape
+from rich.text import Text
+from textual import events
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
@@ -653,19 +655,26 @@ class ConfirmQuit(ModalScreen[bool]):
     CSS = """
     ConfirmQuit { align: center middle; }
     #box {
-        width: 60; height: auto; padding: 1 2;
+        width: 80; max-width: 90%; height: auto; padding: 1 2;
         border: thick $warning; background: $surface;
     }
-    #qbuttons { height: 3; align-horizontal: center; }
+    #box Static { width: 100%; height: auto; }
+    #cmd { color: $text; background: $boost; padding: 0 1; margin: 1 0; }
+    #qbuttons { height: 3; align-horizontal: center; margin-top: 1; }
     #qbuttons Button { margin: 0 1; }
     """
 
     BINDINGS = [("escape", "stay", "Stay")]
 
+    def __init__(self, session_id: str) -> None:
+        super().__init__()
+        self.session_id = session_id
+
     def compose(self) -> ComposeResult:
         with Vertical(id="box"):
-            yield Label("Leave this PRD session?\n\n"
-                        "The draft is saved — resume later with `splinter resume`.")
+            yield Static("Leave this PRD session?")
+            yield Static("The draft is saved — resume later with:")
+            yield Static(f"uv run splinter resume {self.session_id}", id="cmd")
             with Horizontal(id="qbuttons"):
                 yield Button("Leave", id="leave", variant="error")
                 yield Button("Stay", id="stay", variant="primary")
@@ -675,6 +684,26 @@ class ConfirmQuit(ModalScreen[bool]):
 
     def action_stay(self) -> None:
         self.dismiss(False)
+
+
+class ComposerTextArea(TextArea):
+    """PRD composer box: Enter submits; Shift+Enter inserts a newline."""
+
+    _NEWLINE_KEYS = ("shift+enter",)
+
+    async def _on_key(self, event: events.Key) -> None:
+        if event.key in self._NEWLINE_KEYS:
+            event.stop()
+            event.prevent_default()
+            self.insert("\n")
+            return
+        if event.key == "enter":
+            event.stop()
+            event.prevent_default()
+            assert isinstance(self.app, PrdSessionApp)
+            self.app.action_send()
+            return
+        await super()._on_key(event)
 
 
 class PrdSessionApp(App[dict[str, Any] | None]):
@@ -693,8 +722,8 @@ class PrdSessionApp(App[dict[str, Any] | None]):
     #convo { height: 1fr; padding: 0 1; }
     #composer { dock: bottom; height: auto; }
     #entry { height: 8; border: round $primary; }
-    #actions { height: 3; padding: 0 1; }
-    #actions Button { margin: 0 1 0 0; }
+    #actions { height: 4; padding: 0 1; }
+    #actions Button { height: 4; margin: 0 1 0 0; }
     """
 
     BINDINGS = [
@@ -716,6 +745,7 @@ class PrdSessionApp(App[dict[str, Any] | None]):
         self._busy = False
         self._initial_prd = ""
         self._desc = ""
+        self._convo_lines: list[str] = []
 
     def _save_state(self) -> None:
         """Persist enough to resume this refinement: conversation id, phase, strategy."""
@@ -736,7 +766,9 @@ class PrdSessionApp(App[dict[str, Any] | None]):
             with Vertical(id="chatpane"):
                 yield RichLog(id="convo", markup=True, wrap=True)
                 with Vertical(id="composer"):
-                    yield TextArea(id="entry", soft_wrap=True)
+                    entry = ComposerTextArea(id="entry", soft_wrap=True)
+                    entry.border_subtitle = "↵ send · ⇧↵ newline"
+                    yield entry
                     with Horizontal(id="actions"):
                         yield Button("Send (⌃S)", id="send", variant="primary")
                         yield Button("Fulfilled", id="fulfilled", variant="success")
@@ -797,6 +829,7 @@ class PrdSessionApp(App[dict[str, Any] | None]):
         self.final_prd = self.session.read("prd.md")
         phase = str(status.get("phase") or "chat")
 
+        self._replay_convo()
         self._say(f"[magenta]⟳ resumed {self.session.id} at phase '{phase}'.[/]")
         if not self.claude_session:
             self._say("[yellow]No saved conversation id — prior context may be lost; "
@@ -807,21 +840,49 @@ class PrdSessionApp(App[dict[str, Any] | None]):
             self._show_stories()
             self._say("[green]Type 'run' to execute, 'cowabunga' to run as-is, "
                       "or describe changes.[/]")
+            self._render_actions("review")
             self._set_busy(False, "run / describe changes / cowabunga")
         elif phase == "strategy":
             self.phase = "strategy"
             self._say("Pick a strategy "
                       f"({', '.join(available_strategies())}), or 'cowabunga' to let me decide.")
+            self._render_actions("strategy")
             self._set_busy(False, "strategy name / cowabunga")
         else:  # clarify / refine both live in the chat phase
             self.phase = "chat"
             self._say("[green]Continue: answer, 'fulfilled' to finalize, or 'cowabunga'.[/]")
+            self._render_actions("chat")
             self._set_busy(False, "your answers / fulfilled / cowabunga")
         self._save_state()
 
     # --- ui helpers ---
-    def _say(self, msg: str) -> None:
+    def _say(self, msg: str, *, persist: bool = True) -> None:
         self.query_one("#convo", RichLog).write(msg)
+        if persist:
+            self._convo_lines.append(msg)
+            # NUL-delimit records: a message may contain newlines, and splitting on
+            # them would break a markup tag across lines (MarkupError on replay).
+            self.session.write("convo.md", "\x00".join(self._convo_lines))
+
+    def _replay_convo(self) -> None:
+        """Reprint the saved conversation so a resumed session shows what was asked."""
+        prior = self.session.read("convo.md")
+        if not prior.strip():
+            return
+        # New sessions are NUL-delimited; tolerate the old newline format too.
+        records = prior.split("\x00") if "\x00" in prior else prior.splitlines()
+        records = [r for r in records if r]
+        convo = self.query_one("#convo", RichLog)
+        for rec in records:
+            # RichLog defers markup parsing to render time, so a try/except around
+            # write() won't catch bad markup — validate now and escape if it fails.
+            try:
+                Text.from_markup(rec)
+            except Exception:  # noqa: BLE001 — bad markup in an old log shouldn't abort resume
+                rec = escape(rec)
+            convo.write(rec)
+        self._convo_lines = records
+        convo.write("[dim]─── resumed ───[/]")
 
     def _set_busy(self, busy: bool, placeholder: str = "") -> None:
         self._busy = busy
@@ -833,6 +894,32 @@ class PrdSessionApp(App[dict[str, Any] | None]):
             entry.border_title = placeholder
         if not busy:
             entry.focus()
+
+    def _render_actions(self, phase: str) -> None:
+        """Swap the action buttons to match the phase (chat / strategy / review)."""
+        from splinter.strategies.registry import registered_strategies
+
+        btns = [Button("Send (⌃S)", id="send", variant="primary")]
+        if phase == "strategy":
+            for cls in registered_strategies():
+                alias = cls.aliases[0] if cls.aliases else cls.name
+                label = Text.from_markup(f"[b]{alias}[/]\n[dim]{cls.name}[/]")
+                btns.append(Button(label, id=f"strat-{cls.name}", variant="success"))
+            btns.append(Button("Cowabunga", id="cowabunga", variant="warning"))
+        elif phase == "review":
+            btns.append(Button("Run", id="run", variant="success"))
+            btns.append(Button("Cowabunga", id="cowabunga", variant="warning"))
+        else:  # chat
+            btns.append(Button("Fulfilled", id="fulfilled", variant="success"))
+            btns.append(Button("Cowabunga", id="cowabunga", variant="warning"))
+        bar = self.query_one("#actions", Horizontal)
+
+        async def _swap() -> None:
+            # await the removal before mounting, else the old ids collide with the new.
+            await bar.remove_children()
+            await bar.mount(*btns)
+
+        self.run_worker(_swap(), name="actions")
 
     def _set_draft(self, md: str) -> None:
         self.query_one("#draft", Markdown).update(md or "_(empty)_")
@@ -929,6 +1016,7 @@ class PrdSessionApp(App[dict[str, Any] | None]):
             "or 'cowabunga' to let me decide.[/]"
         )
         self.phase = "chat"
+        self._render_actions("chat")
         self._set_busy(False, "your answers / fulfilled / cowabunga")
 
     def _after_refine(self, draft: str, sid: str) -> None:
@@ -940,6 +1028,7 @@ class PrdSessionApp(App[dict[str, Any] | None]):
         self._save_state()
         self._set_draft(draft)
         self._say("[green]Updated. Answer remaining questions, 'fulfilled', or 'cowabunga'.[/]")
+        self._render_actions("chat")
         self._set_busy(False, "your answers / fulfilled / cowabunga")
 
     def _after_finalize(self, prd: str, sid: str) -> None:
@@ -963,6 +1052,7 @@ class PrdSessionApp(App[dict[str, Any] | None]):
         )
         self.phase = "strategy"
         self._save_state()
+        self._render_actions("strategy")
         self._set_busy(False, "strategy name / cowabunga")
 
     def _after_revise(self, prd: str, sid: str) -> None:
@@ -976,6 +1066,7 @@ class PrdSessionApp(App[dict[str, Any] | None]):
         self._set_draft(prd)
         self._show_stories()
         self._say("[green]Revised. Type 'run' to execute, or describe more changes.[/]")
+        self._render_actions("review")
         self._set_busy(False, "run / describe changes / cowabunga")
 
     def _show_stories(self) -> None:
@@ -996,12 +1087,13 @@ class PrdSessionApp(App[dict[str, Any] | None]):
         self._submit(entry.text)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "send":
+        bid = event.button.id or ""
+        if bid == "send":
             self.action_send()
-        elif event.button.id == "fulfilled":
-            self._submit("fulfilled")
-        elif event.button.id == "cowabunga":
-            self._submit("cowabunga")
+        elif bid in ("fulfilled", "cowabunga", "run"):
+            self._submit(bid)
+        elif bid.startswith("strat-"):
+            self._submit(bid[len("strat-"):])
 
     def _submit(self, raw: str) -> None:
         if self._busy:
@@ -1051,6 +1143,7 @@ class PrdSessionApp(App[dict[str, Any] | None]):
         self._show_stories()
         self._say("[green]Type 'run' to execute, 'cowabunga' to run as-is, "
                   "or describe changes.[/]")
+        self._render_actions("review")
         self._set_busy(False, "run / describe changes / cowabunga")
 
     def _on_review(self, text: str) -> None:
@@ -1076,14 +1169,15 @@ class PrdSessionApp(App[dict[str, Any] | None]):
             f"# Session {self.session.id}\n- prd: prd.md\n- strategy: {self.strategy}\n"
         )
         self._say(f"[green]▶ running with strategy '{self.strategy}'…[/]")
-        self.exit(
-            {
-                **self.run_kwargs,
-                "strategy": self.strategy,
-                "prd_path": str(prd_path),
-                "task_path": None,
-            }
-        )
+        run_kwargs = {
+            **self.run_kwargs,
+            "strategy": self.strategy,
+            "prd_path": str(prd_path),
+            "task_path": None,
+        }
+        # `resume` is a PRD-TUI flag only; run_pipeline() doesn't accept it.
+        run_kwargs.pop("resume", None)
+        self.exit(run_kwargs)
 
     def action_abort(self) -> None:
         # Confirm first — the draft is recoverable, but a stray ESC shouldn't nuke the run.
@@ -1094,10 +1188,12 @@ class PrdSessionApp(App[dict[str, Any] | None]):
             if leave:
                 from splinter import procreg
 
+                self._say("[yellow]Leaving — resume later with:[/] "
+                          f"[bold]uv run splinter resume {self.session.id}[/]")
                 procreg.terminate_all()
                 self.exit(None)
 
-        self.push_screen(ConfirmQuit(), _decide)
+        self.push_screen(ConfirmQuit(self.session.id), _decide)
 
 
 def run_prd_interactive(run_kwargs: dict[str, Any]) -> int:
@@ -1107,7 +1203,7 @@ def run_prd_interactive(run_kwargs: dict[str, Any]) -> int:
     session = Session(new_session_id())
     result = PrdSessionApp(session, run_kwargs).run()
     if not result:
-        print(f"PRD session aborted — resume later: splinter resume {session.id}")
+        print(f"PRD session aborted — resume later: uv run splinter resume {session.id}")
         return 0
     return run_with_tui(result, session=session)
 
@@ -1150,6 +1246,6 @@ def resume_session(session_id: str | None) -> int:
     }
     result = PrdSessionApp(session, run_kwargs).run()
     if not result:
-        print(f"PRD session aborted — resume later: splinter resume {session.id}")
+        print(f"PRD session aborted — resume later: uv run splinter resume {session.id}")
         return 0
     return run_with_tui(result, session=session)
