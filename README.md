@@ -150,9 +150,25 @@ uv sync
 claude            # sign in to Claude Code
 opencode auth login
 
-# 3. let Splinter verify everything is wired up
+# 3. let opencode edit files non-interactively (one time)
+mkdir -p ~/.config/opencode
+cat > ~/.config/opencode/opencode.json <<'JSON'
+{
+  "permission": {
+    "edit": "allow"
+  }
+}
+JSON
+
+# 4. let Splinter verify everything is wired up
 uv run splinter setup
 ```
+
+The disciples write code by editing files directly. opencode needs
+`permission.edit: allow` in `~/.config/opencode/opencode.json` (step 3) so it can
+do that without prompting; Splinter also passes `--agent build` and
+`--dangerously-skip-permissions`, and drives `claude -p` with
+`--dangerously-skip-permissions`.
 
 `splinter setup` does not just check the binaries exist, it pings each provider
 for real:
@@ -215,16 +231,23 @@ tries again.
 
 Splinter never starts at the top. It earns its way there.
 
+No weak models on the bench — the floor is already capable.
+
 ```
-T0  flash      deepseek-v4-flash · mimo-v2.5 · qwen3.6-plus · glm-5
-T1  mid        qwen3.7-plus · glm-5.1 · minimax-m2.5 · kimi-k2.5 · mimo-v2.5-pro
-T2  strong     qwen3.7-max · deepseek-v4-pro · kimi-k2.6 · minimax-m2.7 · minimax-m3
-T3  premium    sonnet  ->  sonnet (variant max)
+T0  easy       glm-5.1 · kimi-k2.6              (easy → moderate-easy)
+T1  moderate   deepseek-v4-pro                  (default for normal work)
+T2  hard       qwen3.7-max                      (moderate+)
+T3  premium    sonnet  ->  sonnet (effort max)
 T4  top        opus-4.8
 ```
 
-The plan tags each task with an effort hint, so trivial work starts at T0 and a
-gnarly refactor can start higher. The judge owns the climb from there.
+The plan tags each task with an effort hint, so trivial work starts at T0, normal
+work defaults to T1 (deepseek-v4-pro), and a gnarly refactor can start higher. The
+judge owns the climb from there.
+
+**Localizer roster** (separate from execution): recall/search runs on
+deepseek-v4-flash, escalating to **minimax-m3** for its huge context window on
+large repos; **kimi-k2.6** qualifies and filters the candidate locations.
 
 ---
 
@@ -272,6 +295,59 @@ Every loop, the evaluator returns one of five verdicts:
 
 Evaluation runs two ways: a written acceptance check, or a real skill/script
 (think `go test` or a custom validator) plus a judgment on top.
+
+---
+
+## Under the hood
+
+The loop is built from a few deliberate patterns so each piece swaps cleanly.
+
+**One iteration is a Chain of Responsibility.** A single pass is
+`Run → Gate → Eval`. The gate (`ruff`/`mypy`/`pytest`, configurable) is a
+short-circuit link: when its mechanical checks fail, the chain stops *before* the
+expensive LLM eval ever runs. State rides through the chain on one
+`IterationContext`.
+
+**Plan once, run is the loop.** The sensei writes the plan a single time; it is
+reused for every retry and every escalation — never regenerated.
+
+```
+        ┌──────────────── corrections (same opencode session) ──────────────┐
+        ▼                                                                    │
+plan ─► run ─► gate ──fail──► retry          eval ──PASS──► done            │
+ (once)        │                              │                              │
+              pass ──────────────────────► eval ──RETRY (same model)─────────┘
+                                            │
+                                            └──ESCALATE──► tier+1, fresh session,
+                                               corrections + session knowledge
+                                               handed to the stronger model
+                                               (plan reused, no replan)
+```
+
+- **Same model fails** → re-run in the *same* opencode session with the
+  evaluator's corrections. Cheapest retry; the model keeps its context.
+- **Fails again** → climb one tier. The stronger model starts a fresh session and
+  receives the corrections **plus the session knowledge memory** directly. The
+  plan is not rewritten.
+- Climbing stops at the ceiling tier, `--budget`, or `--max-iterations`.
+
+**Models are a Strategy.** Each backend (`claude -p`, `opencode run`) is a
+`ModelProvider` resolved by name from a registry, so the runner never branches on
+which CLI it is calling. Adding a backend means adding a strategy.
+
+**Strategies (turtles) self-register.** A `@register` decorator keeps each
+strategy's canonical name and turtle alias in sync — no hand-maintained map.
+
+**Prompts are editable markdown.** Every prompt the harness sends a model lives
+as a `.md` template. Project overrides in `./.splinter/prompts/` win over the
+packaged defaults, so you can rewrite the wording without touching code:
+
+```bash
+# scaffold the templates into ./.splinter/prompts/ and edit them
+uv run splinter configure --init-prompts
+# overwrite existing copies with the shipped defaults
+uv run splinter configure --init-prompts --force
+```
 
 ---
 

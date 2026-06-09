@@ -1,0 +1,6 @@
+description: "write a Python file named hello.py that prints hello world"
+acceptance: "the script runs with exit 0 and stdout contains 'hello'"
+eval_skill: "run_python"
+effort: trivial
+reasoning_effort: auto
+suggested_tier: 0

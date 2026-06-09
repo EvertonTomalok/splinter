@@ -1,0 +1,66 @@
+# Execution ladder. The runner uses each tier's first model; the loop climbs the
+# tiers on repeated failure. No weak models — the floor is glm-5.1 / kimi-k2.6.
+tiers:
+  - name: easy
+    level: 0
+    # easy → moderate-easy tasks
+    models:
+      - opencode-go/glm-5.1
+      - opencode-go/kimi-k2.6
+
+  - name: moderate
+    level: 1
+    # default tier for normal work
+    models:
+      - opencode-go/deepseek-v4-pro
+
+  - name: hard
+    level: 2
+    # moderate+ work
+    models:
+      - opencode-go/qwen3.7-max
+
+  - name: premium
+    level: 3
+    provider: claude
+    models:
+      - sonnet
+    variants:
+      default: null
+      max: "--effort max"
+
+  - name: top
+    level: 4
+    provider: claude
+    models:
+      - opus-4.8
+
+# Task difficulty → starting tier + reasoning variant.
+effort_map:
+  trivial:
+    start_tier: 0
+    variant: minimal
+  normal:
+    start_tier: 1   # default: deepseek-v4-pro
+    variant: low
+  hard:
+    start_tier: 2   # qwen3.7-max
+    variant: high
+  critical:
+    start_tier: 3   # sonnet (effort max)
+    variant: max
+
+eval:
+  default_model: sonnet
+  default_effort: high
+
+planner:
+  model: sonnet
+  effort: high
+
+localizer:
+  # recall/search: cheap, big-context capable
+  recall_model: opencode-go/deepseek-v4-flash
+  recall_model_large: opencode-go/minimax-m3   # huge context window for large repos
+  # qualify/filter locations
+  precision_model: opencode-go/kimi-k2.6
