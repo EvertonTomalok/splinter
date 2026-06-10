@@ -1718,12 +1718,15 @@ class PrdSessionApp(App[int | None]):
 
         self.run_worker(_mount_edit(), name="mount-edit")
 
-    def _read_trusted_draft(self) -> str:
-        """Read edited text from draft-edit TextArea."""
+    def _read_draft(self) -> str:
+        """Read current PRD from #draft-edit if mounted, else fall back to final_prd."""
         try:
             return self.query_one("#draft-edit", TextArea).text
         except Exception:
-            return self._initial_prd
+            return self.final_prd or self._initial_prd
+
+    def _read_trusted_draft(self) -> str:
+        return self._read_draft()
 
     def _to_strategy_phase(self) -> None:
         """Transition to strategy selection phase (shared by multiple paths)."""
@@ -1870,7 +1873,7 @@ class PrdSessionApp(App[int | None]):
         """
         if self.claude_session:
             return None
-        return self.final_prd or self._initial_prd or None
+        return self._read_draft() or None
 
     # --- workers (run off the UI thread) ---
     def _questions_worker(self) -> None:
@@ -2116,7 +2119,7 @@ class PrdSessionApp(App[int | None]):
             return
         self.strategy = text.lower()
         prd_session.log_phase(self.session, "strategy", self.strategy)
-        self.final_prd = _set_fm_strategy(self.final_prd, self.strategy)
+        self.final_prd = _set_fm_strategy(self._read_draft(), self.strategy)
         self.phase = "review"
         self._save_state()
         self._set_preview(self.final_prd)
@@ -2171,10 +2174,12 @@ class PrdSessionApp(App[int | None]):
     def _begin_run(self, autopick: bool = False) -> None:
         from splinter import prd_session
 
+        draft = self._read_draft()
         if autopick or not self.strategy:
-            fm, _ = _fm_block(self.final_prd)
+            fm, _ = _fm_block(draft)
             self.strategy = self.strategy or str(fm.get("strategy") or "") or "cascade"
-            self.final_prd = _set_fm_strategy(self.final_prd, self.strategy)
+            draft = _set_fm_strategy(draft, self.strategy)
+        self.final_prd = draft
         prd_session.log_phase(self.session, "run", self.strategy or "cascade")
         self.session.write("prd.md", self.final_prd)
         self.session.update_index(
