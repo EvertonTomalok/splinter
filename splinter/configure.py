@@ -220,13 +220,66 @@ def init_prompt_templates(*, overwrite: bool = False) -> list[Path]:
     return written
 
 
+DEFAULT_CC_CONFIG: dict[str, Any] = {
+    "defaults": {
+        "strategy": "cascade",
+        "effort": "auto",
+        "max_iterations": 5,
+        "timeout": 3600,
+        "budget": None,
+    },
+    "gate_checks": DEFAULT_CONFIG["gate_checks"],
+    "models": {
+        "localizer_recall": "haiku",
+        "localizer_recall_large": "haiku",
+        "localizer_precision": "haiku",
+        "planner": "opus",
+        "eval": "opus",
+        "tiers": [
+            "haiku",   # T0 easy
+            "haiku",   # T1 moderate
+            "sonnet",  # T2 moderate-hard
+            "sonnet",  # T3 hard
+            "opus",    # T4 critical
+            "opus",    # T5 last-resort
+        ],
+    },
+    "efforts": {
+        "localizer_recall": "low",
+        "localizer_recall_large": "low",
+        "localizer_precision": "low",
+        "planner": "high",
+        "eval": "high",
+        "tiers": ["high", "max", "high", "max", "high", "max"],
+    },
+    "timeouts": {
+        "localizer_recall": 3600,
+        "localizer_recall_large": 3600,
+        "localizer_precision": 3600,
+        "planner": 3600,
+        "eval": 3600,
+        "tiers": [3600, 3600, 3600, 3600, 3600, 3600],
+    },
+}
+
+
 def _swap_config(source: str) -> int:
-    """Copy ``.splinter/<source>`` over ``.splinter/config.yaml``."""
+    """Copy ``.splinter/<source>`` over ``.splinter/config.yaml``.
+
+    For ``config.claude.yaml``: auto-generates the CC-only profile on first use
+    so the flag works on a fresh clone (where ``.splinter/`` is gitignored).
+    """
     src = _config_path("project").parent / source
     dst = _config_path("project")
     if not src.exists():
-        print(f"error: {src} not found — run `splinter configure` to generate it first")
-        return 1
+        if source == "config.claude.yaml":
+            src.parent.mkdir(parents=True, exist_ok=True)
+            with open(src, "w") as f:
+                yaml.dump(DEFAULT_CC_CONFIG, f, default_flow_style=False, sort_keys=False)
+            print(f"created {src} (default CC-only profile — haiku/sonnet/opus runners)")
+        else:
+            print(f"error: {src} not found — run `splinter configure` to generate it first")
+            return 1
     import shutil
     shutil.copy2(src, dst)
     print(f"config.yaml updated from {source}")
