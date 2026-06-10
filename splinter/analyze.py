@@ -17,15 +17,20 @@ import re
 import sys
 import time
 
+from rich.console import Console
+
 from splinter.memory.session import Session
+
+# Renders the markup in render_overview() for the non-TUI (print) code paths.
+_console = Console()
 
 EXPANDABLE = ("plan", "loop", "eval", "localization", "trace", "all")
 
 _EXPAND_FILES = {
-    "plan": "plan.md",
+    "plan": "knowledge/plan.md",
     "loop": "loop.md",
     "eval": "eval.md",
-    "localization": "localization.md",
+    "localization": "knowledge/localization.md",
     "trace": "trace.md",
 }
 
@@ -116,26 +121,55 @@ def _trace_metrics(trace_md: str) -> dict[str, str]:
 # --- renderers (return strings; pure, testable) ----------------------------
 
 
+_OVERVIEW_EMOJI = {
+    "RUNNING": "🟡", "COMPLETED": "🟢", "DONE": "🟢",
+    "FAILED": "🔴", "INTERRUPTED": "🟠", "UNKNOWN": "⚪",
+}
+
+_VERDICT_COLOR = {
+    "PASS": "green", "RETRY": "yellow", "ESCALATE": "yellow",
+    "JUMP_PREMIUM": "magenta", "ASK_USER": "cyan", "FAIL": "red",
+}
+
+
+def _verdict_tag(verdict: str) -> str:
+    color = _VERDICT_COLOR.get(verdict, "white")
+    return f"[{color}]{verdict}[/]"
+
+
 def render_overview(session: Session, state: str) -> str:
+    import os
+
     status = session.read_status()
-    localization = session.read("localization.md")
-    plan = session.read("plan.md")
+    localization = session.read("knowledge/localization.md")
+    plan = session.read("knowledge/plan.md")
     loop = session.read("loop.md")
     trace = session.read("trace.md")
 
-    lines = [f"=== Session {session.id} · {state} ==="]
+    state_color = {
+        "RUNNING": "yellow", "COMPLETED": "green", "DONE": "green",
+        "FAILED": "red", "INTERRUPTED": "dark_orange",
+    }.get(state, "white")
+    emoji = _OVERVIEW_EMOJI.get(state, "⚪")
 
-    meta = [f"strategy: {status.get('strategy', '?')}", f"tasks: {status.get('tasks', '?')}"]
-    if status.get("source"):
-        meta.append(f"source: {status['source']}")
-    lines.append(" | ".join(meta))
+    lines = [
+        f"[bold]splinter[/] · [cyan]{session.id}[/]",
+        f"{emoji} [bold {state_color}]{state}[/]",
+        "",
+        f"[dim]strategy[/] [b]{status.get('strategy', '?')}[/]  "
+        f"[dim]·[/]  [b]{status.get('tasks', '?')}[/] [dim]tasks[/]",
+    ]
 
     metrics = _trace_metrics(trace)
     if metrics:
-        line = f"cost: ${metrics.get('cost', '0')} | runs: {metrics.get('runs', '0')}"
+        line = (f"[green]💰 ${metrics.get('cost', '0')}[/]  [dim]·[/]  "
+                f"{metrics.get('runs', '0')} [dim]runs[/]")
         if "tokens" in metrics:
-            line += f" | tokens: {metrics['tokens']}"
+            line += f"  [dim]·[/]  [dim]tokens[/] {metrics['tokens']}"
         lines.append(line)
+
+    if status.get("source"):
+        lines.append(f"[dim]📄 {os.path.basename(str(status['source']))}[/]")
 
     iters = _iterations(loop)
     max_iters = status.get("max_iterations", "?")
@@ -146,37 +180,42 @@ def render_overview(session: Session, state: str) -> str:
     anchors = len([ln for ln in localization.splitlines() if ln.strip().startswith("- ")])
     plan_steps = len(re.findall(r"^\s*\d+\.", plan, re.MULTILINE))
 
-    def mark(done: bool, current: bool) -> str:
+    def step(done: bool, current: bool, name: str, detail: str = "") -> str:
         if current and running:
-            return "[>]"
-        return "[x]" if done else "[ ]"
-
-    def step(marker: str, name: str, detail: str = "") -> str:
-        return f"  {marker} {name:<10} {detail}".rstrip()
+            icon, color = "▶", "yellow"
+        elif done:
+            icon, color = "✓", "green"
+        else:
+            icon, color = "○", "grey50"
+        detail_md = f"  [dim]{detail}[/]" if detail else ""
+        return f"  [{color}]{icon}[/] [{color}]{name:<9}[/]{detail_md}"
 
     last_verdict = iters[-1][2] if iters else ""
     has_eval = any(v in ("PASS", "RETRY", "ESCALATE") for _, _, v in iters)
 
-    lines.append("\nSteps:")
-    lines.append(step(mark(bool(localization), current_stage == "localize"), "localize",
+    lines.append("")
+    lines.append("[bold]STEPS[/]")
+    lines.append(step(bool(localization), current_stage == "localize", "localize",
                       f"{anchors} anchors" if localization else ""))
-    lines.append(step(mark(bool(plan), current_stage == "plan"), "plan",
+    lines.append(step(bool(plan), current_stage == "plan", "plan",
                       f"{plan_steps} steps" if plan else ""))
     if iters:
         n, tier, _ = iters[-1]
-        lines.append(step(mark(bool(iters), running and current_stage == "run" and not passed),
+        lines.append(step(bool(iters), running and current_stage == "run" and not passed,
                           "run", f"iter {n}/{max_iters} · {tier}"))
-        lines.append(step(mark(passed, running and has_eval and not passed),
-                          "eval", f"last: {last_verdict}" if last_verdict else ""))
+        eval_detail = f"last: {last_verdict}" if last_verdict else ""
+        lines.append(step(passed, running and has_eval and not passed, "eval", eval_detail))
     else:
-        lines.append(step(mark(False, current_stage == "run"), "run"))
-        lines.append(step(mark(False, False), "eval"))
+        lines.append(step(False, current_stage == "run", "run"))
+        lines.append(step(False, False, "eval"))
 
     phases = _prd_phases(session.read("prd_phases.md"))
     if phases or iters:
-        steps = [phase for phase, _ in phases]
-        steps += [f"{tier}·{verdict}" for _, tier, verdict in iters]
-        lines.append(f"\nTrajectory: {' → '.join(steps)}")
+        chain = [f"[dim]{phase}[/]" for phase, _ in phases]
+        chain += [f"{tier}·{_verdict_tag(verdict)}" for _, tier, verdict in iters]
+        lines.append("")
+        lines.append("[bold]TRAJECTORY[/]")
+        lines.append("  " + " [dim]→[/] ".join(chain))
 
     return "\n".join(lines)
 
@@ -231,7 +270,7 @@ def watch_loop(session: Session, interval: float = 2.0) -> None:
         while True:
             state = _run_state(session)
             sys.stdout.write(_CLEAR)
-            print(render_overview(session, state))
+            _console.print(render_overview(session, state))
             if state != "RUNNING":
                 print("\n(run finished)")
                 return
@@ -271,7 +310,7 @@ def run_analyze(
         return 0
 
     if expand:
-        print(render_overview(session, _run_state(session)))
+        _console.print(render_overview(session, _run_state(session)))
         print()
         print(render_expand(session, expand))
         return 0
@@ -282,5 +321,5 @@ def run_analyze(
         run_tui(session)
         return 0
 
-    print(render_overview(session, _run_state(session)))
+    _console.print(render_overview(session, _run_state(session)))
     return 0

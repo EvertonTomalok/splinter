@@ -20,8 +20,14 @@ def register(cls: type[Strategy]) -> type[Strategy]:
     return cls
 
 
+def _ensure_registered() -> None:
+    if not _REGISTRY:
+        import splinter.strategies.direct  # noqa: F401
+
+
 def get_strategy(name: str) -> Strategy:
     """Instantiate the strategy registered under ``name`` (or a turtle alias)."""
+    _ensure_registered()
     cls = _REGISTRY.get(name.lower())
     if cls is None:
         raise ValueError(
@@ -32,11 +38,13 @@ def get_strategy(name: str) -> Strategy:
 
 def available_strategies() -> list[str]:
     """All registered strategy names and aliases."""
+    _ensure_registered()
     return sorted(_REGISTRY)
 
 
 def registered_strategies() -> list[type[Strategy]]:
     """Unique strategy classes (deduped across name + aliases), sorted by name."""
+    _ensure_registered()
     seen: set[str] = set()
     out: list[type[Strategy]] = []
     for cls in _REGISTRY.values():

@@ -166,8 +166,8 @@ def localize(
     repo_path: str = ".",
     force: bool = False,
 ) -> list[CodeAnchor]:
-    if not force and session.has("localization.md"):
-        existing = session.read("localization.md")
+    if not force and session.has("knowledge/localization.md"):
+        existing = session.read("knowledge/localization.md")
         anchors = _parse_anchors(existing)
         if anchors:
             return anchors
@@ -202,8 +202,9 @@ def localize(
     lines: list[str] = ["# Localization\n"]
     for a in anchors:
         lines.append(f"- **{a.file}** :: `{a.symbol}` — {a.reason} (conf: {a.confidence})")
-    session.write("localization.md", "\n".join(lines) + "\n")
 
+    # Localization lives in the run's knowledge store (knowledge/localization.md) —
+    # the single home for run-valuable memory — not loose at the session root.
     ks = KnowledgeStore(session)
     ks.write_note("localization", "\n".join(lines) + "\n")
 

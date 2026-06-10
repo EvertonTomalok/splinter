@@ -244,16 +244,22 @@ def test_resume_rejects_unknown_session(
     assert "no such session" in capsys.readouterr().out
 
 
-def test_resume_rejects_completed_session(
+def test_resume_completed_session_opens_analyze(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    import splinter.tui as tui
     from splinter.tui import resume_session
 
     monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
+    # Don't launch the real TUI — just record that it was opened.
+    opened: list[str] = []
+    monkeypatch.setattr(tui.AnalyzeApp, "run", lambda self: opened.append("run"))
+
     session = Session("ses_done")
     session.set_status("completed", source="prd")
-    assert resume_session("ses_done") == 1
-    assert "not resumable" in capsys.readouterr().out
+    assert resume_session("ses_done") == 0
+    assert opened == ["run"]
+    assert "opening analyze" in capsys.readouterr().out
 
 
 # --- tui frontmatter helpers -------------------------------------------------
@@ -274,6 +280,9 @@ def test_set_fm_strategy_overrides() -> None:
 
 
 # --- the eval loop: ASK_USER + JUMP_PREMIUM + cowabunga ----------------------
+# Pure unit tests of DirectStrategy's retry/escalate policy. Every model call is
+# mocked — run_task, the gate, the evaluator's judge(), and the planner — so the
+# loop is exercised without spawning a single claude/opencode subprocess.
 
 
 def _drive_loop(
@@ -296,7 +305,10 @@ def _drive_loop(
 
     queue = list(verdicts)
 
-    def fake_evaluate(*a: object, **k: object) -> EvalVerdict:
+    # EvalStage builds `Evaluator(ctx.ladder)` and calls `.judge()`, which would
+    # otherwise hit run_text → a real CLI. Stub judge() on the class so it returns
+    # the next scripted verdict instead. next_action() (pure policy) stays real.
+    def fake_judge(self: object, *a: object, **k: object) -> EvalVerdict:
         return queue.pop(0)
 
     # Gate: raising → stages treats it as "no gate configured" → pass.
@@ -305,7 +317,7 @@ def _drive_loop(
 
     monkeypatch.setattr("splinter.strategies.stages.run_task", fake_run_task)
     monkeypatch.setattr("splinter.strategies.stages.run_gate", boom_gate)
-    monkeypatch.setattr("splinter.strategies.stages._evaluate", fake_evaluate)
+    monkeypatch.setattr("splinter.strategies.stages.Evaluator.judge", fake_judge)
     monkeypatch.setattr(
         "splinter.strategies.direct._make_plan", lambda *a, **k: "the plan"
     )
@@ -338,14 +350,17 @@ def test_ask_user_stops_without_cowabunga(
     assert "ASK_USER" in session.read("loop.md")
 
 
-def test_ask_user_continues_with_cowabunga(
+def test_ask_user_stops_with_cowabunga(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     session, tiers = _drive_loop(
         monkeypatch, tmp_path, [_v(Decision.ASK_USER), _v(Decision.PASS)], cowabunga=True
     )
-    # cowabunga = no asking: it retried and then passed.
-    assert len(tiers) == 2
+    # cowabunga = no human gate: ASK_USER doesn't pause for input — the task just
+    # stops after the first iteration (mirrors Evaluator.next_action's stop=True).
+    assert tiers == [1]
+    # It stopped without flagging a human handoff (no ASK_USER section written).
+    assert "needs human input" not in session.read("loop.md")
 
 
 def test_jump_premium_skips_to_premium_tier(

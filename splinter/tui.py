@@ -65,7 +65,7 @@ def _overview_md(session: Session, state: str) -> str:
     metrics = _trace_metrics(session.read("trace.md"))
     iters = _iterations(session.read("loop.md"))
     anchors = [
-        ln for ln in session.read("localization.md").splitlines()
+        ln for ln in session.read("knowledge/localization.md").splitlines()
         if ln.strip().startswith("- ")
     ]
 
@@ -84,7 +84,7 @@ def _overview_md(session: Session, state: str) -> str:
 
     lines.append("## Steps")
     lines.append(f"- localize — {len(anchors)} anchors")
-    lines.append(f"- plan — {'✓' if session.read('plan.md') else 'pending'}")
+    lines.append(f"- plan — {'✓' if session.read('knowledge/plan.md') else 'pending'}")
     if iters:
         n, tier, verdict = iters[-1]
         lines.append(f"- run/eval — iter {n}/{status.get('max_iterations', '?')} "
@@ -132,16 +132,75 @@ def _iteration_md(session: Session, n: int) -> str:
 def _file_md(session: Session, label: str, filename: str) -> str:
     content = session.read(filename).strip()
     if not content:
+        if filename == "trace.md":
+            # trace.md is only written once an iteration finishes; show live status
+            # instead of a bare "empty" while the run is still working.
+            loop = session.read("loop.md").strip()
+            if loop:
+                return (f"# {label}\n\n_no trace summary yet — run in progress_\n\n"
+                        f"## Loop so far\n\n{loop}")
+            return f"# {label}\n\n_run in progress — no iterations finished yet._"
         return f"# {label}\n\n_empty_"
     return f"# {label}\n\n{content}"
 
 
+def _trace_md(session: Session) -> str:
+    """Full chronological event log (events.md) + headline metrics."""
+    metrics = _trace_metrics(session.read("trace.md"))
+    events = session.read("events.md").strip()
+    parts = ["# Trace"]
+    if metrics:
+        parts.append(
+            f"💰 **${metrics.get('cost', '0')}** · runs {metrics.get('runs', '0')} · "
+            f"tokens `{metrics.get('tokens', '{}')}`"
+        )
+    body = events if events else "run in progress — no events yet"
+    # Fenced so emoji/brackets in the stream render verbatim (no markdown mangling).
+    parts.append(f"## Events\n\n```\n{body}\n```")
+    return "\n\n".join(parts)
+
+
 def _prd_phase_md(session: Session, phase: str, detail: str) -> str:
-    """Detail for a PRD refinement phase: the phase header + the PRD as it stands."""
+    """Detail for a trajectory phase — routed to the artifact that phase produced,
+    not the PRD for every node."""
+    phase_l = phase.lower()
+    head = f"# {phase}" + (f" — {detail}" if detail else "")
+
+    if phase_l == "run":
+        metrics = _trace_metrics(session.read("trace.md"))
+        iters = _iterations(session.read("loop.md"))
+        parts = [head]
+        if metrics:
+            parts.append(
+                f"💰 **${metrics.get('cost', '0')}** · runs {metrics.get('runs', '0')} · "
+                f"tokens `{metrics.get('tokens', '{}')}`"
+            )
+        if iters:
+            parts.append("## Iterations\n" + "\n".join(
+                f"- #{n} · {tier} · {v}" for n, tier, v in iters))
+        # Live tail of the event log so an in-flight run shows the model working
+        # (it logs tool calls / text before any iteration is finalized in loop.md).
+        tail = session.read("events.md").strip().splitlines()[-25:]
+        if tail:
+            parts.append("## Live\n\n```\n" + "\n".join(tail) + "\n```")
+        elif not iters:
+            parts.append("_starting run…_")
+        return "\n\n".join(parts)
+
+    if phase_l == "strategy":
+        from splinter import prd_session
+
+        titles = prd_session.user_story_titles(session.read("prd.md"))
+        chosen = detail or str(session.read_status().get("strategy", "?"))
+        parts = [head, f"**Strategy:** `{chosen}`"]
+        if titles:
+            parts.append("## Tasks\n" + "\n".join(f"- {escape(t)}" for t in titles))
+        return "\n\n".join(parts)
+
+    # clarify / refine / finalize — PRD lifecycle phases: show the PRD as it stands.
     prd = session.read("prd.md").strip()
-    head = f"# PRD · {phase}" + (f" — {detail}" if detail else "")
     body = prd if prd else "_PRD draft not captured yet._"
-    return f"{head}\n\n{body}"
+    return f"# PRD · {phase}{f' — {detail}' if detail else ''}\n\n{body}"
 
 
 class AnalyzeApp(App[None]):
@@ -189,9 +248,10 @@ class AnalyzeApp(App[None]):
         if self.session.read("prd.md"):
             steps.add_leaf("prd", data={"kind": "file", "label": "PRD", "file": "prd.md"})
         steps.add_leaf("localize", data={"kind": "file", "label": "Localization",
-                                         "file": "localization.md"})
-        steps.add_leaf("plan", data={"kind": "file", "label": "Plan", "file": "plan.md"})
-        steps.add_leaf("trace", data={"kind": "file", "label": "Trace", "file": "trace.md"})
+                                         "file": "knowledge/localization.md"})
+        steps.add_leaf("plan", data={"kind": "file", "label": "Plan",
+                                      "file": "knowledge/plan.md"})
+        steps.add_leaf("trace", data={"kind": "trace"})
 
         self._traj_node = tree.root.add("📈 Trajectory", expand=True)
         self._refresh_trajectory()
@@ -226,6 +286,8 @@ class AnalyzeApp(App[None]):
             self._detail().update(_iteration_md(self.session, data["n"]))
         elif kind == "prd_phase":
             self._detail().update(_prd_phase_md(self.session, data["phase"], data["detail"]))
+        elif kind == "trace":
+            self._detail().update(_trace_md(self.session))
         elif kind == "file":
             self._detail().update(_file_md(self.session, data["label"], data["file"]))
         else:
@@ -409,8 +471,11 @@ class RunApp(App[int]):
                 pass
 
     def write_log(self, msg: str, level: int = logging.INFO) -> None:
+        # Streamed model text/tool args are arbitrary — escape so stray `[` markup
+        # (e.g. "fix [bug]") doesn't raise MarkupError when the RichLog renders.
+        safe = escape(msg)
         color = {logging.ERROR: "red", logging.WARNING: "yellow"}.get(level)
-        self.query_one("#log", RichLog).write(f"[{color}]{msg}[/]" if color else msg)
+        self.query_one("#log", RichLog).write(f"[{color}]{safe}[/]" if color else safe)
 
     def _refresh(self) -> None:
         state = _run_state(self.session)
@@ -841,7 +906,7 @@ class PrdSessionApp(App[dict[str, Any] | None]):
             self._say("[green]Type 'run' to execute, 'cowabunga' to run as-is, "
                       "or describe changes.[/]")
             self._render_actions("review")
-            self._set_busy(False, "run / describe changes / cowabunga")
+            self._set_busy(False, "run / gate: <cmds> / changes / cowabunga")
         elif phase == "strategy":
             self.phase = "strategy"
             self._say("Pick a strategy "
@@ -1067,7 +1132,7 @@ class PrdSessionApp(App[dict[str, Any] | None]):
         self._show_stories()
         self._say("[green]Revised. Type 'run' to execute, or describe more changes.[/]")
         self._render_actions("review")
-        self._set_busy(False, "run / describe changes / cowabunga")
+        self._set_busy(False, "run / gate: <cmds> / changes / cowabunga")
 
     def _show_stories(self) -> None:
         from splinter import prd_session
@@ -1143,11 +1208,28 @@ class PrdSessionApp(App[dict[str, Any] | None]):
         self._show_stories()
         self._say("[green]Type 'run' to execute, 'cowabunga' to run as-is, "
                   "or describe changes.[/]")
+        self._say("[dim]Gate auto-detected at run; set it yourself with "
+                  "`gate: <cmd1>; <cmd2>` (or `gate: none`).[/]")
         self._render_actions("review")
-        self._set_busy(False, "run / describe changes / cowabunga")
+        self._set_busy(False, "run / gate: <cmds> / changes / cowabunga")
 
     def _on_review(self, text: str) -> None:
         from splinter import prd_session
+
+        # Let the user set the mechanical gate for this run, e.g.
+        #   gate: npm run lint; npm test
+        # Stored per-session; the planner only auto-detects when none is set.
+        if text.lower().startswith("gate:"):
+            from splinter.agents import gate
+
+            checks = gate.parse_gate_spec(text.split(":", 1)[1])
+            gate.save_gate_checks(self.session.dir, checks)
+            if checks:
+                self._say("[green]Gate set:[/] " + ", ".join(c["cmd"] for c in checks))
+            else:
+                self._say("[yellow]Gate disabled — no mechanical checks this run.[/]")
+            self._set_busy(False, "run / describe changes / gate: <cmds> / cowabunga")
+            return
 
         if prd_session.is_cowabunga(text) or text.lower() in {"run", "yes", "go", "y"}:
             self._begin_run()
@@ -1229,7 +1311,7 @@ def _resume_prd(session: Session, status: dict[str, Any]) -> int:
 
 
 #: Which artifact a given stage produces — dropped to redo that stage on rollback.
-_STAGE_ARTIFACT = {"localize": "localization.md", "run": "plan.md"}
+_STAGE_ARTIFACT = {"localize": "knowledge/localization.md", "run": "knowledge/plan.md"}
 
 
 def _resume_run(session: Session, status: dict[str, Any], *, reset: bool = False) -> int:

@@ -493,7 +493,9 @@ def test_render_overview_trajectory_shows_prd_phases_without_iterations(
     session.append("prd_phases.md", "- clarify")
     session.append("prd_phases.md", "- finalize · 1 stories")
     out = render_overview(session, "REFINING")
-    assert "Trajectory: clarify → finalize" in out
+    assert "TRAJECTORY" in out
+    assert "clarify" in out and "finalize" in out
+    assert "→" in out
 
 
 def test_render_iteration_includes_runner_and_eval(

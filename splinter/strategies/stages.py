@@ -13,22 +13,16 @@ import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
+from splinter.agents.evaluator import Evaluator
 from splinter.agents.gate import run_gate
 from splinter.agents.runner import RunResult, Task, run_task
-from splinter.enums import Decision, Variant
 from splinter.memory.knowledge import KnowledgeStore
 from splinter.memory.session import Session
 from splinter.models.roster import Ladder
 from splinter.obs.trace import Trace, log_run
-from splinter.providers.dispatch import run_text
 from splinter.strategies.base import EvalVerdict
-from splinter.templating import render, section
 
 log = logging.getLogger("splinter.loop")
-
-#: Tier at/above which the evaluator is run at maximum effort.
-PREMIUM_TIER = 3
-MAX_EVAL_EFFORT = Variant.HIGH
 
 
 @dataclass
@@ -92,9 +86,15 @@ class RunStage(Stage):
     """Execute the task with the current tier's model, recording the run."""
 
     def process(self, ctx: IterationContext) -> bool:
+        from splinter.agents.runner import resolve_model, resolve_variant
+
         mode = "fixing" if ctx.corrections else "implementing"
-        log.info("iter %d · T%d · %s (%s)", ctx.iteration, ctx.tier, mode,
+        model_id, _ = resolve_model(ctx.tier, ctx.ladder)
+        variant = resolve_variant(ctx.task, ctx.effort_override, ctx.ladder, ctx.tier)
+        log.info("iter %d · T%d · %s with %s (variant=%s, %s)",
+                 ctx.iteration, ctx.tier, mode, model_id, variant,
                  "same session" if ctx.oc_session else "new session")
+        log.info("  ▸ task: %s", ctx.task.description.splitlines()[0][:100])
         result = run_task(
             ctx.task,
             ctx.plan,
@@ -139,7 +139,7 @@ class GateStage(Stage):
 
     def process(self, ctx: IterationContext) -> bool:
         try:
-            result = run_gate()
+            result = run_gate(session_dir=ctx.session.dir)
         except Exception:
             # Gate unavailable in this project — treat as a pass and let eval decide.
             return True
@@ -165,18 +165,21 @@ class GateStage(Stage):
 class EvalStage(Stage):
     """Judge the run output against acceptance criteria and persist the verdict."""
 
+    def __init__(self, evaluator: Evaluator | None = None) -> None:
+        super().__init__()
+        self._evaluator = evaluator
+
     def process(self, ctx: IterationContext) -> bool:
-        assert ctx.run_result is not None  # guaranteed by RunStage running first
+        assert ctx.run_result is not None
 
-        eval_effort = ctx.ladder.eval_effort
-        if ctx.tier >= PREMIUM_TIER:
-            eval_effort = MAX_EVAL_EFFORT
+        evaluator = self._evaluator or Evaluator(ctx.ladder)
+        eval_effort = evaluator.eval_effort_for(ctx.tier)
 
-        verdict = _evaluate(
+        verdict = evaluator.judge(
             ctx.task,
             ctx.run_result.text,
-            ctx.ladder.eval_model,
-            eval_effort,
+            eval_model=ctx.ladder.eval_model,
+            eval_effort=eval_effort,
             previous_evals="\n".join(ctx.eval_history[-2:]),
             timeout=ctx.ladder.eval_timeout,
         )
@@ -200,11 +203,17 @@ class EvalStage(Stage):
             f"{verdict.raw}\n\n",
         )
 
-        if not verdict.passed:
-            # Persist corrections to session knowledge so an escalated model can read them.
-            ctx.knowledge.write_note(
-                f"corrections-iter-{ctx.iteration}", verdict.corrections
-            )
+        # Persist the full review to the knowledge store every iteration so the
+        # runner (and any escalated model) can read the review history, not just
+        # the latest corrections.
+        review = (
+            f"# Review · iter {ctx.iteration} (T{ctx.tier})\n"
+            f"- decision: {verdict.decision}\n"
+            f"- reason: {verdict.reason}\n"
+        )
+        if verdict.corrections:
+            review += f"\n## Corrections\n{verdict.corrections}\n"
+        ctx.knowledge.write_note(f"review-iter-{ctx.iteration}", review)
         return True
 
 
@@ -217,37 +226,21 @@ def _evaluate(
     previous_evals: str = "",
     timeout: int | None = None,
 ) -> EvalVerdict:
-    prompt = render(
-        "eval",
-        task_section=section("Task", task.description),
-        acceptance_section=section("Acceptance Criteria", task.acceptance),
-        output_section=section("Implementation Output", run_output),
-        previous_evals_section=section("Previous Eval Feedback", previous_evals),
+    from splinter.models.roster import Ladder
+
+    ladder = Ladder(
+        tiers=[], effort_map={}, eval_model=eval_model, eval_effort=eval_effort,
+        planner_model="", planner_effort="",
+        localizer_recall_model="", localizer_recall_large_model="",
+        localizer_precision_model="",
     )
-    text = run_text(prompt, eval_model, variant=eval_effort, timeout=timeout)
-    return _parse_verdict(text)
+    evaluator = Evaluator(ladder)
+    return evaluator.judge(
+        task, run_output,
+        eval_model=eval_model, eval_effort=eval_effort,
+        previous_evals=previous_evals, timeout=timeout,
+    )
 
 
 def _parse_verdict(text: str) -> EvalVerdict:
-    text = text.strip()
-    upper = text.upper()
-
-    decision: str = Decision.RETRY
-    for candidate in Decision:
-        if candidate.value in upper:
-            decision = candidate
-            break
-
-    reason = text
-    corrections = ""
-    for line in text.splitlines():
-        prefix = line.upper().strip()
-        if prefix.startswith("REASON:"):
-            reason = line.split(":", 1)[1].strip()
-        elif prefix.startswith("CORRECTIONS:"):
-            corrections = line.split(":", 1)[1].strip()
-
-    if not corrections and decision != Decision.PASS:
-        corrections = reason
-
-    return EvalVerdict(decision=decision, reason=reason, corrections=corrections, raw=text)
+    return Evaluator._parse_verdict(text)

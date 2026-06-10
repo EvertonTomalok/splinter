@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import subprocess
 from dataclasses import dataclass
 from typing import Any
@@ -12,6 +13,38 @@ from splinter.procreg import run_subprocess
 from splinter.providers.base import ModelProvider, ProviderResponse
 
 VALID_VARIANTS = {v.value for v in Variant}
+
+# Child of "splinter" so the run-pane log handler surfaces these live.
+_stream_log = logging.getLogger("splinter.live")
+
+
+def _stream_event(line: str) -> None:
+    """Log a one-line, human-readable summary of an opencode NDJSON event."""
+    line = line.strip()
+    if not line:
+        return
+    try:
+        obj = json.loads(line)
+    except (json.JSONDecodeError, ValueError):
+        return
+    if not isinstance(obj, dict):
+        return
+    etype = obj.get("type")
+    raw_part = obj.get("part")
+    part: dict[str, Any] = raw_part if isinstance(raw_part, dict) else {}
+    if etype == "tool_use" or part.get("type") == "tool":
+        tool = part.get("tool") or "tool"
+        raw_state = part.get("state")
+        state: dict[str, Any] = raw_state if isinstance(raw_state, dict) else {}
+        raw_inp = state.get("input")
+        inp: dict[str, Any] = raw_inp if isinstance(raw_inp, dict) else {}
+        detail = (inp.get("description") or inp.get("command")
+                  or inp.get("filePath") or inp.get("pattern") or "")
+        _stream_log.info("  🔧 %s %s", tool, str(detail)[:90].replace("\n", " "))
+    elif etype == "text" and isinstance(part.get("text"), str):
+        txt = str(part["text"]).strip().replace("\n", " ")
+        if txt:
+            _stream_log.info("  💬 %s", txt[:120])
 
 
 @dataclass(frozen=True)
@@ -59,7 +92,7 @@ def run(
     # (yargs prints usage and exits 1 otherwise).
     cmd.extend(["--", prompt])
 
-    proc = run_subprocess(cmd, timeout=timeout)
+    proc = run_subprocess(cmd, timeout=timeout, on_line=_stream_event)
     if proc.returncode != 0:
         raise RuntimeError(f"opencode exited {proc.returncode}: {proc.stderr.strip()}")
 

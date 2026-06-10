@@ -18,8 +18,8 @@ from __future__ import annotations
 
 import logging
 
+from splinter.agents.evaluator import Evaluator
 from splinter.agents.runner import RunResult, Task
-from splinter.enums import Decision
 from splinter.memory.knowledge import KnowledgeStore
 from splinter.memory.session import Session
 from splinter.models.roster import Ladder
@@ -28,7 +28,6 @@ from splinter.providers.dispatch import run_text
 from splinter.strategies.base import Strategy
 from splinter.strategies.registry import register
 from splinter.strategies.stages import (
-    PREMIUM_TIER,
     EvalStage,
     GateStage,
     IterationContext,
@@ -107,7 +106,7 @@ class DirectStrategy(Strategy):
         # The plan is produced once and reused for every iteration and escalation.
         # On resume, reuse the persisted plan instead of regenerating (it's expensive
         # and deterministic for the task).
-        existing_plan = session.read("plan.md").strip()
+        existing_plan = session.read("knowledge/plan.md").strip()
         if resume and existing_plan:
             log.info("resume: reusing existing plan")
             # plan.md is stored as "# Plan\n\n<plan>"; drop the header to match a fresh plan.
@@ -116,9 +115,11 @@ class DirectStrategy(Strategy):
         else:
             log.info("planning with %s (once)", ladder.planner_model)
             plan = _make_plan(task, ladder, localization)
-            session.write("plan.md", f"# Plan\n\n{plan}\n")
+            # Plan is model-consumed memory → knowledge store, not a loose root file.
+            session.write("knowledge/plan.md", f"# Plan\n\n{plan}\n")
 
         chain = build_chain(RunStage(), GateStage(), EvalStage())
+        evaluator = Evaluator(ladder)
         eval_history: list[str] = []
         oc_session: str | None = None
         corrections = ""
@@ -143,7 +144,6 @@ class DirectStrategy(Strategy):
             )
             chain.handle(ctx)
 
-            # Persist the trace each iteration so `analyze` sees live cost/runs.
             session.write("trace.md", trace.summary())
 
             last_result = ctx.run_result
@@ -167,53 +167,54 @@ class DirectStrategy(Strategy):
             verdict = ctx.verdict
             assert verdict is not None and ctx.run_result is not None
 
-            if verdict.passed:
-                log.info("task PASSED at T%d after %d iteration(s)", tier, iteration)
-                return ctx.run_result
+            action = evaluator.next_action(
+                verdict, tier, max_tier=MAX_TIER, cowabunga=cowabunga
+            )
 
-            # 🙋 ASK_USER — too important to guess. Hand it to the human and stop,
-            # unless --cowabunga said the turtles run fully autonomous.
-            if verdict.decision == Decision.ASK_USER and not cowabunga:
-                log.warning("iter %d · ASK_USER — needs human input, stopping task",
-                            iteration)
-                session.append(
-                    "loop.md",
-                    f"## ASK_USER (iter {iteration}) — needs human input\n"
-                    f"{verdict.reason}\n\n",
-                )
-                knowledge.write_note(f"ask-user-iter-{iteration}", verdict.reason)
-                return ctx.run_result
-
-            # 🚀 JUMP_PREMIUM — skip the ladder, go straight to the premium tier.
-            if verdict.decision == Decision.JUMP_PREMIUM and tier < PREMIUM_TIER:
-                tier = PREMIUM_TIER
-                log.info("jumping straight to premium tier T%d", tier)
-                session.append("loop.md", f"## Jump to premium tier {tier}\n\n")
-                oc_session = None
-                consecutive_fails = 0
-                corrections = _correction_context(knowledge, verdict.corrections)
-                if budget is not None and trace.total_cost >= budget:
-                    session.append("loop.md", f"## Budget exhausted (${trace.total_cost:.4f})\n")
-                    return ctx.run_result
-                continue
-
-            consecutive_fails += 1
-            # Same-model retry reuses the live session; corrections alone suffice.
-            corrections = verdict.corrections
-
-            if consecutive_fails >= FAILS_BEFORE_ESCALATE:
-                if tier >= MAX_TIER:
+            if action.stop:
+                if action.ask_user:
+                    log.warning("iter %d · ASK_USER — needs human input, stopping task",
+                                iteration)
+                    session.append(
+                        "loop.md",
+                        f"## ASK_USER (iter {iteration}) — needs human input\n"
+                        f"{verdict.reason}\n\n",
+                    )
+                    knowledge.write_note(f"ask-user-iter-{iteration}", verdict.reason)
+                elif verdict.passed:
+                    log.info("task PASSED at T%d after %d iteration(s)", tier, iteration)
+                else:
                     log.warning("max tier T%d reached — stopping", tier)
                     session.append("loop.md", f"## Max tier reached (T{tier}), stopping.\n\n")
-                    return ctx.run_result
+                return ctx.run_result
 
-                tier += 1
+            if action.next_tier != tier:
+                tier = action.next_tier
                 log.info("escalating to T%d (plan reused)", tier)
                 session.append("loop.md", f"## Escalate to tier {tier} (plan reused)\n\n")
-                # Fresh model, fresh session: hand it corrections + the knowledge memory.
                 oc_session = None
                 consecutive_fails = 0
                 corrections = _correction_context(knowledge, verdict.corrections)
+            else:
+                consecutive_fails += 1
+                corrections = verdict.corrections
+
+                if consecutive_fails >= FAILS_BEFORE_ESCALATE:
+                    if tier >= MAX_TIER:
+                        log.warning("max tier T%d reached — stopping", tier)
+                        session.append(
+                            "loop.md", f"## Max tier reached (T{tier}), stopping.\n\n"
+                        )
+                        return ctx.run_result
+
+                    tier += 1
+                    log.info("escalating to T%d (plan reused)", tier)
+                    session.append(
+                        "loop.md", f"## Escalate to tier {tier} (plan reused)\n\n"
+                    )
+                    oc_session = None
+                    consecutive_fails = 0
+                    corrections = _correction_context(knowledge, verdict.corrections)
 
             if budget is not None and trace.total_cost >= budget:
                 session.append("loop.md", f"## Budget exhausted (${trace.total_cost:.4f})\n")

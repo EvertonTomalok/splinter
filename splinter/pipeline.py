@@ -29,6 +29,48 @@ _TRANSIENT_MARKERS = (
 )
 
 
+class _SessionTraceHandler(logging.Handler):
+    """Persist every ``splinter`` log record to the session's ``events.md`` so the
+    Trace view is a full chronological log — each model push, tool call, gate/eval
+    result, and escalate/jump/ask decision, in order."""
+
+    def __init__(self, session: Session) -> None:
+        super().__init__()
+        self.session = session
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            ts = datetime.now(timezone.utc).astimezone().strftime("%H:%M:%S")
+            self.session.append("events.md", f"[{ts}] {record.getMessage()}")
+        except Exception:  # noqa: BLE001 — tracing must never break the run
+            pass
+
+
+def _resolve_gate(session: Session, ladder: object) -> None:
+    """Ensure the run has a gate. Precedence: already-configured (session gate.json
+    or .splinter/config.yaml) → model-detected from the repo → Python defaults.
+
+    Users can override per project via ``gate_checks`` in config.yaml, or per run
+    in the PRD review phase; this just makes the planner bring one when none is set.
+    """
+    from splinter.agents import gate
+
+    existing = gate.configured_gate_checks(session_dir=session.dir)
+    if existing is not None:
+        names = ", ".join(c.get("name", c.get("cmd", "?")) for c in existing) or "none"
+        log.info("gate: using configured checks (%s)", names)
+        return
+
+    log.info("gate: detecting project checks…")
+    detected = gate.detect_gate_checks(ladder)
+    if detected:
+        gate.save_gate_checks(session.dir, detected)
+        log.info("gate: detected — %s", ", ".join(c["name"] for c in detected))
+    else:
+        log.warning("gate: could not detect checks — using defaults. Set `gate_checks` "
+                    "in .splinter/config.yaml or specify them in the PRD review.")
+
+
 def _classify_failure(exc: BaseException) -> str:
     """Transient (provider/network blip → resume continues) vs critical (bad command,
     bug → resume rolls the failing stage back and redoes it)."""
@@ -169,10 +211,22 @@ def run_pipeline(
         idx_lines.append(f"- prd: {prd_path}")
     session.update_index("\n".join(idx_lines) + "\n")
 
-    log.info("session %s · strategy %s · %d task(s)%s", session.id, strategy_name,
-             len(tasks), " · 🤙 cowabunga" if cowabunga else "")
+    # Mirror the whole "splinter" log stream into events.md so the Trace view is a
+    # full chronological record of every push / result / decision.
+    splog = logging.getLogger("splinter")
+    trace_handler = _SessionTraceHandler(session)
+    trace_handler.setLevel(logging.INFO)
+    splog.addHandler(trace_handler)
+    session.append(
+        "events.md",
+        f"=== run {'resume' if resume else 'start'} · {strategy_name} · "
+        f"{datetime.now(timezone.utc).astimezone().strftime('%H:%M:%S')} ===",
+    )
 
     try:
+        log.info("session %s · strategy %s · %d task(s)%s", session.id, strategy_name,
+                 len(tasks), " · 🤙 cowabunga" if cowabunga else "")
+
         prd_text = ""
         if prd_path:
             prd_text = Path(prd_path).read_text()
@@ -181,14 +235,16 @@ def run_pipeline(
 
         localization = ""
         if prd_text:
-            existing_loc = session.read("localization.md")
+            existing_loc = session.read("knowledge/localization.md")
             if resume and existing_loc.strip():
                 log.info("resume: reusing existing localization")
                 localization = existing_loc
             else:
                 log.info("localizing against the codebase…")
                 localize(prd_text, session, ladder)
-                localization = session.read("localization.md")
+                localization = session.read("knowledge/localization.md")
+
+        _resolve_gate(session, ladder)
 
         session.set_status("running", stage="run")
         results = strat.execute(
@@ -202,17 +258,18 @@ def run_pipeline(
             cowabunga=cowabunga,
             resume=resume,
         )
+
+        session.set_status("completed", stage="done")
+        total = sum(r.cost for r in results)
+        log.info("pipeline complete · %d run(s) · $%.4f", len(results), total)
+        print(f"pipeline complete. session: {session.id}")
+        print(f"  runs: {len(results)}")
+        print(f"  cost: ${total:.4f}")
+        return 0
     except BaseException as exc:
         fail_class = _classify_failure(exc)
         session.set_status("failed", fail_class=fail_class)
         log.error("pipeline failed (%s): %s", fail_class, exc)
         raise
-
-    session.set_status("completed", stage="done")
-    total = sum(r.cost for r in results)
-    log.info("pipeline complete · %d run(s) · $%.4f", len(results), total)
-    print(f"pipeline complete. session: {session.id}")
-    print(f"  runs: {len(results)}")
-    total_cost = sum(r.cost for r in results)
-    print(f"  cost: ${total_cost:.4f}")
-    return 0
+    finally:
+        splog.removeHandler(trace_handler)
