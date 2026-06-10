@@ -877,8 +877,7 @@ class RunApp(App[int]):
     CSS = (
         """
     #run-left { width: 42%; border-right: solid $primary; }
-    #overview { height: auto; border-bottom: solid $primary; padding: 0 1; }
-    #run-editor-pane { height: 1fr; }
+    #overview { height: 1fr; padding: 0 1; }
     RichLog {
         padding: 0 1;
     }
@@ -893,7 +892,6 @@ class RunApp(App[int]):
         ("q", "quit", "Quit"),
         ("ctrl+c", "quit", "Quit"),
         ("shift+p", "pause", "Pause"),
-        Binding("ctrl+s", "save_prd", "Save PRD", key_display="Ctrl+S"),
     ]
 
     _maximized: reactive[bool] = reactive(False)
@@ -911,8 +909,7 @@ class RunApp(App[int]):
         yield Header(show_clock=True)
         with Horizontal():
             with Vertical(id="run-left"):
-                yield Static(id="overview")
-                yield EditorPane(self.session.read("prd.md"), id="run-editor-pane")
+                yield VerticalScroll(Static(id="overview"))
             yield RichLog(id="log", markup=True, wrap=True, highlight=True)
         yield Footer()
 
@@ -1035,14 +1032,7 @@ class RunApp(App[int]):
         self.rc = 2
         self.exit(2)
 
-    def action_save_prd(self) -> None:
-        """Ctrl+S — persist live PRD edits back to the session (picked up on the
-        next task / resume; tasks already in flight keep their loaded copy)."""
-        content = self.query_one("#run-editor-pane", EditorPane).get_content()
-        self.session.write("prd.md", content)
-        self.write_log("— PRD saved —", logging.WARNING)
-
-    def _work(self) -> None:
+def _work(self) -> None:
         self._run_pipeline_worker()
 
     def write_log(self, msg: str, level: int = logging.INFO) -> None:
@@ -2187,6 +2177,7 @@ class PrdSessionApp(App[int | None]):
         )
         self._say(f"[green]▶ running with strategy '{self.strategy}'…[/]")
         self.phase = "run"
+        self._save_state()
         self.exit(0)
 
 
