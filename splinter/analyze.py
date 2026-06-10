@@ -144,19 +144,124 @@ def _knowledge_notes(session: Session) -> list[tuple[str, str]]:
 
 
 _OVERVIEW_EMOJI = {
-    "RUNNING": "🟡", "COMPLETED": "🟢", "DONE": "🟢",
-    "FAILED": "🔴", "INTERRUPTED": "🟠", "UNKNOWN": "⚪",
+    "RUNNING": "🟡",
+    "COMPLETED": "🟢",
+    "DONE": "🟢",
+    "FAILED": "🔴",
+    "INTERRUPTED": "🟠",
+    "UNKNOWN": "⚪",
 }
 
 _VERDICT_COLOR = {
-    "PASS": "green", "RETRY": "yellow", "ESCALATE": "yellow",
-    "JUMP_PREMIUM": "magenta", "ASK_USER": "cyan", "FAIL": "red",
+    "PASS": "green",
+    "RETRY": "yellow",
+    "ESCALATE": "yellow",
+    "JUMP_PREMIUM": "magenta",
+    "ASK_USER": "cyan",
+    "FAIL": "red",
 }
 
 
 def _verdict_tag(verdict: str) -> str:
     color = _VERDICT_COLOR.get(verdict, "white")
     return f"[{color}]{verdict}[/]"
+
+
+# Compact glyph + color per verdict, for the trajectory strip.
+_VERDICT_GLYPH = {
+    "PASS": ("✓", "green"),
+    "RETRY": ("↻", "yellow"),
+    "ESCALATE": ("⤴", "yellow"),
+    "JUMP_PREMIUM": ("⤊", "magenta"),
+    "ASK_USER": ("?", "cyan"),
+    "FAIL": ("✗", "red"),
+}
+
+
+def _verdict_glyph(verdict: str) -> tuple[str, str]:
+    return _VERDICT_GLYPH.get(verdict, ("·", "white"))
+
+
+def _hnum(n: int) -> str:
+    """Human-readable token count: 1234 -> 1.2k, 2_500_000 -> 2.5M."""
+    if n >= 1_000_000:
+        return f"{n / 1e6:.1f}M"
+    if n >= 1_000:
+        return f"{n / 1e3:.1f}k"
+    return str(n)
+
+
+def _fmt_tokens(raw: str) -> str:
+    """Render the captured ``{'input': N, 'output': M}`` dict as ``↑ N ↓ M``."""
+    if not raw:
+        return ""
+    import ast
+
+    try:
+        data = ast.literal_eval(raw)
+    except (ValueError, SyntaxError):
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    inp = int(data.get("input", 0) or 0)
+    out = int(data.get("output", 0) or 0)
+    return f"[dim]↑[/] {_hnum(inp)} [dim]↓[/] {_hnum(out)}"
+
+
+def _fmt_elapsed(raw: str) -> str:
+    """``134.2s`` -> ``2m14s``; ``45s`` -> ``45s``; ``9000s`` -> ``2h30m``."""
+    try:
+        secs = float(str(raw).rstrip("s"))
+    except (ValueError, TypeError):
+        return str(raw)
+    if secs < 60:
+        return f"{secs:.0f}s"
+    minutes, sec = divmod(int(secs), 60)
+    if minutes < 60:
+        return f"{minutes}m{sec:02d}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h{minutes:02d}m"
+
+
+def _trajectory_lines(session: Session, iters: list[tuple[int, str, str]]) -> list[str]:
+    """The TRAJECTORY block: PRD phase chain, a verdict tally, and a per-tier
+    strip of colored verdict glyphs (wrapped so it never overflows the pane)."""
+    phases = _prd_phases(session.read("prd_phases.md"))
+    if not (phases or iters):
+        return []
+
+    lines = ["", "[bold]TRAJECTORY[/]"]
+    if phases:
+        lines.append("  " + " [dim]→[/] ".join(f"[dim]{phase}[/]" for phase, _ in phases))
+    if not iters:
+        return lines
+
+    # Tally — doubles as a legend (glyph · count · name).
+    tally: dict[str, int] = {}
+    for _, _, verdict in iters:
+        tally[verdict] = tally.get(verdict, 0) + 1
+    order = list(_VERDICT_GLYPH)
+    ranked = [v for v in order if v in tally] + [v for v in tally if v not in order]
+    parts = []
+    for verdict in ranked:
+        glyph, color = _verdict_glyph(verdict)
+        parts.append(f"[{color}]{glyph}[/] {tally[verdict]} [dim]{verdict.lower()}[/]")
+    lines.append(f"  [dim]{len(iters)} iters[/]   " + "   ".join(parts))
+
+    # Per-tier strip, grouped in first-seen order, wrapped at a fixed width.
+    tiers: dict[str, list[str]] = {}
+    for _, tier, verdict in iters:
+        tiers.setdefault(tier, []).append(verdict)
+    wrap = 24
+    for tier, verdicts in tiers.items():
+        for i in range(0, len(verdicts), wrap):
+            chunk = verdicts[i : i + wrap]
+            glyphs = "".join(
+                f"[{_verdict_glyph(v)[1]}]{_verdict_glyph(v)[0]}[/]" for v in chunk
+            )
+            label = tier if i == 0 else ""
+            lines.append(f"  [dim]{label:<3}[/] {glyphs}")
+    return lines
 
 
 def format_run_completion(session: Session) -> str:
@@ -188,42 +293,65 @@ def render_overview(session: Session, state: str) -> str:
     trace = session.read("trace.md")
 
     state_color = {
-        "RUNNING": "yellow", "COMPLETED": "green", "DONE": "green",
-        "FAILED": "red", "INTERRUPTED": "dark_orange", "AWAITING_USER": "magenta",
+        "RUNNING": "yellow",
+        "COMPLETED": "green",
+        "DONE": "green",
+        "FAILED": "red",
+        "INTERRUPTED": "dark_orange",
+        "AWAITING_USER": "magenta",
     }.get(state, "white")
     emoji = _OVERVIEW_EMOJI.get(state, "⚪")
     completed = state in ("COMPLETED", "DONE")
 
     lines = [
         f"[bold]splinter[/] · [cyan]{session.id}[/]",
-        f"{emoji} [bold {state_color}]{state}[/]",
+        f"{emoji} [bold {state_color}]{state}[/]  [dim]·[/]  "
+        f"[b]{status.get('strategy', '?')}[/]  [dim]·[/]  "
+        f"[b]{status.get('tasks', '?')}[/] [dim]tasks[/]",
     ]
     if completed:
         lines.append(f"[bold green]✅ All tasks complete[/] — {format_run_completion(session)}")
     lines.append("")
-    lines.extend([
-        f"[dim]strategy[/] [b]{status.get('strategy', '?')}[/]  "
-        f"[dim]·[/]  [b]{status.get('tasks', '?')}[/] [dim]tasks[/]",
-    ])
 
     metrics = _trace_metrics(trace)
     if metrics:
-        line = (f"[green]💰 ${metrics.get('cost', '0')}[/]  [dim]·[/]  "
-                f"{metrics.get('runs', '0')} [dim]runs[/]")
-        if "tokens" in metrics:
-            line += f"  [dim]·[/]  [dim]tokens[/] {metrics['tokens']}"
-        lines.append(line)
+        bits = [
+            f"[green]💰 ${metrics.get('cost', '0')}[/]",
+            f"[dim]⟳[/] {metrics.get('runs', '0')} [dim]runs[/]",
+        ]
+        tokens = _fmt_tokens(metrics.get("tokens", ""))
+        if tokens:
+            bits.append(tokens)
+        if metrics.get("elapsed"):
+            bits.append(f"[dim]⏱[/] {_fmt_elapsed(metrics['elapsed'])}")
+        lines.append("   [dim]·[/]  ".join(bits))
 
     if status.get("source"):
         lines.append(f"[dim]📄 {os.path.basename(str(status['source']))}[/]")
 
     iters = _iterations(loop)
     max_iters = status.get("max_iterations", "?")
+
+    # Multi-task progress bar (direct/adaptive strategies report task_index live).
+    try:
+        task_total = int(status.get("task_total") or status.get("tasks") or 0)
+        task_index = int(status.get("task_index"))
+    except (TypeError, ValueError):
+        task_total = task_index = 0
+    if task_total > 1 and status.get("task_index") is not None:
+        running_tasks = state == "RUNNING"
+        done = task_index + 1 if running_tasks and task_index < task_total else task_index
+        filled = max(0, min(10, round(10 * done / task_total)))
+        bar = "█" * filled + "░" * (10 - filled)
+        lines.append("")
+        lines.append(f"[dim]task[/] [cyan]{bar}[/] {done}/{task_total}")
     current_stage = status.get("stage", "")
     running = state == "RUNNING"
     passed = any(v == "PASS" for _, _, v in iters)
 
-    anchors = len([ln for ln in localization.splitlines() if ln.strip().startswith("- ")])
+    from splinter.agents.localizer import _count_anchors
+
+    anchors = _count_anchors(localization)
     plan_steps = len(re.findall(r"^\s*\d+\.", plan, re.MULTILINE))
     all_plans = _plan_files(session)
 
@@ -242,8 +370,14 @@ def render_overview(session: Session, state: str) -> str:
 
     lines.append("")
     lines.append("[bold]STEPS[/]")
-    lines.append(step(bool(localization), current_stage == "localize", "localize",
-                      f"{anchors} anchors" if localization else ""))
+    lines.append(
+        step(
+            bool(localization),
+            current_stage == "localize",
+            "localize",
+            f"{anchors} anchors" if localization else "",
+        )
+    )
     plan_detail = ""
     if plan:
         if len(all_plans) > 1:
@@ -253,30 +387,28 @@ def render_overview(session: Session, state: str) -> str:
     lines.append(step(bool(plan), current_stage == "plan", "plan", plan_detail))
     if iters:
         n, tier, _ = iters[-1]
-        lines.append(step(
-            bool(iters),
-            running and current_stage == "run" and not passed and not completed,
-            "run",
-            f"iter {n}/{max_iters} · {tier}" if not completed else "done",
-        ))
+        lines.append(
+            step(
+                bool(iters),
+                running and current_stage == "run" and not passed and not completed,
+                "run",
+                f"iter {n}/{max_iters} · {tier}" if not completed else "done",
+            )
+        )
         eval_detail = f"last: {last_verdict}" if last_verdict else ""
-        lines.append(step(
-            passed or completed,
-            running and has_eval and not passed and not completed,
-            "eval",
-            eval_detail if not completed else "PASS",
-        ))
+        lines.append(
+            step(
+                passed or completed,
+                running and has_eval and not passed and not completed,
+                "eval",
+                eval_detail if not completed else "PASS",
+            )
+        )
     else:
         lines.append(step(False, current_stage == "run", "run"))
         lines.append(step(False, False, "eval"))
 
-    phases = _prd_phases(session.read("prd_phases.md"))
-    if phases or iters:
-        chain = [f"[dim]{phase}[/]" for phase, _ in phases]
-        chain += [f"{tier}·{_verdict_tag(verdict)}" for _, tier, verdict in iters]
-        lines.append("")
-        lines.append("[bold]TRAJECTORY[/]")
-        lines.append("  " + " [dim]→[/] ".join(chain))
+    lines.extend(_trajectory_lines(session, iters))
 
     return "\n".join(lines)
 
@@ -345,21 +477,21 @@ def render_expand(session: Session, what: str) -> str:
                     for filename, label in plans:
                         content = session.read(filename)
                         out.append(
-                            f"===== {label} =====\n"
-                            f"{content.strip() if content else '(empty)'}"
+                            f"===== {label} =====\n{content.strip() if content else '(empty)'}"
                         )
                     continue
             content = session.read(_EXPAND_FILES[name])
             out.append(f"===== {name} =====\n{content.strip() if content else '(empty)'}")
         notes = _knowledge_notes(session)
-        extra = [n for n in notes if n[1] not in ("plan", "localization")
-                 and not n[1].startswith("plan-")]
+        extra = [
+            n
+            for n in notes
+            if n[1] not in ("plan", "localization") and not n[1].startswith("plan-")
+        ]
         if extra:
             for filename, label in extra:
                 content = session.read(filename)
-                out.append(
-                    f"===== {label} =====\n{content.strip() if content else '(empty)'}"
-                )
+                out.append(f"===== {label} =====\n{content.strip() if content else '(empty)'}")
         return "\n\n".join(out)
 
     targets = [what]
