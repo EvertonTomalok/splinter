@@ -11,7 +11,7 @@ from pathlib import Path
 import yaml
 
 from splinter.agents import planner
-from splinter.agents.localizer import CodeAnchor, localize
+from splinter.agents.localizer import CodeAnchor, filter_task_context, localize
 from splinter.agents.runner import Task
 from splinter.memory.session import Session, new_session_id
 from splinter.models.roster import load_ladder
@@ -201,10 +201,13 @@ def run_pipeline(
         localization = ""
         anchors: list[CodeAnchor] = []
         if prd_text:
-            existing_loc = session.read("knowledge/localization.md")
-            if resume and existing_loc.strip():
+            # localize() returns cached anchors on resume (no-op if file exists + parseable).
+            if resume and session.has("knowledge/localization.md"):
                 log.info("resume: reusing existing localization")
-                localization = existing_loc
+                localization = session.read("knowledge/localization.md")
+                from splinter.agents.localizer import _parse_anchors
+                anchors = _parse_anchors(localization)
+                log.info("resume: re-parsed %d anchor(s)", len(anchors))
             else:
                 log.info("localizing against the codebase…")
                 anchors = localize(prd_text, session, ladder)
@@ -212,6 +215,19 @@ def run_pipeline(
 
         if anchors and tasks:
             planner.assign_target_files(tasks, anchors)
+            session.set_status("running", stage="filter")
+            log.info("filtering code context per task…")
+            for i, task in enumerate(tasks):
+                # Cache filter output so resume doesn't re-call the LLM.
+                cache_key = f"knowledge/filter-{i + 1}.md"
+                cached = session.read(cache_key)
+                if resume and cached.strip():
+                    task.filtered_context = cached
+                    log.info("resume: reusing filtered context for task %d", i + 1)
+                else:
+                    task.filtered_context = filter_task_context(task, ladder)
+                    if task.filtered_context:
+                        session.write(cache_key, task.filtered_context)
 
         _resolve_gate(session, ladder)
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import textwrap
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -223,3 +224,105 @@ class TestBudgetShortCircuit:
                     )
 
         assert call_count == 1  # stopped after first task
+
+
+# ---------------------------------------------------------------------------
+# resume — budget cost restored from trace.md
+# ---------------------------------------------------------------------------
+
+class TestResumeBudgetContinuity:
+    def test_resume_restores_cost(self, tmp_path: Path) -> None:
+        """Trace.from_markdown must restore total_cost so budget short-circuit
+        counts prior-run spend on resume, not just the current run's spend."""
+        from splinter.obs.trace import RunEntry, Trace
+
+        prior = Trace()
+        prior.entries.append(
+            RunEntry(model="m", tier=0, iteration=1, tokens={}, cost=3.50, latency_s=1.0, task=0)
+        )
+        md = prior.summary()
+
+        restored = Trace.from_markdown(md)
+        assert abs(restored.total_cost - 3.50) < 1e-6
+
+    def test_cascade_resume_continues_from_prior_cost(self, tmp_path: Path) -> None:
+        """On resume, cascade reloads trace.md; budget check uses accumulated cost."""
+        from splinter.obs.trace import RunEntry, Trace
+
+        (tmp_path / "knowledge").mkdir()
+        session = Session.__new__(Session)
+        session.id = "test"
+        session.dir = tmp_path
+
+        # Seed trace.md with $4 already spent.
+        prior = Trace()
+        prior.entries.append(
+            RunEntry(model="m", tier=0, iteration=1, tokens={}, cost=4.0, latency_s=1.0, task=0)
+        )
+        (tmp_path / "trace.md").write_text(prior.summary())
+
+        t1 = _task("US-001")
+        t2 = _task("US-002")
+        strategy = CascadeStrategy()
+        fake_ladder = MagicMock()
+        ran: list[str] = []
+
+        def fake_loop(task: Task, *args: Any, **kwargs: Any) -> RunResult | None:
+            ran.append(task.id)
+            return _fake_result()
+
+        with patch.object(strategy, "_run_task_loop", side_effect=fake_loop):
+            with patch.object(strategy, "_start_tier", return_value=0):
+                strategy.execute(
+                    [t1, t2], session, fake_ladder,
+                    budget=5.0, resume=True, cowabunga=True,
+                )
+
+        # $4 from prior + $0 fake run = $4 < $5 budget; first task runs.
+        # After first task budget check: $4 still < $5, so second task runs too.
+        # (fake_result cost=0.0, so total stays at $4 throughout)
+        assert ran == ["US-001", "US-002"]
+
+
+# ---------------------------------------------------------------------------
+# planner → cascade integration: PRD deps flow through pipeline to topo_sort
+# ---------------------------------------------------------------------------
+
+class TestPlannerCascadeIntegration:
+    def test_prd_deps_reach_topo_sort(self, tmp_path: Path) -> None:
+        """parse_stories + assign_target_files → cascade executes in dep order."""
+        from splinter.agents.planner import parse_stories
+        from splinter.strategies.cascade import CascadeStrategy
+
+        prd = textwrap.dedent("""\
+            ### US-001: Base
+            **Description:** foundation layer
+            - [ ] base done
+
+            ### US-002: Middle
+            **Description:** middle layer
+            Depends on US-001
+            - [ ] middle done
+
+            ### US-003: Top
+            **Description:** top layer
+            Depends on US-002
+            - [ ] top done
+        """)
+
+        tasks = parse_stories(prd)
+        assert len(tasks) == 3
+
+        ordered = CascadeStrategy._topo_sort(tasks)
+        ids = [t.id for t in ordered]
+        assert ids.index("US-001") < ids.index("US-002")
+        assert ids.index("US-002") < ids.index("US-003")
+
+    def test_prd_frontmatter_strategy_cascade(self) -> None:
+        """PRD frontmatter strategy: cascade is returned by plan()."""
+        from splinter.agents.planner import _parse_frontmatter
+        import yaml
+
+        prd = "---\nstrategy: cascade\n---\n### US-001: task\n**Description:** do it\n- [ ] done\n"
+        fm, _body = _parse_frontmatter(prd)
+        assert fm.get("strategy") == "cascade"

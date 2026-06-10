@@ -868,7 +868,7 @@ class ConfigureApp(App[bool]):
         margin-bottom: 1;
     }
     .step.run { border-left: thick $success; }
-    .step-info { width: 44; height: auto; }
+    .step-info { width: 44; height: 100%; align: left middle; }
     .step-name { text-style: bold; height: 1; }
     .step-desc { color: $text-muted; height: auto; }
     .model-sel { width: 1fr; height: 3; }
@@ -914,7 +914,6 @@ class ConfigureApp(App[bool]):
         effort_opts = [(e, e) for e in EFFORT_CHOICES]
         info = Vertical(
             Label(name, classes="step-name"),
-            Label(desc, classes="step-desc"),
             classes="step-info",
         )
         model_sel = self._select(

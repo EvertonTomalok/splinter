@@ -64,22 +64,41 @@ def _extract_search_terms(prd_text: str) -> list[str]:
 
 def _parse_anchors(text: str) -> list[CodeAnchor]:
     anchors: list[CodeAnchor] = []
-    try:
-        data = json.loads(text)
-        if isinstance(data, list):
-            for item in data:
-                anchors.append(
-                    CodeAnchor(
-                        file=item.get("file", ""),
-                        symbol=item.get("symbol", ""),
-                        reason=item.get("reason", ""),
-                        confidence=float(item.get("confidence", 0.5)),
-                    )
-                )
-            return anchors
-    except (json.JSONDecodeError, TypeError):
-        pass
 
+    def _items_from_json(raw: str) -> list[CodeAnchor]:
+        try:
+            data = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return []
+        if not isinstance(data, list):
+            return []
+        result = []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            result.append(
+                CodeAnchor(
+                    file=item.get("file", ""),
+                    symbol=item.get("symbol", ""),
+                    reason=item.get("reason", ""),
+                    confidence=float(item.get("confidence", 0.5)),
+                )
+            )
+        return result
+
+    # Try bare JSON first (ideal output).
+    anchors = _items_from_json(text)
+    if anchors:
+        return anchors
+
+    # LLMs often wrap JSON in prose — extract the first [...] block and retry.
+    m = re.search(r"\[.*?\]", text, re.DOTALL)
+    if m:
+        anchors = _items_from_json(m.group(0))
+        if anchors:
+            return anchors
+
+    # Fall back to the structured key:value block format written by localize().
     pattern = re.compile(
         r"file:\s*(.+?)\s*\n\s*symbol:\s*(.+?)\s*\n\s*reason:\s*(.+?)\s*\n\s*confidence:\s*([\d.]+)",
         re.MULTILINE,
@@ -196,14 +215,14 @@ def filter_task_context(
     task: object,
     ladder: Ladder,
 ) -> str:
-    """Per-task filter that runs at plan time, not pipeline time.
+    """Per-task filter run by the harness after localize, before planning.
 
     Receives:
       - task.target_files  — paths the locator found for this task
       - task.description   — this task only (not the full PRD)
 
     Reads those files, passes actual source to the precision model, and returns
-    a focused context string ready for the planner.
+    a focused context string stored on task.filtered_context.
     """
     target_files = getattr(task, "target_files", None)
     description = getattr(task, "description", "")
@@ -243,8 +262,8 @@ def localize(
 ) -> list[CodeAnchor]:
     """Recall-only localization: grep → cheap LLM → candidate file list.
 
-    Returns CodeAnchors (file paths). The per-task filter that reads and
-    expands those files runs later, at plan time, via ``filter_task_context``.
+    Returns CodeAnchors (file paths). The per-task filter (``filter_task_context``)
+    runs in the pipeline immediately after this, before planning.
     """
     if not force and session.has("knowledge/localization.md"):
         existing = session.read("knowledge/localization.md")
@@ -276,6 +295,12 @@ def localize(
     # cheap model didn't emit parseable JSON.
     anchors = _parse_anchors(recall_output) or _anchors_from_recall(recall_output)
     log.info("localize: %d candidate anchor(s) from recall", len(anchors))
+
+    if not anchors:
+        # Recall returned nothing — leave any existing localization.md intact rather
+        # than overwriting it with an empty header.
+        log.warning("localize: no anchors found — skipping write to preserve existing")
+        return anchors
 
     # Write in the file:/symbol:/reason:/confidence: block format _parse_anchors
     # reads, so a resumed run reparses anchors WITH their symbol/reason intact.

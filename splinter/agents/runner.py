@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 from splinter.enums import Effort, Variant
@@ -25,6 +24,7 @@ class Task:
 
     Core fields (planner): id, description, target_files, deps, effort, eval_skill.
     Runner extras: acceptance, reasoning_effort, suggested_tier.
+    filtered_context: pre-digested code context from the harness (localize → filter).
     """
 
     description: str
@@ -36,6 +36,7 @@ class Task:
     target_files: list[str] | None = None
     id: str = ""
     deps: list[str] | None = None
+    filtered_context: str = ""
 
 
 @dataclass(frozen=True)
@@ -91,44 +92,9 @@ def resolve_model(tier_level: int, ladder: Ladder) -> tuple[str, str]:
     return tier.models[0], tier.provider
 
 
-_MAX_FILE_CHARS = 6_000   # per file
-_MAX_CTX_CHARS = 36_000  # total code context
-
-
-def read_task_files(task: Task) -> str:
-    """Expand task.target_files into file contents for the code-context section.
-
-    Falls back to empty string when target_files is unset (single-task yaml run
-    without prior localization); callers should then fall back to the localization
-    summary string.
-    """
-    if not task.target_files:
-        return ""
-    parts: list[str] = []
-    total = 0
-    for i, path_str in enumerate(task.target_files):
-        if total >= _MAX_CTX_CHARS:
-            remaining = len(task.target_files) - i
-            if remaining:
-                parts.append(
-                    f"*({remaining} more file(s) omitted — context cap reached)*"
-                )
-            break
-        try:
-            raw = Path(path_str).read_text()
-        except OSError:
-            continue
-        snippet = raw[:_MAX_FILE_CHARS]
-        note = " ← truncated" if len(raw) > _MAX_FILE_CHARS else ""
-        parts.append(f"### {path_str}{note}\n```\n{snippet}\n```")
-        total += len(snippet)
-    return "\n\n".join(parts)
-
-
 def _build_prompt(task: Task, plan: str, localization: str, corrections: str) -> str:
-    # Use actual file contents when available; fall back to localization anchor
-    # summary for single-task yaml runs that skipped the localization step.
-    code_ctx = read_task_files(task) or localization
+    # code_ctx is pre-filtered by the harness (localize → filter_task_context).
+    code_ctx = localization
     if corrections:
         return render(
             "run_fix",

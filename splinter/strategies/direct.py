@@ -178,7 +178,8 @@ class DirectStrategy(Strategy):
                 session.write(task_plan_file, f"# Plan\n\n{plan}\n")
         else:
             log.info("planning with %s (once)", ladder.planner_model)
-            plan = _make_plan(task, ladder, localization)
+            code_ctx = task.filtered_context or localization
+            plan = _make_plan(task, ladder, code_ctx)
             session.write("knowledge/plan.md", f"# Plan\n\n{plan}\n")
             session.write(task_plan_file, f"# Plan\n\n{plan}\n")
 
@@ -205,7 +206,7 @@ class DirectStrategy(Strategy):
                 session=session,
                 trace=trace,
                 knowledge=knowledge,
-                localization=localization,
+                localization=task.filtered_context or localization,
                 effort_override=effort,
                 oc_session=oc_session,
                 eval_session=eval_session,
@@ -327,15 +328,7 @@ def _correction_context(knowledge: KnowledgeStore, latest: str) -> str:
     return "\n\n".join(parts)
 
 
-def _make_plan(task: Task, ladder: Ladder, localization: str) -> str:
-    from splinter.agents.localizer import filter_task_context
-    # filter_task_context: reads task.target_files + task description → focused code context.
-    # Falls back to raw file read, then to the localization file list.
-    code_ctx = (
-        filter_task_context(task, ladder)
-        or _read_task_files_raw(task)
-        or localization
-    )
+def _make_plan(task: Task, ladder: Ladder, code_ctx: str) -> str:
     prompt = render(
         "plan",
         task_section=section("Task", task.description),
@@ -346,9 +339,3 @@ def _make_plan(task: Task, ladder: Ladder, localization: str) -> str:
         prompt, ladder.planner_model, variant=ladder.planner_effort,
         timeout=ladder.planner_timeout,
     )
-
-
-def _read_task_files_raw(task: Task) -> str:
-    """Plain file read fallback (no LLM) when target_files is set but filter fails."""
-    from splinter.agents.runner import read_task_files
-    return read_task_files(task)
