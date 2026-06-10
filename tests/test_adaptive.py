@@ -19,9 +19,8 @@ from splinter.strategies.registry import get_strategy
 # _route_tier: cheapest capable tier selection
 # ---------------------------------------------------------------------------
 
-def test_route_tier_trivial_picks_floor(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+
+def test_route_tier_trivial_picks_floor(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
     ladder = load_ladder()
     strategy = AdaptiveStrategy()
@@ -63,18 +62,15 @@ def test_route_tier_returns_cheapest_among_capable(
 # estimate_tier_cost: sanity checks
 # ---------------------------------------------------------------------------
 
+
 def test_estimate_tier_cost_cheapest_is_flash() -> None:
-    flash = Tier(
-        name="t", level=0, models=["opencode-go/deepseek-v4-flash"], provider="opencode"
-    )
+    flash = Tier(name="t", level=0, models=["opencode-go/deepseek-v4-flash"], provider="opencode")
     sonnet = Tier(name="t2", level=5, models=["sonnet"], provider="claude")
     assert estimate_tier_cost(flash, "normal") < estimate_tier_cost(sonnet, "normal")
 
 
 def test_estimate_tier_cost_scales_with_effort() -> None:
-    tier = Tier(
-        name="t", level=0, models=["opencode-go/deepseek-v4-pro"], provider="opencode"
-    )
+    tier = Tier(name="t", level=0, models=["opencode-go/deepseek-v4-pro"], provider="opencode")
     trivial = estimate_tier_cost(tier, "trivial")
     critical = estimate_tier_cost(tier, "critical")
     assert critical > trivial
@@ -84,9 +80,8 @@ def test_estimate_tier_cost_scales_with_effort() -> None:
 # configured_budget: reads from config
 # ---------------------------------------------------------------------------
 
-def test_configured_budget_default_is_none(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+
+def test_configured_budget_default_is_none(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
     assert configured_budget() is None
 
@@ -137,9 +132,8 @@ def test_adaptive_uses_config_budget_when_no_cli_budget(
 # soft_budget: caps escalation but run continues
 # ---------------------------------------------------------------------------
 
-def test_soft_budget_caps_escalation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+
+def test_soft_budget_caps_escalation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Over soft budget → tier must not increase after the cap is triggered."""
     monkeypatch.chdir(tmp_path)
     from splinter.memory.knowledge import KnowledgeStore
@@ -175,6 +169,7 @@ def test_soft_budget_caps_escalation(
         ctx.eval_session = None  # type: ignore[attr-defined]
         # pump trace cost above the budget
         from splinter.obs.trace import log_run
+
         log_run(trace, fake_run, iteration=1, task=0)
         for entry in trace.entries:
             object.__setattr__(entry, "cost", 5.0)
@@ -219,6 +214,7 @@ def test_soft_budget_caps_escalation(
 # ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
+
 
 def test_adaptive_registered() -> None:
     strategy = get_strategy("adaptive")

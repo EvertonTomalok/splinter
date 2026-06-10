@@ -74,7 +74,10 @@ class AdaptiveStrategy(CascadeStrategy):
             routed_tier = self._route_tier(task_effort, ladder)
             log.info(
                 "adaptive: task %d/%d effort=%s → T%d (%s)",
-                i + 1, len(ordered), task_effort, routed_tier,
+                i + 1,
+                len(ordered),
+                task_effort,
+                routed_tier,
                 ladder.tier_by_level(routed_tier).name,
             )
 
@@ -87,8 +90,7 @@ class AdaptiveStrategy(CascadeStrategy):
             )
             session.append(
                 "loop.md",
-                f"# Task {i + 1}/{len(ordered)}: "
-                f"{task.description.splitlines()[0][:80]}\n\n",
+                f"# Task {i + 1}/{len(ordered)}: {task.description.splitlines()[0][:80]}\n\n",
             )
 
             result = self._run_task_loop(

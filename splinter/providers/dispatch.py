@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from splinter.models.roster import provider_for
 from splinter.providers import claude_cli, opencode
+from splinter.providers.base import ProviderResponse
 
 
 def run_text(
@@ -46,13 +47,75 @@ def run_text_session(
     the same runner — pass the returned id back in to continue it."""
     if provider_for(model) == "opencode":
         oc = opencode.run(
-            prompt, model, variant=variant, fmt=output_format,
-            session=session, timeout=timeout, agent=agent,
+            prompt,
+            model,
+            variant=variant,
+            fmt=output_format,
+            session=session,
+            timeout=timeout,
+            agent=agent,
         )
         sid = session or oc.raw.get("session_id") or oc.raw.get("session")
         return oc.text, sid
     cl = claude_cli.run(
-        prompt, model, effort=variant, output_format=output_format,
-        resume=session, timeout=timeout,
+        prompt,
+        model,
+        effort=variant,
+        output_format=output_format,
+        resume=session,
+        timeout=timeout,
     )
     return cl.text, (cl.raw.get("_session_id") or session)
+
+
+def run_provider_session(
+    prompt: str,
+    model: str,
+    *,
+    variant: str | None = None,
+    output_format: str = "json",
+    session: str | None = None,
+    timeout: int | None = None,
+    agent: str = "build",
+) -> tuple[ProviderResponse, str | None]:
+    """Like :func:`run_text_session` but returns the full :class:`ProviderResponse`
+    (with cost and token counts) alongside the session id."""
+    if provider_for(model) == "opencode":
+        oc = opencode.run(
+            prompt,
+            model,
+            variant=variant,
+            fmt=output_format,
+            session=session,
+            timeout=timeout,
+            agent=agent,
+        )
+        sid = session or oc.raw.get("session_id") or oc.raw.get("session")
+        resp = ProviderResponse(
+            text=oc.text,
+            tokens=oc.tokens,
+            cost=oc.cost,
+            raw=oc.raw,
+            session_id=sid,
+        )
+        return resp, sid
+    cl = claude_cli.run(
+        prompt,
+        model,
+        effort=variant,
+        output_format=output_format,
+        resume=session,
+        timeout=timeout,
+    )
+    sid = cl.raw.get("_session_id") or session
+    resp = ProviderResponse(
+        text=cl.text,
+        tokens={
+            "input": cl.usage.get("input_tokens", 0) or 0,
+            "output": cl.usage.get("output_tokens", 0) or 0,
+        },
+        cost=claude_cli._calc_cost(model, cl.usage),
+        raw=cl.raw,
+        session_id=sid or None,
+    )
+    return resp, sid or None

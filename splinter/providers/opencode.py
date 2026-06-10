@@ -35,8 +35,13 @@ def _stream_event(line: str) -> None:
         state: dict[str, Any] = raw_state if isinstance(raw_state, dict) else {}
         raw_inp = state.get("input")
         inp: dict[str, Any] = raw_inp if isinstance(raw_inp, dict) else {}
-        detail = (inp.get("description") or inp.get("command")
-                  or inp.get("filePath") or inp.get("pattern") or "")
+        detail = (
+            inp.get("description")
+            or inp.get("command")
+            or inp.get("filePath")
+            or inp.get("pattern")
+            or ""
+        )
         _stream_log.info("  🔧 %s %s", tool, str(detail)[:90].replace("\n", " "))
     elif etype == "text" and isinstance(part.get("text"), str):
         txt = str(part["text"]).strip().replace("\n", " ")
@@ -155,8 +160,11 @@ def _parse_output(stdout: str, fmt: str) -> dict[str, Any]:
         # Extract message text. opencode streams text in a nested `part`:
         #   {"type":"text", "part":{"type":"text","text":"…"}}
         part = obj.get("part")
-        if isinstance(part, dict) and obj.get("type") in ("text", "message") \
-                and isinstance(part.get("text"), str):
+        if (
+            isinstance(part, dict)
+            and obj.get("type") in ("text", "message")
+            and isinstance(part.get("text"), str)
+        ):
             text_parts.append(part["text"])
         elif "text" in obj:
             text_parts.append(str(obj["text"]))
@@ -279,6 +287,7 @@ class OpencodeProvider(ModelProvider):
         agent: str = "build",
     ) -> ProviderResponse:
         from splinter.providers.base import detect_provider_gap
+
         try:
             result = run(
                 prompt, model, variant=variant, session=session, timeout=timeout, agent=agent

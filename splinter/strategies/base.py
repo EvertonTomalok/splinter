@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from splinter.agents.runner import RunResult, Task
 from splinter.enums import Decision
@@ -21,6 +21,8 @@ class EvalVerdict:
     #: so the eval LLM keeps context on this runner's attempts; reset to a fresh
     #: session only when the eval decides to change the runner (escalate).
     eval_session: str | None = None
+    cost: float = 0.0
+    tokens: dict = field(default_factory=dict)
 
     @property
     def passed(self) -> bool:
@@ -61,5 +63,4 @@ class Strategy(ABC):
         claude_runner_fallback: bool = False,
         user_guidance: str | None = None,
         jump_premium: bool = False,
-    ) -> list[RunResult]:
-        ...
+    ) -> list[RunResult]: ...

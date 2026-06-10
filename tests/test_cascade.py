@@ -19,19 +19,19 @@ from splinter.strategies.cascade import CascadeStrategy
 # helpers
 # ---------------------------------------------------------------------------
 
+
 def _task(id: str, deps: list[str] | None = None) -> Task:
     return Task(description=f"{id}: task", acceptance="done", id=id, deps=deps)
 
 
 def _fake_result(id: str = "m") -> RunResult:
-    return RunResult(
-        text="ok", model=id, tier=0, tokens={}, cost=0.0, raw={}
-    )
+    return RunResult(text="ok", model=id, tier=0, tokens={}, cost=0.0, raw={})
 
 
 # ---------------------------------------------------------------------------
 # _topo_sort
 # ---------------------------------------------------------------------------
+
 
 class TestTopoSort:
     def test_linear_deps_reordered(self) -> None:
@@ -85,6 +85,7 @@ class TestTopoSort:
 # _load_checkpoint / _save_checkpoint
 # ---------------------------------------------------------------------------
 
+
 class TestCheckpoint:
     def test_round_trip(self, tmp_path: Path) -> None:
         session = Session.__new__(Session)
@@ -122,6 +123,7 @@ class TestCheckpoint:
 # execute — resume: pre-checkpointed task skipped
 # ---------------------------------------------------------------------------
 
+
 class TestExecuteResume:
     def _make_session(self, tmp_path: Path) -> Session:
         (tmp_path / "knowledge").mkdir()
@@ -150,8 +152,11 @@ class TestExecuteResume:
         with patch.object(strategy, "_run_task_loop", side_effect=fake_loop):
             with patch.object(strategy, "_start_tier", return_value=0):
                 strategy.execute(
-                    [t1, t2], session, fake_ladder,
-                    resume=True, cowabunga=True,
+                    [t1, t2],
+                    session,
+                    fake_ladder,
+                    resume=True,
+                    cowabunga=True,
                 )
 
         assert ran == ["US-002"]
@@ -191,6 +196,7 @@ class TestExecuteResume:
 # execute — budget short-circuit
 # ---------------------------------------------------------------------------
 
+
 class TestBudgetShortCircuit:
     def test_stops_when_budget_exhausted(self, tmp_path: Path) -> None:
         (tmp_path / "knowledge").mkdir()
@@ -219,8 +225,11 @@ class TestBudgetShortCircuit:
             with patch.object(strategy, "_run_task_loop", side_effect=fake_loop):
                 with patch.object(strategy, "_start_tier", return_value=0):
                     strategy.execute(
-                        [t1, t2], session, fake_ladder,
-                        budget=5.0, cowabunga=True,
+                        [t1, t2],
+                        session,
+                        fake_ladder,
+                        budget=5.0,
+                        cowabunga=True,
                     )
 
         assert call_count == 1  # stopped after first task
@@ -229,6 +238,7 @@ class TestBudgetShortCircuit:
 # ---------------------------------------------------------------------------
 # resume — budget cost restored from trace.md
 # ---------------------------------------------------------------------------
+
 
 class TestResumeBudgetContinuity:
     def test_resume_restores_cost(self, tmp_path: Path) -> None:
@@ -274,8 +284,12 @@ class TestResumeBudgetContinuity:
         with patch.object(strategy, "_run_task_loop", side_effect=fake_loop):
             with patch.object(strategy, "_start_tier", return_value=0):
                 strategy.execute(
-                    [t1, t2], session, fake_ladder,
-                    budget=5.0, resume=True, cowabunga=True,
+                    [t1, t2],
+                    session,
+                    fake_ladder,
+                    budget=5.0,
+                    resume=True,
+                    cowabunga=True,
                 )
 
         # $4 from prior + $0 fake run = $4 < $5 budget; first task runs.
@@ -287,6 +301,7 @@ class TestResumeBudgetContinuity:
 # ---------------------------------------------------------------------------
 # planner → cascade integration: PRD deps flow through pipeline to topo_sort
 # ---------------------------------------------------------------------------
+
 
 class TestPlannerCascadeIntegration:
     def test_prd_deps_reach_topo_sort(self, tmp_path: Path) -> None:

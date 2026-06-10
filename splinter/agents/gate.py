@@ -162,12 +162,13 @@ def detect_gate_checks(ladder: Any, project_dir: str = ".") -> list[dict[str, st
         '{"name": "<short>", "cmd": "<exact shell command>", '
         '"when": "always" | "tests_exist"}.\n'
         "Use the project's real tooling (e.g. npm/pnpm/yarn scripts, make targets, "
-        "cargo, go, gradle, pytest, etc.). Use \"when\":\"tests_exist\" for the test "
+        'cargo, go, gradle, pytest, etc.). Use "when":"tests_exist" for the test '
         "command. If you cannot determine any, output []."
     )
     try:
         raw = run_text(
-            prompt, ladder.localizer_precision_model,
+            prompt,
+            ladder.localizer_precision_model,
             variant=getattr(ladder, "localizer_precision_variant", "high"),
             timeout=getattr(ladder, "localizer_precision_timeout", 600),
         )
@@ -189,9 +190,11 @@ def _parse_detected(raw: str) -> list[dict[str, str]]:
     out: list[dict[str, str]] = []
     for item in data if isinstance(data, list) else []:
         if isinstance(item, dict) and item.get("cmd"):
-            out.append({
-                "name": str(item.get("name") or str(item["cmd"]).split()[0]),
-                "cmd": str(item["cmd"]),
-                "when": str(item.get("when") or "always"),
-            })
+            out.append(
+                {
+                    "name": str(item.get("name") or str(item["cmd"]).split()[0]),
+                    "cmd": str(item["cmd"]),
+                    "when": str(item.get("when") or "always"),
+                }
+            )
     return out

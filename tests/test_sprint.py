@@ -16,6 +16,7 @@ from splinter.strategies.sprint import (
 # Registration
 # ---------------------------------------------------------------------------
 
+
 def test_sprint_registered() -> None:
     assert isinstance(get_strategy("sprint"), SprintStrategy)
 
@@ -34,9 +35,8 @@ def test_sprint_in_available_strategies() -> None:
 # _route_tier: always returns floor (level 0)
 # ---------------------------------------------------------------------------
 
-def test_route_tier_always_floor(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+
+def test_route_tier_always_floor(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
     ladder = load_ladder()
     strategy = SprintStrategy()

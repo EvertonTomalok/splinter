@@ -167,6 +167,43 @@ def revise_final(instructions: str, *, resume: str, prd_text: str | None = None)
     return _ask(prompt, resume=resume)
 
 
+def generate_prd(instructions: str, *, strategy: str | None = None) -> Turn:
+    """Generate a complete PRD directly from instructions (no Q&A).
+
+    Used when user provides full instructions in the TUI without needing
+    clarification. Returns a PRD with frontmatter + US-NNN stories.
+    """
+    skill = _load_prd_skill()
+    strat_hint = (
+        f"\nSet strategy to: {strategy} in the frontmatter.\n"
+        if strategy
+        else "\nPick an appropriate strategy and set it in the frontmatter.\n"
+    )
+    prompt = (
+        f"{skill}\n\n"
+        "You are generating a complete PRD from user instructions.\n"
+        f"## Instructions\n{instructions}\n"
+        f"{strat_hint}\n"
+        "Generate the COMPLETE final PRD in markdown following the skill template:\n"
+        "- YAML frontmatter with feature, strategy, kind, created.\n"
+        "- User stories as '### US-001: Title', each with '**Description:**', an "
+        "'effort:' hint (trivial|normal|hard|critical), and '**Acceptance Criteria:**' "
+        "'- [ ]' checkboxes.\n"
+        "Output ONLY the PRD markdown — no preamble, no trailing commentary."
+    )
+    return _ask(prompt, resume=None)
+
+
+def route_prd(prd_text: str) -> str:
+    """Route PRD text to generate or refine flow.
+
+    Returns 'generate' if prd_text is empty/whitespace, 'refine' otherwise.
+    Used by PrdSessionApp to decide whether to ask clarifying questions
+    or go straight to asking for instructions to generate from.
+    """
+    return "generate" if not prd_text.strip() else "refine"
+
+
 def ensure_frontmatter(prd_text: str, *, description: str, strategy: str | None) -> str:
     """Guarantee parseable YAML frontmatter; the model usually supplies it already."""
     prd_text = prd_text.strip()
@@ -211,6 +248,7 @@ def mark_story_done(prd_text: str, us_id: str) -> str:
     to ``- [x]`` so resume (and the human) can see what is finished. Blocks for
     other stories are left untouched.
     """
+
     def _tick(match: re.Match[str]) -> str:
         block, sid = match.group(1), match.group(2)
         if sid != us_id:

@@ -6,6 +6,7 @@ from splinter.agents.evaluator import Evaluator
 from splinter.agents.runner import Task
 from splinter.enums import Decision
 from splinter.models.roster import Ladder, load_ladder
+from splinter.providers.base import ProviderResponse
 from splinter.strategies.base import EvalVerdict
 
 
@@ -21,9 +22,7 @@ def _evaluator(ladder: Ladder | None = None) -> Evaluator:
 
 
 def test_parse_pass() -> None:
-    v = Evaluator._parse_verdict(
-        "VERDICT: PASS\nREASON: all good\nCORRECTIONS: none"
-    )
+    v = Evaluator._parse_verdict("VERDICT: PASS\nREASON: all good\nCORRECTIONS: none")
     assert v.decision == Decision.PASS
     assert v.passed
     assert v.reason == "all good"
@@ -216,11 +215,16 @@ def test_judge_calls_run_text_with_injected_model() -> None:
     ev = Evaluator(ladder)
     task = Task(description="test task", acceptance="must work")
 
-    with patch("splinter.agents.evaluator.run_text_session", return_value=(
-        "VERDICT: PASS\nREASON: ok\nCORRECTIONS: none", "eval-sess-1"
-    )) as mock_run:
+    with patch(
+        "splinter.agents.evaluator.run_provider_session",
+        return_value=(
+            ProviderResponse(text="VERDICT: PASS\nREASON: ok\nCORRECTIONS: none"),
+            "eval-sess-1",
+        ),
+    ) as mock_run:
         verdict = ev.judge(
-            task, "some output",
+            task,
+            "some output",
             eval_model="opencode-go/test-model",
             eval_effort="low",
         )
@@ -238,9 +242,13 @@ def test_judge_uses_ladder_defaults() -> None:
     ev = Evaluator(ladder)
     task = Task(description="test task", acceptance="must work")
 
-    with patch("splinter.agents.evaluator.run_text_session", return_value=(
-        "VERDICT: RETRY\nREASON: fix\nCORRECTIONS: do better", None
-    )) as mock_run:
+    with patch(
+        "splinter.agents.evaluator.run_provider_session",
+        return_value=(
+            ProviderResponse(text="VERDICT: RETRY\nREASON: fix\nCORRECTIONS: do better"),
+            None,
+        ),
+    ) as mock_run:
         ev.judge(task, "some output")
 
     mock_run.assert_called_once()

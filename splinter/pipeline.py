@@ -23,9 +23,25 @@ log = logging.getLogger("splinter.pipeline")
 
 #: Substrings in an error that mark it transient (retry/continue, don't roll back).
 _TRANSIENT_MARKERS = (
-    "429", "500", "502", "503", "504", "529", "overloaded", "rate limit", "ratelimit",
-    "timeout", "timed out", "temporarily", "try again", "connection", "econnreset",
-    "unavailable", "reset by peer", "network", "socket",
+    "429",
+    "500",
+    "502",
+    "503",
+    "504",
+    "529",
+    "overloaded",
+    "rate limit",
+    "ratelimit",
+    "timeout",
+    "timed out",
+    "temporarily",
+    "try again",
+    "connection",
+    "econnreset",
+    "unavailable",
+    "reset by peer",
+    "network",
+    "socket",
 )
 
 
@@ -67,14 +83,17 @@ def _resolve_gate(session: Session, ladder: object) -> None:
         gate.save_gate_checks(session.dir, detected)
         log.info("gate: detected — %s", ", ".join(c["name"] for c in detected))
     else:
-        log.warning("gate: could not detect checks — using defaults. Set `gate_checks` "
-                    "in .splinter/config.yaml or specify them in the PRD review.")
+        log.warning(
+            "gate: could not detect checks — using defaults. Set `gate_checks` "
+            "in .splinter/config.yaml or specify them in the PRD review."
+        )
 
 
 def _classify_failure(exc: BaseException) -> str:
     """Transient (provider/network blip → resume continues) vs critical (bad command,
     bug → resume rolls the failing stage back and redoes it)."""
     from splinter.providers.base import ProviderGapError
+
     if isinstance(exc, ProviderGapError):
         return "gap"
     if isinstance(exc, (TimeoutError, subprocess.TimeoutExpired)):
@@ -196,8 +215,13 @@ def run_pipeline(
     )
 
     try:
-        log.info("session %s · strategy %s · %d task(s)%s", session.id, strategy_name,
-                 len(tasks), " · 🤙 cowabunga" if cowabunga else "")
+        log.info(
+            "session %s · strategy %s · %d task(s)%s",
+            session.id,
+            strategy_name,
+            len(tasks),
+            " · 🤙 cowabunga" if cowabunga else "",
+        )
 
         prd_text = ""
         if prd_path:
@@ -213,6 +237,7 @@ def run_pipeline(
                 log.info("resume: reusing existing localization")
                 localization = session.read("knowledge/localization.md")
                 from splinter.agents.localizer import _parse_anchors
+
                 anchors = _parse_anchors(localization)
                 log.info("resume: re-parsed %d anchor(s)", len(anchors))
             else:
@@ -235,6 +260,43 @@ def run_pipeline(
                     task.filtered_context = filter_task_context(task, ladder)
                     if task.filtered_context:
                         session.write(cache_key, task.filtered_context)
+
+            # Write per-task localization file: relevant anchors + rtk tips.
+            for i, task in enumerate(tasks):
+                loc_key = f"knowledge/localization-{i + 1}.md"
+                if resume and session.read(loc_key).strip():
+                    log.info("resume: reusing per-task localization for task %d", i + 1)
+                    continue
+                task_files = set(task.target_files or [])
+                task_anchors = [a for a in anchors if a.file in task_files]
+                if not task_anchors:
+                    continue
+                loc_lines = [f"# Localization — Task {i + 1}\n"]
+                for a in task_anchors:
+                    loc_part = f"L{a.line_start}-L{a.line_end}" if a.line_start else ""
+                    label = (
+                        f"{a.file}:{loc_part} — {a.symbol}"
+                        if loc_part
+                        else f"{a.file} — {a.symbol}"
+                    )
+                    if a.line_start:
+                        line_end = a.line_end or a.line_start
+                        rtk_tip = f"rtk read {a.file} | sed -n '{a.line_start},{line_end}p'"
+                    else:
+                        rtk_tip = f"rtk read {a.file}"
+                    loc_lines.append(
+                        f"### {label}\n"
+                        f"file: {a.file}\n"
+                        f"symbol: {a.symbol}\n"
+                        + (
+                            f"line_start: {a.line_start}\nline_end: {a.line_end}\n"
+                            if a.line_start
+                            else ""
+                        )
+                        + f"rtk: {rtk_tip}\n"
+                        f"reason: {a.reason}\n"
+                    )
+                session.write(loc_key, "\n".join(loc_lines))
 
         _resolve_gate(session, ladder)
 
@@ -264,6 +326,7 @@ def run_pipeline(
         return 0
     except Exception as ask_exc:
         from splinter.strategies.base import AskUserPause
+
         if not isinstance(ask_exc, AskUserPause):
             raise
         session.set_status(
@@ -280,6 +343,7 @@ def run_pipeline(
         return 3
     except Exception as gap_exc:
         from splinter.providers.base import ProviderGapError
+
         if not isinstance(gap_exc, ProviderGapError):
             raise
         session.set_status(

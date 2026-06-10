@@ -1722,7 +1722,7 @@ class PrdSessionApp(App[int | None]):
             await draftpane.remove_children()
             edit = TextArea(id="draft-edit", soft_wrap=True, text=self._initial_prd)
             await draftpane.mount(edit)
-            self.call_from_thread(_complete_mount)
+            self.call_after_refresh(_complete_mount)
 
         self.run_worker(_mount_edit(), name="mount-edit")
 

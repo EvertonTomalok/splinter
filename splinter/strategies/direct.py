@@ -184,25 +184,31 @@ class DirectStrategy(Strategy):
             else (self._resume_start_index(session, tasks) if resume else 0)
         )
         if start_index:
-            log.info("resume: %d task(s) already done — restarting at task %d/%d",
-                     start_index, start_index + 1, len(tasks))
+            log.info(
+                "resume: %d task(s) already done — restarting at task %d/%d",
+                start_index,
+                start_index + 1,
+                len(tasks),
+            )
 
         for i, task in enumerate(tasks):
             if i < start_index:
                 continue
             # Persist progress *before* running task i so a crash here resumes here.
             session.set_status(
-                "running", stage="run", task_index=i, task_total=len(tasks),
+                "running",
+                stage="run",
+                task_index=i,
+                task_total=len(tasks),
                 task=task.description.splitlines()[0][:80],
             )
             session.append(
                 "loop.md",
-                f"# Task {i + 1}/{len(tasks)}: "
-                f"{task.description.splitlines()[0][:80]}\n\n",
+                f"# Task {i + 1}/{len(tasks)}: {task.description.splitlines()[0][:80]}\n\n",
             )
-            task_resume = (
-                checkpoint is not None and i == checkpoint.task_index
-            ) or (resume and i == start_index and len(tasks) == 1)
+            task_resume = (checkpoint is not None and i == checkpoint.task_index) or (
+                resume and i == start_index and len(tasks) == 1
+            )
             result = self._run_task_loop(
                 task,
                 session,
@@ -267,7 +273,10 @@ class DirectStrategy(Strategy):
                 continue
             try:
                 log.info("planning task %d with %s", i + 1, ladder.planner_model)
-                code_ctx = task.filtered_context or localization
+                task_loc = session.read(f"knowledge/localization-{i + 1}.md")
+                code_ctx = "\n\n".join(
+                    filter(None, [task_loc, task.filtered_context or localization])
+                )
                 plan = _make_plan(task, ladder, code_ctx)
                 session.write(task_plan_file, f"# Plan\n\n{plan}\n")
                 if i == 0:
@@ -339,12 +348,16 @@ class DirectStrategy(Strategy):
         # Reuse any existing plan — opus calls are expensive and the plan is
         # deterministic for this task. Always check the task-specific file first.
         task_plan_file = f"knowledge/plan-{task_index + 1}.md"
-        existing_plan = (session.read(task_plan_file).strip()
-                         or session.read("knowledge/plan.md").strip())
+        existing_plan = (
+            session.read(task_plan_file).strip() or session.read("knowledge/plan.md").strip()
+        )
         if existing_plan:
             log.info("plan exists for task %d — reusing (skipping planner)", task_index + 1)
-            plan = existing_plan[len("# Plan"):].lstrip("\n") \
-                if existing_plan.startswith("# Plan") else existing_plan
+            plan = (
+                existing_plan[len("# Plan") :].lstrip("\n")
+                if existing_plan.startswith("# Plan")
+                else existing_plan
+            )
             if not session.read(task_plan_file).strip():
                 session.write(task_plan_file, f"# Plan\n\n{plan}\n")
         else:
@@ -391,9 +404,7 @@ class DirectStrategy(Strategy):
             # The evaluator owns the verdict. A gate failure never short-circuits
             # it and never escalates on its own — it is fed back to the runner as
             # corrections. The runner changes ONLY when the eval says so.
-            action = evaluator.next_action(
-                verdict, tier, max_tier=MAX_TIER, cowabunga=cowabunga
-            )
+            action = evaluator.next_action(verdict, tier, max_tier=MAX_TIER, cowabunga=cowabunga)
 
             if action.stop:
                 if verdict.decision == Decision.ASK_USER and cowabunga:
@@ -480,9 +491,7 @@ class DirectStrategy(Strategy):
                     # eval sessions: the new model gets a clean slate and the quality
                     # eval re-judges its output from scratch.
                     tier = action.next_tier
-                    log.info(
-                        "escalating to T%d (eval changed the runner; fresh sessions)", tier
-                    )
+                    log.info("escalating to T%d (eval changed the runner; fresh sessions)", tier)
                     session.append(
                         "loop.md", f"## Escalate to tier {tier} (eval changed the runner)\n\n"
                     )
@@ -569,8 +578,7 @@ def _correction_context(knowledge: KnowledgeStore, latest: str) -> str:
         parts.append(latest)
 
     notes = [
-        f"### {topic}\n{knowledge.read_note(topic)}".strip()
-        for topic in knowledge.list_notes()
+        f"### {topic}\n{knowledge.read_note(topic)}".strip() for topic in knowledge.list_notes()
     ]
     if notes:
         parts.append("## Session Knowledge\n" + "\n\n".join(notes))
@@ -580,6 +588,7 @@ def _correction_context(knowledge: KnowledgeStore, latest: str) -> str:
 
 def _make_plan(task: Task, ladder: Ladder, code_ctx: str) -> str:
     from splinter.templating import load_standards
+
     prompt = render(
         "plan",
         task_section=section("Task", task.description),
@@ -588,6 +597,8 @@ def _make_plan(task: Task, ladder: Ladder, code_ctx: str) -> str:
         standards_section=section("Code Conventions", load_standards()),
     )
     return run_text(
-        prompt, ladder.planner_model, variant=ladder.planner_effort,
+        prompt,
+        ladder.planner_model,
+        variant=ladder.planner_effort,
         timeout=ladder.planner_timeout,
     )

@@ -60,9 +60,7 @@ def _check_ladder() -> tuple[bool, str]:
 
 
 def _check_python() -> tuple[bool, str]:
-    proc = subprocess.run(
-        [sys.executable, "--version"], capture_output=True, text=True, timeout=10
-    )
+    proc = subprocess.run([sys.executable, "--version"], capture_output=True, text=True, timeout=10)
     if proc.returncode != 0:
         return False, "python not responding"
     ver = proc.stdout.strip()

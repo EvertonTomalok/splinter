@@ -129,14 +129,18 @@ def run_task(
             break
         except Exception as exc:
             from splinter.providers.base import ProviderGapError
+
             if not isinstance(exc, ProviderGapError) or exc.kind not in _TRANSIENT_GAP_KINDS:
                 raise
             if attempt >= _MAX_GAP_RETRIES:
                 raise
-            wait = min(5 * (2 ** attempt), 60)
+            wait = min(5 * (2**attempt), 60)
             log.warning(
                 "provider gap (%s) on attempt %d/%d — retrying in %ds",
-                exc.kind, attempt + 1, _MAX_GAP_RETRIES, wait,
+                exc.kind,
+                attempt + 1,
+                _MAX_GAP_RETRIES,
+                wait,
             )
             time.sleep(wait)
     assert response is not None

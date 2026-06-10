@@ -141,9 +141,7 @@ def load_ladder(raw: dict[str, Any] | None = None) -> Ladder:
         planner_model=planner_cfg.get("model", "sonnet"),
         planner_effort=planner_cfg.get("effort", "high"),
         localizer_recall_model=loc_cfg.get("recall_model", "opencode/deepseek-v4-flash-free"),
-        localizer_recall_large_model=loc_cfg.get(
-            "recall_model_large", "opencode-go/minimax-m3"
-        ),
+        localizer_recall_large_model=loc_cfg.get("recall_model_large", "opencode-go/minimax-m3"),
         localizer_precision_model=loc_cfg.get("precision_model", "opencode/deepseek-v4-flash-free"),
         localizer_recall_fallback_model=loc_cfg.get("recall_fallback_model", "haiku"),
         localizer_agent=loc_cfg.get("agent", "explore"),
@@ -223,6 +221,7 @@ def _apply_config_overrides(ladder: Ladder) -> None:
                 ladder.tier_variants[level] = variant
 
     if t:
+
         def _to_int(value: Any) -> int | None:
             try:
                 n = int(value)

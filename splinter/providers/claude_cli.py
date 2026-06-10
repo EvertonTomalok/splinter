@@ -162,8 +162,12 @@ def run(
     stream_json = output_format == "json"
     cli_format = "stream-json" if stream_json else output_format
     cmd: list[str] = [
-        "claude", "-p", "--model", model,
-        "--output-format", cli_format,
+        "claude",
+        "-p",
+        "--model",
+        model,
+        "--output-format",
+        cli_format,
         "--dangerously-skip-permissions",
     ]
     if stream_json:
@@ -239,6 +243,7 @@ class ClaudeProvider(ModelProvider):
         timeout: int | None = None,
     ) -> ProviderResponse:
         from splinter.providers.base import detect_provider_gap
+
         try:
             result = run(prompt, model, effort=variant, resume=session, timeout=timeout)
         except Exception as exc:
@@ -248,7 +253,10 @@ class ClaudeProvider(ModelProvider):
             raise
         return ProviderResponse(
             text=result.text,
-            tokens=result.usage,
+            tokens={
+                "input": result.usage.get("input_tokens", 0) or 0,
+                "output": result.usage.get("output_tokens", 0) or 0,
+            },
             cost=_calc_cost(model, result.usage),
             raw=result.raw,
             session_id=result.raw.get("_session_id") or None,

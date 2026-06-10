@@ -13,7 +13,7 @@ from dataclasses import dataclass, replace
 from splinter.agents.runner import Task
 from splinter.enums import Decision, Variant
 from splinter.models.roster import Ladder
-from splinter.providers.dispatch import run_text_session
+from splinter.providers.dispatch import run_provider_session
 from splinter.skills import ResolvedSkill
 from splinter.strategies.base import EvalVerdict
 from splinter.templating import render, section
@@ -75,6 +75,7 @@ class Evaluator:
         (same runner); the returned verdict carries the (possibly new) session id.
         """
         from splinter.templating import load_standards
+
         model = eval_model or self.ladder.eval_model
         effort = eval_effort or self.ladder.eval_effort
         skill_section_text = ""
@@ -93,11 +94,11 @@ class Evaluator:
             skill_section=skill_section_text,
             standards_section=section("Code Conventions", load_standards()),
         )
-        text, sid = run_text_session(
+        response, sid = run_provider_session(
             prompt, model, variant=effort, session=session, timeout=timeout
         )
-        verdict = self._parse_verdict(text)
-        return replace(verdict, eval_session=sid)
+        verdict = self._parse_verdict(response.text)
+        return replace(verdict, eval_session=sid, cost=response.cost, tokens=response.tokens)
 
     @staticmethod
     def _parse_verdict(text: str) -> EvalVerdict:
@@ -156,9 +157,7 @@ class Evaluator:
         if verdict.decision == Decision.ASK_USER:
             if cowabunga:
                 return EvalAction(decision=Decision.ASK_USER, next_tier=tier, stop=True)
-            return EvalAction(
-                decision=Decision.ASK_USER, next_tier=tier, ask_user=True, stop=True
-            )
+            return EvalAction(decision=Decision.ASK_USER, next_tier=tier, ask_user=True, stop=True)
 
         if verdict.decision == Decision.JUMP_PREMIUM:
             target = min(max(tier, self.premium_tier), max_tier)

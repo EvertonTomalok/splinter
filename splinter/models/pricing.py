@@ -11,9 +11,9 @@ from splinter.models.roster import Tier
 
 # Token estimates (input, output) by effort level.
 _EFFORT_TOKENS: dict[str, tuple[int, int]] = {
-    "trivial":  (4_000,  500),
-    "normal":   (8_000,  1_500),
-    "hard":     (16_000, 3_000),
+    "trivial": (4_000, 500),
+    "normal": (8_000, 1_500),
+    "hard": (16_000, 3_000),
     "critical": (32_000, 6_000),
 }
 _DEFAULT_TOKENS: tuple[int, int] = (8_000, 1_500)
@@ -22,13 +22,13 @@ _DEFAULT_TOKENS: tuple[int, int] = (8_000, 1_500)
 _MODEL_PRICES: dict[str, tuple[float, float]] = {
     "opencode/deepseek-v4-flash-free": (0.27, 1.10),
     "opencode-go/deepseek-v4-flash": (0.27, 1.10),
-    "opencode-go/deepseek-v4-pro":   (0.27, 1.10),
-    "opencode-go/minimax-m3":        (0.80, 4.50),
-    "opencode-go/kimi-k2.6":         (0.55, 2.50),
-    "opencode-go/qwen3.7-plus":      (1.50, 6.00),
-    "sonnet":                        (3.00, 15.00),
-    "opus":                          (15.00, 75.00),
-    "haiku":                         (0.25, 1.25),
+    "opencode-go/deepseek-v4-pro": (0.27, 1.10),
+    "opencode-go/minimax-m3": (0.80, 4.50),
+    "opencode-go/kimi-k2.6": (0.55, 2.50),
+    "opencode-go/qwen3.7-plus": (1.50, 6.00),
+    "sonnet": (3.00, 15.00),
+    "opus": (15.00, 75.00),
+    "haiku": (0.25, 1.25),
 }
 _DEFAULT_PRICE: tuple[float, float] = (1.0, 5.0)
 

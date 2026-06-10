@@ -50,8 +50,8 @@ class ModelProvider(ABC):
 # (kind, regex) — evaluated in order; first match wins.
 _GAP_PATTERNS: list[tuple[str, str]] = [
     ("insufficient_balance", r"insufficient.{0,10}balance|out of credit|quota exceeded|billing"),
-    ("rate_limit",           r"\b429\b|rate.?limit"),
-    ("overload",             r"\b5[02][29]\b|overload|service.?unavailable|unavailable"),
+    ("rate_limit", r"\b429\b|rate.?limit"),
+    ("overload", r"\b5[02][29]\b|overload|service.?unavailable|unavailable"),
 ]
 
 _RETRY_AFTER_RE = re.compile(r"retry.?after[:\s]+(\d+)", re.IGNORECASE)

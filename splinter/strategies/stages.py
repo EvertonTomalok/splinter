@@ -20,7 +20,7 @@ from splinter.agents.runner import RunResult, Task, run_task
 from splinter.memory.knowledge import KnowledgeStore
 from splinter.memory.session import Session
 from splinter.models.roster import Ladder
-from splinter.obs.trace import Trace, log_run
+from splinter.obs.trace import RunEntry, Trace, log_run
 from splinter.skills import ResolvedSkill
 from splinter.strategies.base import EvalVerdict
 
@@ -97,9 +97,15 @@ class RunStage(Stage):
         mode = "fixing" if ctx.corrections else "implementing"
         model_id, _ = resolve_model(ctx.tier, ctx.ladder)
         variant = resolve_variant(ctx.task, ctx.effort_override, ctx.ladder, ctx.tier)
-        log.info("iter %d · T%d · %s with %s (variant=%s, %s)",
-                 ctx.iteration, ctx.tier, mode, model_id, variant,
-                 "same session" if ctx.oc_session else "new session")
+        log.info(
+            "iter %d · T%d · %s with %s (variant=%s, %s)",
+            ctx.iteration,
+            ctx.tier,
+            mode,
+            model_id,
+            variant,
+            "same session" if ctx.oc_session else "new session",
+        )
         log.info("  ▸ task: %s", ctx.task.description.splitlines()[0][:100])
         result = run_task(
             ctx.task,
@@ -111,8 +117,13 @@ class RunStage(Stage):
             corrections=ctx.corrections,
             opencode_session=ctx.oc_session,
         )
-        log.info("iter %d · ran %s · tokens=%s · $%.4f",
-                 ctx.iteration, result.model, result.tokens, result.cost)
+        log.info(
+            "iter %d · ran %s · tokens=%s · $%.4f",
+            ctx.iteration,
+            result.model,
+            result.tokens,
+            result.cost,
+        )
         ctx.run_result = result
         log_run(ctx.trace, result, ctx.iteration, ctx.task_index)
         if ctx.oc_session is None and result.opencode_session:
@@ -166,9 +177,12 @@ class GateStage(Stage):
                 for name, passed, out in result.checks
                 if not passed and out
             )
-        log.info("iter %d · gate %s%s", ctx.iteration,
-                 "PASS" if result.passed else "FAIL",
-                 f" ({ctx.gate_detail})" if not result.passed else "")
+        log.info(
+            "iter %d · gate %s%s",
+            ctx.iteration,
+            "PASS" if result.passed else "FAIL",
+            f" ({ctx.gate_detail})" if not result.passed else "",
+        )
 
         ctx._loop_lines.append(
             f"- gate: {'PASS' if result.passed else 'FAIL'} {ctx.gate_detail}".rstrip()
@@ -208,9 +222,26 @@ class EvalStage(Stage):
             timeout=ctx.ladder.eval_timeout,
         )
         ctx.verdict = verdict
-        # Keep the eval conversation alive for the next same-runner retry.
         ctx.eval_session = verdict.eval_session
-        log.info("iter %d · eval %s — %s", ctx.iteration, verdict.decision, verdict.reason)
+        if verdict.cost > 0 or verdict.tokens:
+            ctx.trace.entries.append(
+                RunEntry(
+                    model=ctx.ladder.eval_model,
+                    tier=0,
+                    iteration=ctx.iteration,
+                    tokens=verdict.tokens,
+                    cost=verdict.cost,
+                    latency_s=0.0,
+                    task=ctx.task_index,
+                )
+            )
+        log.info(
+            "iter %d · eval %s — %s · $%.4f",
+            ctx.iteration,
+            verdict.decision,
+            verdict.reason,
+            verdict.cost,
+        )
         ctx.eval_history.append(
             f"Iter {ctx.iteration} [{verdict.decision}]: "
             f"{verdict.reason} | Corrections: {verdict.corrections}"
@@ -255,16 +286,24 @@ def _evaluate(
     from splinter.models.roster import Ladder
 
     ladder = Ladder(
-        tiers=[], effort_map={}, eval_model=eval_model, eval_effort=eval_effort,
-        planner_model="", planner_effort="",
-        localizer_recall_model="", localizer_recall_large_model="",
+        tiers=[],
+        effort_map={},
+        eval_model=eval_model,
+        eval_effort=eval_effort,
+        planner_model="",
+        planner_effort="",
+        localizer_recall_model="",
+        localizer_recall_large_model="",
         localizer_precision_model="",
     )
     evaluator = Evaluator(ladder)
     return evaluator.judge(
-        task, run_output,
-        eval_model=eval_model, eval_effort=eval_effort,
-        previous_evals=previous_evals, timeout=timeout,
+        task,
+        run_output,
+        eval_model=eval_model,
+        eval_effort=eval_effort,
+        previous_evals=previous_evals,
+        timeout=timeout,
     )
 
 

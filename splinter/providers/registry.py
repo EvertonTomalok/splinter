@@ -10,9 +10,7 @@ from splinter.providers.base import ModelProvider
 from splinter.providers.claude_cli import ClaudeProvider
 from splinter.providers.opencode import OpencodeProvider
 
-_PROVIDERS: dict[str, ModelProvider] = {
-    p.name: p for p in (ClaudeProvider(), OpencodeProvider())
-}
+_PROVIDERS: dict[str, ModelProvider] = {p.name: p for p in (ClaudeProvider(), OpencodeProvider())}
 
 
 def get_provider(name: str) -> ModelProvider:

@@ -77,8 +77,7 @@ class CascadeStrategy(DirectStrategy):
             )
             session.append(
                 "loop.md",
-                f"# Task {i + 1}/{len(ordered)}: "
-                f"{task.description.splitlines()[0][:80]}\n\n",
+                f"# Task {i + 1}/{len(ordered)}: {task.description.splitlines()[0][:80]}\n\n",
             )
 
             result = self._run_task_loop(
@@ -123,14 +122,12 @@ class CascadeStrategy(DirectStrategy):
         for task in tasks:
             if not task.id:
                 continue
-            for dep in (task.deps or []):
+            for dep in task.deps or []:
                 if dep in task_ids:
                     adj[dep].append(task.id)
                     in_degree[task.id] += 1
 
-        queue: deque[str] = deque(
-            tid for tid in task_ids if in_degree[tid] == 0
-        )
+        queue: deque[str] = deque(tid for tid in task_ids if in_degree[tid] == 0)
         # preserve PRD order among ties
         prd_order = [t.id for t in tasks if t.id]
         queue = deque(sorted(queue, key=lambda tid: prd_order.index(tid)))

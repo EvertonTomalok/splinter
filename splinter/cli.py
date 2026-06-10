@@ -38,9 +38,28 @@ def prd(
     strategy: Annotated[str | None, typer.Option(help="Pre-select strategy")] = None,
 ) -> None:
     """Generate a PRD interactively."""
-    from splinter.prd import run_prd
+    import os
+    import sys
 
-    raise typer.Exit(run_prd(description=description, strategy=strategy))
+    tty = sys.stdin.isatty() and sys.stdout.isatty()
+    if not tty or os.environ.get("SPLINTER_NO_TUI"):
+        from splinter.prd import run_prd
+
+        raise typer.Exit(run_prd(description=description, strategy=strategy))
+
+    from splinter.tui import run_prd_interactive
+
+    run_kwargs = {
+        "description": description,
+        "strategy": strategy,
+        "prd_path": None,
+        "task_path": None,
+        "effort": None,
+        "budget": None,
+        "max_iterations": 5,
+        "cowabunga": False,
+    }
+    raise typer.Exit(run_prd_interactive(run_kwargs))
 
 
 @app.command()
@@ -52,9 +71,11 @@ def run(
     budget: Annotated[float | None, typer.Option(help="Max cost in dollars")] = None,
     max_iterations: Annotated[int, typer.Option(help="Max loop iterations")] = 5,
     eval: Annotated[
-        str | None, typer.Option("--eval", help="Override eval skill (skill name)")] = None,
+        str | None, typer.Option("--eval", help="Override eval skill (skill name)")
+    ] = None,
     eval_model: Annotated[
-        str | None, typer.Option("--eval-model", help="Override evaluator model")] = None,
+        str | None, typer.Option("--eval-model", help="Override evaluator model")
+    ] = None,
     eval_effort: Annotated[
         str | None,
         typer.Option("--eval-effort", help="Override evaluator reasoning effort"),
@@ -66,9 +87,7 @@ def run(
             help="Full autonomy: skip the PRD Q&A and never wake the human on ASK_USER",
         ),
     ] = False,
-    quiet: Annotated[
-        bool, typer.Option(help="Plain log output instead of the live TUI")
-    ] = False,
+    quiet: Annotated[bool, typer.Option(help="Plain log output instead of the live TUI")] = False,
     use_cc_only: Annotated[
         bool,
         typer.Option(
@@ -183,9 +202,7 @@ def analyze(
 
 @app.command()
 def configure(
-    gate_checks: Annotated[
-        str | None, typer.Option(help="Comma-separated gate commands")
-    ] = None,
+    gate_checks: Annotated[str | None, typer.Option(help="Comma-separated gate commands")] = None,
     timeout: Annotated[
         int | None, typer.Option(help="Per-model-call timeout in seconds (default 3600)")
     ] = None,
@@ -199,10 +216,18 @@ def configure(
         bool, typer.Option("--no-interactive", help="Skip the model-selection TUI")
     ] = False,
     use_default: Annotated[
-        bool, typer.Option("--use-default", help="Restore config.yaml from config.opencode.yaml (opencode runners)")
+        bool,
+        typer.Option(
+            "--use-default",
+            help="Restore config.yaml from config.opencode.yaml",
+        ),
     ] = False,
     use_cc_only: Annotated[
-        bool, typer.Option("--use-cc-only", help="Activate config.claude.yaml (Claude-only runners, for when opencode billing fails)")
+        bool,
+        typer.Option(
+            "--use-cc-only",
+            help="Activate config.claude.yaml (Claude-only runners)",
+        ),
     ] = False,
 ) -> None:
     """Pick per-step models in a TUI (default), then write config.yaml."""

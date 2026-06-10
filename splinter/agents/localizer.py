@@ -26,6 +26,13 @@ class CodeAnchor:
     symbol: str
     reason: str
     confidence: float
+    line_start: int | None = None
+    line_end: int | None = None
+
+
+def _count_anchors(text: str) -> int:
+    """Count anchors in a localization.md by counting 'file:' block headers."""
+    return sum(1 for ln in text.splitlines() if ln.strip().startswith("file:"))
 
 
 def _strip_frontmatter(text: str) -> str:
@@ -77,12 +84,16 @@ def _parse_anchors(text: str) -> list[CodeAnchor]:
         for item in data:
             if not isinstance(item, dict):
                 continue
+            ls = item.get("line_start")
+            le = item.get("line_end")
             result.append(
                 CodeAnchor(
                     file=item.get("file", ""),
                     symbol=item.get("symbol", ""),
                     reason=item.get("reason", ""),
                     confidence=float(item.get("confidence", 0.5)),
+                    line_start=int(ls) if ls is not None else None,
+                    line_end=int(le) if le is not None else None,
                 )
             )
         return result
@@ -100,17 +111,25 @@ def _parse_anchors(text: str) -> list[CodeAnchor]:
             return anchors
 
     # Fall back to the structured key:value block format written by localize().
-    pattern = re.compile(
-        r"file:\s*(.+?)\s*\n\s*symbol:\s*(.+?)\s*\n\s*reason:\s*(.+?)\s*\n\s*confidence:\s*([\d.]+)",
-        re.MULTILINE,
-    )
-    for m in pattern.finditer(text):
+    # Split on blank lines to get individual anchor blocks.
+    blocks = re.split(r"\n\s*\n", text)
+    for block in blocks:
+        file_m = re.search(r"^file:\s*(.+)$", block, re.MULTILINE)
+        if not file_m:
+            continue
+        symbol_m = re.search(r"^symbol:\s*(.*)$", block, re.MULTILINE)
+        reason_m = re.search(r"^reason:\s*(.+)$", block, re.MULTILINE)
+        conf_m = re.search(r"^confidence:\s*([\d.]+)$", block, re.MULTILINE)
+        ls_m = re.search(r"^line_start:\s*(\d+)$", block, re.MULTILINE)
+        le_m = re.search(r"^line_end:\s*(\d+)$", block, re.MULTILINE)
         anchors.append(
             CodeAnchor(
-                file=m.group(1).strip(),
-                symbol=m.group(2).strip(),
-                reason=m.group(3).strip(),
-                confidence=float(m.group(4)),
+                file=file_m.group(1).strip(),
+                symbol=symbol_m.group(1).strip() if symbol_m else "",
+                reason=reason_m.group(1).strip() if reason_m else "",
+                confidence=float(conf_m.group(1)) if conf_m else 0.5,
+                line_start=int(ls_m.group(1)) if ls_m else None,
+                line_end=int(le_m.group(1)) if le_m else None,
             )
         )
     return anchors
@@ -143,8 +162,12 @@ def _run_search_tools(prd_text: str, repo_path: str = ".") -> str:
 
 
 def _recall_phase(
-    prd_text: str, search_results: str, model: str, variant: str = "minimal",
-    timeout: int | None = None, agent: str = "build",
+    prd_text: str,
+    search_results: str,
+    model: str,
+    variant: str = "minimal",
+    timeout: int | None = None,
+    agent: str = "build",
 ) -> str:
     """Cheap model filters the raw search results to a candidate list."""
     text = _strip_frontmatter(prd_text)
@@ -156,15 +179,18 @@ def _recall_phase(
         "Return a JSON array of candidate locations. Each item MUST have keys: "
         '"file" (path), "symbol" (function/class/symbol name, or "" if file-level), '
         '"reason" (why it is relevant — include the feature keywords it relates to), '
-        'and "confidence" (0.0–1.0). Be thorough — coverage over precision. '
-        "Output ONLY the JSON array, no prose."
+        '"confidence" (0.0–1.0), '
+        '"line_start" (integer line number where the symbol starts, or null if unknown), '
+        '"line_end" (integer line number where the symbol ends, or null if unknown). '
+        "Use grep output lines (format: file:line:content) to populate line_start/line_end. "
+        "Be thorough — coverage over precision. Output ONLY the JSON array, no prose."
     )
     return run_text(
         prompt, model, variant=variant, output_format="text", timeout=timeout, agent=agent
     )
 
 
-_FILTER_MAX_FILE_CHARS = 4_000   # per file in the filter context
+_FILTER_MAX_FILE_CHARS = 4_000  # per file in the filter context
 _FILTER_MAX_TOTAL_CHARS = 40_000  # total across all candidate files
 
 
@@ -189,6 +215,7 @@ def _extract_candidate_files(recall_output: str) -> list[str]:
 def _read_candidate_files(paths: list[str]) -> str:
     """Read file contents for each candidate path; return formatted block."""
     from pathlib import Path as _Path
+
     parts: list[str] = []
     total = 0
     for path_str in paths:
@@ -240,12 +267,18 @@ def filter_task_context(
     prompt = (
         "You are a code context agent. Below is a task description and the source files "
         "the locator identified as relevant. Read the code and extract the sections that "
-        "matter for implementing this task — function signatures, class definitions, key "
-        "logic, and data structures. Be specific and complete; the output will be the sole "
-        "code context given to a planner.\n\n"
+        "matter for implementing this task.\n\n"
         f"## Task\n{description}\n\n"
         f"## Source Files\n{file_contents}\n\n"
-        "Return the relevant code sections with brief notes on why each matters."
+        "For each relevant section, output a block in this EXACT format:\n\n"
+        "### <file_path>:L<start>-L<end> — <symbol_or_description>\n"
+        "rtk: rtk read <file_path>\n"
+        "<one-line note on why this section matters for the task>\n"
+        "```\n"
+        "<the relevant code snippet>\n"
+        "```\n\n"
+        "Include exact line numbers. If uncertain about line numbers, estimate from the "
+        "file content shown. Be specific — the planner will navigate directly to these locations."
     )
     try:
         return run_text(
@@ -302,14 +335,22 @@ def localize(
     log.info("localize: recall via %s", recall_model)
     try:
         recall_output = _recall_phase(
-            prd_text, search_results, recall_model, recall_variant, recall_timeout,
+            prd_text,
+            search_results,
+            recall_model,
+            recall_variant,
+            recall_timeout,
             agent=ladder.localizer_agent,
         )
     except (ProviderGapError, RuntimeError) as e:
         log.warning("recall model failed (%s), retrying with fallback model", type(e).__name__)
         recall_output = _recall_phase(
-            prd_text, search_results, ladder.localizer_recall_fallback_model,
-            recall_variant, recall_timeout, agent=ladder.localizer_agent,
+            prd_text,
+            search_results,
+            ladder.localizer_recall_fallback_model,
+            recall_variant,
+            recall_timeout,
+            agent=ladder.localizer_agent,
         )
 
     # Prefer structured anchors (file + symbol + reason) so per-task targeting in
@@ -324,16 +365,17 @@ def localize(
         log.warning("localize: no anchors found — skipping write to preserve existing")
         return anchors
 
-    # Write in the file:/symbol:/reason:/confidence: block format _parse_anchors
-    # reads, so a resumed run reparses anchors WITH their symbol/reason intact.
+    # Write in the key:value block format _parse_anchors reads,
+    # including line_start/line_end when the LLM provided them.
     lines: list[str] = ["# Localization\n"]
     for a in anchors:
-        lines.append(
-            f"file: {a.file}\n"
-            f"symbol: {a.symbol}\n"
-            f"reason: {a.reason}\n"
-            f"confidence: {a.confidence}\n"
-        )
+        block = f"file: {a.file}\nsymbol: {a.symbol}\n"
+        if a.line_start is not None:
+            block += f"line_start: {a.line_start}\n"
+        if a.line_end is not None:
+            block += f"line_end: {a.line_end}\n"
+        block += f"reason: {a.reason}\nconfidence: {a.confidence}\n"
+        lines.append(block)
 
     # Localization lives in the run's knowledge store (knowledge/localization.md) —
     # the single home for run-valuable memory — not loose at the session root.

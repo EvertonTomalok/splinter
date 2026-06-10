@@ -21,14 +21,14 @@ from splinter.tui import _fm_block, _set_fm_strategy
 @pytest.mark.parametrize(
     "raw,expected",
     [
-        ("minimal", "low"),   # the bug: claude CLI rejects 'minimal'
-        ("auto", None),       # auto means "don't pass --effort at all"
+        ("minimal", "low"),  # the bug: claude CLI rejects 'minimal'
+        ("auto", None),  # auto means "don't pass --effort at all"
         ("low", "low"),
         ("high", "high"),
         ("max", "max"),
         ("medium", "medium"),
         ("xhigh", "xhigh"),
-        ("bogus", None),      # unknown → omit rather than crash the subprocess
+        ("bogus", None),  # unknown → omit rather than crash the subprocess
         (None, None),
     ],
 )
@@ -178,16 +178,16 @@ def test_per_step_timeouts_resolve_into_ladder(
         "defaults:\n  timeout: 3600\n"
         "timeouts:\n"
         "  planner: 1800\n"
-        "  eval: 0\n"            # invalid → ignored, keeps default
+        "  eval: 0\n"  # invalid → ignored, keeps default
         "  tiers: [null, null, null, null, 5400]\n"
     )
     from splinter.models.roster import load_ladder
 
     ladder = load_ladder()
-    assert ladder.planner_timeout == 1800     # overridden
-    assert ladder.eval_timeout == 3600        # 0 ignored → global default
-    assert ladder.tier_timeout(4) == 5400     # per-tier override
-    assert ladder.tier_timeout(0) == 3600     # default fallback
+    assert ladder.planner_timeout == 1800  # overridden
+    assert ladder.eval_timeout == 3600  # 0 ignored → global default
+    assert ladder.tier_timeout(4) == 5400  # per-tier override
+    assert ladder.tier_timeout(0) == 3600  # default fallback
 
 
 # --- prd_session pure helpers ------------------------------------------------
@@ -224,9 +224,7 @@ def test_ensure_frontmatter_keeps_existing() -> None:
     assert out.count("---") == 2
 
 
-def test_log_phase_appends_lines(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_log_phase_appends_lines(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
     session = Session("ses_prd")
     prd_session.log_phase(session, "clarify")
@@ -352,8 +350,13 @@ def _drive_loop(
     def fake_run_task(t: Task, plan: str, tier: int, ladder: object, **kw: object) -> RunResult:
         tiers_seen.append(tier)
         return RunResult(
-            text="did the thing", model="stub", tier=tier,
-            tokens={"in": 1, "out": 1}, cost=0.0, raw={}, opencode_session=None,
+            text="did the thing",
+            model="stub",
+            tier=tier,
+            tokens={"in": 1, "out": 1},
+            cost=0.0,
+            raw={},
+            opencode_session=None,
         )
 
     queue = list(verdicts)
@@ -371,9 +374,7 @@ def _drive_loop(
     monkeypatch.setattr("splinter.strategies.stages.run_task", fake_run_task)
     monkeypatch.setattr("splinter.strategies.stages.run_gate", boom_gate)
     monkeypatch.setattr("splinter.strategies.stages.Evaluator.judge", fake_judge)
-    monkeypatch.setattr(
-        "splinter.strategies.direct._make_plan", lambda *a, **k: "the plan"
-    )
+    monkeypatch.setattr("splinter.strategies.direct._make_plan", lambda *a, **k: "the plan")
 
     from splinter.models.roster import load_ladder
 
@@ -395,23 +396,17 @@ def _v(decision: str) -> EvalVerdict:
     return EvalVerdict(decision=decision, reason="r", corrections="c", raw="")
 
 
-def test_ask_user_stops_without_cowabunga(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_ask_user_stops_without_cowabunga(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     from splinter.strategies.base import AskUserPause
 
     with pytest.raises(AskUserPause):
-        _drive_loop(
-            monkeypatch, tmp_path, [_v(Decision.ASK_USER)], cowabunga=False
-        )
+        _drive_loop(monkeypatch, tmp_path, [_v(Decision.ASK_USER)], cowabunga=False)
     session = Session("ses_test_loop")
     assert "ASK_USER" in session.read("loop.md")
     assert session.read("run_checkpoint.json").strip()
 
 
-def test_ask_user_stops_with_cowabunga(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_ask_user_stops_with_cowabunga(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     session, tiers = _drive_loop(
         monkeypatch, tmp_path, [_v(Decision.ASK_USER), _v(Decision.PASS)], cowabunga=True
     )
@@ -433,9 +428,7 @@ def test_jump_premium_skips_to_premium_tier(
     assert tiers[1] == 3
 
 
-def test_max_tier_without_pass_pauses(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_max_tier_without_pass_pauses(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     from splinter.strategies.base import AskUserPause
 
     with pytest.raises(AskUserPause):
@@ -447,9 +440,7 @@ def test_max_tier_without_pass_pauses(
         )
 
 
-def test_jump_premium_stuck_pauses(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_jump_premium_stuck_pauses(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     from splinter.strategies.base import AskUserPause
 
     with pytest.raises(AskUserPause):
@@ -484,9 +475,7 @@ strategy: direct
         )
 
 
-def test_pause_blocks_next_prd_task(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_pause_blocks_next_prd_task(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     from splinter.strategies.base import AskUserPause
 
     monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
@@ -495,8 +484,13 @@ def test_pause_blocks_next_prd_task(
     def fake_run_task(task: Task, plan: str, tier: int, ladder: object, **kw: object) -> RunResult:
         ran.append(task.description)
         return RunResult(
-            text="did the thing", model="stub", tier=tier,
-            tokens={"in": 1, "out": 1}, cost=0.0, raw={}, opencode_session=None,
+            text="did the thing",
+            model="stub",
+            tier=tier,
+            tokens={"in": 1, "out": 1},
+            cost=0.0,
+            raw={},
+            opencode_session=None,
         )
 
     def boom_gate() -> object:
@@ -508,9 +502,7 @@ def test_pause_blocks_next_prd_task(
         "splinter.strategies.stages.Evaluator.judge",
         lambda self, *a, **k: _v(Decision.ASK_USER),
     )
-    monkeypatch.setattr(
-        "splinter.strategies.direct._make_plan", lambda *a, **k: "the plan"
-    )
+    monkeypatch.setattr("splinter.strategies.direct._make_plan", lambda *a, **k: "the plan")
 
     from splinter.models.roster import load_ladder
 
@@ -581,8 +573,13 @@ def _drive_tasks(
     def fake_run_task(task: Task, plan: str, tier: int, ladder: object, **kw: object) -> RunResult:
         ran.append(task.description)
         return RunResult(
-            text="done", model="stub", tier=tier,
-            tokens={"in": 1, "out": 1}, cost=0.0, raw={}, opencode_session=None,
+            text="done",
+            model="stub",
+            tier=tier,
+            tokens={"in": 1, "out": 1},
+            cost=0.0,
+            raw={},
+            opencode_session=None,
         )
 
     def boom_gate() -> object:
@@ -590,6 +587,7 @@ def _drive_tasks(
 
     monkeypatch.setattr("splinter.strategies.stages.run_task", fake_run_task)
     monkeypatch.setattr("splinter.strategies.stages.run_gate", boom_gate)
+
     def fake_judge(self: object, *a: object, **k: object) -> EvalVerdict:
         return EvalVerdict(decision=Decision.PASS, reason="ok", corrections="", raw="")
 
@@ -636,9 +634,7 @@ def test_resume_skips_completed_stories_via_prd(
 # --- gate never vetoes the eval; eval session continuity ---------------------
 
 
-def test_gate_failure_does_not_veto_eval(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_gate_failure_does_not_veto_eval(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """A failing gate must NOT short-circuit the eval. If the frontier eval says
     PASS, the task passes — the gate is only a secondary signal."""
     from splinter.agents.gate import GateResult
@@ -648,14 +644,22 @@ def test_gate_failure_does_not_veto_eval(
 
     def fake_run_task(task: Task, plan: str, tier: int, ladder: object, **kw: object) -> RunResult:
         runs.append(tier)
-        return RunResult(text="x", model="stub", tier=tier,
-                         tokens={"in": 1}, cost=0.0, raw={}, opencode_session=None)
+        return RunResult(
+            text="x",
+            model="stub",
+            tier=tier,
+            tokens={"in": 1},
+            cost=0.0,
+            raw={},
+            opencode_session=None,
+        )
 
     monkeypatch.setattr("splinter.strategies.stages.run_task", fake_run_task)
     monkeypatch.setattr(
         "splinter.strategies.stages.run_gate",
         lambda **k: GateResult(passed=False, checks=[("pytest", False, "boom")]),
     )
+
     def fake_judge_pass(self: object, *a: object, **k: object) -> EvalVerdict:
         return EvalVerdict(decision=Decision.PASS, reason="ok", corrections="", raw="")
 
@@ -688,14 +692,23 @@ def test_eval_session_continues_same_runner_resets_on_escalate(
         task: Task, plan: str, tier: int, ladder: object, *, corrections: str = "", **kw: object
     ) -> RunResult:
         corrections_in.append(corrections)
-        return RunResult(text="x", model="stub", tier=tier,
-                         tokens={"in": 1}, cost=0.0, raw={}, opencode_session=f"oc{tier}")
+        return RunResult(
+            text="x",
+            model="stub",
+            tier=tier,
+            tokens={"in": 1},
+            cost=0.0,
+            raw={},
+            opencode_session=f"oc{tier}",
+        )
 
-    verdicts = iter([
-        EvalVerdict(Decision.RETRY, "fix", corrections="do X", eval_session="ev1"),
-        EvalVerdict(Decision.ESCALATE, "cant", corrections="harder", eval_session="ev2"),
-        EvalVerdict(Decision.PASS, "ok", eval_session="ev3"),
-    ])
+    verdicts = iter(
+        [
+            EvalVerdict(Decision.RETRY, "fix", corrections="do X", eval_session="ev1"),
+            EvalVerdict(Decision.ESCALATE, "cant", corrections="harder", eval_session="ev2"),
+            EvalVerdict(Decision.PASS, "ok", eval_session="ev3"),
+        ]
+    )
 
     def fake_judge(
         self: object, *a: object, session: str | None = None, **k: object
@@ -716,7 +729,9 @@ def test_eval_session_continues_same_runner_resets_on_escalate(
     session = Session("ses_evalsess")
     DirectStrategy().execute(
         [Task(description="t", acceptance="a", effort="normal")],
-        session, load_ladder(), max_iterations=3,
+        session,
+        load_ladder(),
+        max_iterations=3,
     )
     # iter1 starts with no eval session; iter2 (same tier RETRY) continues "ev1";
     # iter2's ESCALATE resets it, so iter3 (new tier) starts fresh (None).

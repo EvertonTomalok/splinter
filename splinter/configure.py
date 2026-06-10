@@ -106,10 +106,14 @@ TIER_STEPS: list[tuple[str, str]] = [
     ("Run · T1 moderate", "The workhorse — default runner where most runs live."),
     ("Run · T2 moderate-hard", "Same workhorse model, maxed reasoning, before switching models."),
     ("Run · T3 hard", "Switches model: the stronger open runner at high reasoning."),
-    ("Run · T4 critical",
-     "Frontier Claude. Reached by escalation — avoid unless cheaper rungs failed."),
-    ("Run · T5 last-resort",
-     "The very last rung: Claude maxed out. Only if `critical` still failed."),
+    (
+        "Run · T4 critical",
+        "Frontier Claude. Reached by escalation — avoid unless cheaper rungs failed.",
+    ),
+    (
+        "Run · T5 last-resort",
+        "The very last rung: Claude maxed out. Only if `critical` still failed.",
+    ),
 ]
 
 
@@ -122,7 +126,8 @@ def available_models() -> list[str]:
         from splinter.providers import opencode
 
         models.update(
-            m for m in opencode.list_models()
+            m
+            for m in opencode.list_models()
             if m.startswith("opencode-go/") or m.startswith("opencode/")
         )
     except Exception:
@@ -236,12 +241,12 @@ DEFAULT_CC_CONFIG: dict[str, Any] = {
         "planner": "opus",
         "eval": "opus",
         "tiers": [
-            "haiku",   # T0 easy
-            "haiku",   # T1 moderate
+            "haiku",  # T0 easy
+            "haiku",  # T1 moderate
             "sonnet",  # T2 moderate-hard
             "sonnet",  # T3 hard
-            "opus",    # T4 critical
-            "opus",    # T5 last-resort
+            "opus",  # T4 critical
+            "opus",  # T5 last-resort
         ],
     },
     "efforts": {
@@ -281,6 +286,7 @@ def _swap_config(source: str) -> int:
             print(f"error: {src} not found — run `splinter configure` to generate it first")
             return 1
     import shutil
+
     shutil.copy2(src, dst)
     print(f"config.yaml updated from {source}")
     return 0
@@ -342,8 +348,7 @@ def run_configure(
                 print(f"  {path.name}")
         else:
             print(
-                f"prompt templates already present in {_prompts_dir()}/ "
-                "(use --force to overwrite)"
+                f"prompt templates already present in {_prompts_dir()}/ (use --force to overwrite)"
             )
 
     return 0

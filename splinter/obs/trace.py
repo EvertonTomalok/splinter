@@ -64,10 +64,7 @@ class Trace:
                     "input": sum(e.tokens.get("input", 0) for e in t_entries),
                     "output": sum(e.tokens.get("output", 0) for e in t_entries),
                 }
-                lines.append(
-                    f"- task {t}: {len(t_entries)} runs, "
-                    f"${t_cost:.4f}, tokens={t_tokens}"
-                )
+                lines.append(f"- task {t}: {len(t_entries)} runs, ${t_cost:.4f}, tokens={t_tokens}")
             lines.append("")
 
         lines.append("## Runs\n")
@@ -98,8 +95,13 @@ class Trace:
             latency = float(m.group(7))
             trace.entries.append(
                 RunEntry(
-                    model=model, tier=tier, iteration=iteration,
-                    tokens=tokens, cost=cost, latency_s=latency, task=task,
+                    model=model,
+                    tier=tier,
+                    iteration=iteration,
+                    tokens=tokens,
+                    cost=cost,
+                    latency_s=latency,
+                    task=task,
                 )
             )
         return trace

@@ -71,6 +71,7 @@ def run_prd(*, description: str = "", strategy: str | None = None) -> int:
         fm_strategy = strategy or "cascade"
         feature = re.sub(r"[^a-zA-Z0-9-]", "-", description[:40]).strip("-").lower()
         from datetime import datetime, timezone
+
         frontmatter = (
             f"---\n"
             f"feature: {feature}\n"
@@ -99,10 +100,7 @@ def run_prd(*, description: str = "", strategy: str | None = None) -> int:
     session.update_index("\n".join(idx_lines) + "\n")
 
     ks = KnowledgeStore(session)
-    prd_note = (
-        f"Feature: {fm.get('feature', '')}\n"
-        f"Strategy: {fm.get('strategy', '')}\n"
-    )
+    prd_note = f"Feature: {fm.get('feature', '')}\nStrategy: {fm.get('strategy', '')}\n"
     ks.write_note("prd-summary", prd_note)
 
     print(f"\nPRD saved to {session.dir / 'prd.md'}")
