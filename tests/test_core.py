@@ -36,9 +36,7 @@ def test_new_session_id_format() -> None:
 
 
 @pytest.fixture
-def isolated_ladder(
-    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
-) -> "object":
+def isolated_ladder(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> "object":
     """load_ladder() with NO project config override — pins ladder.yaml defaults.
 
     Runs from an empty cwd so the developer's untracked ./.splinter/config.yaml
@@ -80,13 +78,13 @@ def test_ladder_tier_by_level() -> None:
     assert t4.name == "critical"
 
 
-def test_normal_effort_defaults_to_deepseek_v4_pro() -> None:
-    ladder = load_ladder()
+def test_normal_effort_starts_at_minimax_m3(isolated_ladder: "object") -> None:
+    ladder = isolated_ladder
     em = ladder.effort_mapping("normal")
     assert em is not None and em.start_tier == 1
     model_id, provider = resolve_model(em.start_tier, ladder)
     assert provider == "opencode"
-    assert model_id == "opencode-go/deepseek-v4-pro"
+    assert model_id == "opencode-go/minimax-m3"
 
 
 def test_localizer_roster(isolated_ladder: "object") -> None:
@@ -140,8 +138,8 @@ def test_config_effort_overrides_apply_to_ladder(
     assert ladder.planner_effort == "max"
     assert ladder.eval_effort == "low"
     assert ladder.localizer_recall_variant == "high"
-    assert ladder.tier_variant(0) == "high"   # config override wins
-    assert ladder.tier_variant(1) == "high"   # blank → ladder.yaml default (high)
+    assert ladder.tier_variant(0) == "high"  # config override wins
+    assert ladder.tier_variant(1) == "high"  # blank → ladder.yaml default (high)
 
 
 def test_configure_tui_saves_models_and_efforts(
@@ -196,8 +194,8 @@ def test_resolve_variant_override() -> None:
     assert v == "max"
 
 
-def test_resolve_model() -> None:
-    ladder = load_ladder()
+def test_resolve_model(isolated_ladder: "object") -> None:
+    ladder = isolated_ladder
     model_id, provider = resolve_model(0, ladder)
     assert provider == "opencode"
     assert model_id.startswith("opencode-go/")
@@ -242,9 +240,7 @@ def test_session_append(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> No
     assert "line 2" in content
 
 
-def test_list_sessions_newest_first(
-    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
-) -> None:
+def test_list_sessions_newest_first(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
     import os
     import time
 
@@ -291,9 +287,14 @@ def test_knowledge_query(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> N
 def test_trace_summary() -> None:
     trace = Trace()
     from splinter.agents.runner import RunResult
+
     result = RunResult(
-        text="output", model="test-model", tier=0,
-        tokens={"input": 100, "output": 50}, cost=0.01, raw={},
+        text="output",
+        model="test-model",
+        tier=0,
+        tokens={"input": 100, "output": 50},
+        cost=0.01,
+        raw={},
     )
     log_run(trace, result, 1)
     summary = trace.summary()
@@ -338,10 +339,10 @@ def test_opencode_extract_tokens_handles_nested() -> None:
     raw = {
         "tokens": {
             "input": 120,
-            "output": "45",          # string count
-            "reasoning": 3.0,         # float
+            "output": "45",  # string count
+            "reasoning": 3.0,  # float
             "cache": {"read": 0, "write": 0},  # nested dict — must be skipped
-            "bogus": None,            # must be skipped
+            "bogus": None,  # must be skipped
         }
     }
     tokens = _extract_tokens(raw)
@@ -401,9 +402,7 @@ def test_all_templates_packaged() -> None:
         assert packaged_template(name).strip()
 
 
-def test_render_prefers_override(
-    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
-) -> None:
+def test_render_prefers_override(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
     monkeypatch.chdir(tmp_path)
     init_prompt_templates()
     (tmp_path / ".splinter" / "prompts" / "plan.md").write_text("OVERRIDE {task_section}")
@@ -424,9 +423,7 @@ def test_init_prompt_templates_no_overwrite(
 # --- analyze: status + trajectory -----------------------------------------
 
 
-def test_session_status_roundtrip(
-    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
-) -> None:
+def test_session_status_roundtrip(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
     monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
     session = Session("ses_test")
     assert session.read_status() == {}
@@ -452,9 +449,7 @@ def _free_pid() -> int:
             continue  # exists, owned by another user
 
 
-def test_run_state_alive_vs_dead(
-    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
-) -> None:
+def test_run_state_alive_vs_dead(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
     import os
 
     monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
@@ -624,9 +619,7 @@ def test_run_tui_streams_log_and_overview(
             await pilot.pause()
             for _ in range(10):
                 await pilot.pause(0.05)
-                if app.workers and all(
-                    w.state.name in ("SUCCESS", "ERROR") for w in app.workers
-                ):
+                if app.workers and all(w.state.name in ("SUCCESS", "ERROR") for w in app.workers):
                     break
             await pilot.pause()
             assert app.rc == 0
@@ -635,9 +628,7 @@ def test_run_tui_streams_log_and_overview(
     asyncio.run(drive())
 
 
-def test_run_tui_captures_failure(
-    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
-) -> None:
+def test_run_tui_captures_failure(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
     import asyncio
 
     from splinter.tui import RunApp
@@ -658,9 +649,7 @@ def test_run_tui_captures_failure(
             await pilot.pause()
             for _ in range(10):
                 await pilot.pause(0.05)
-                if app.workers and all(
-                    w.state.name in ("SUCCESS", "ERROR") for w in app.workers
-                ):
+                if app.workers and all(w.state.name in ("SUCCESS", "ERROR") for w in app.workers):
                     break
             await pilot.pause()
             assert app.rc == 1
@@ -804,16 +793,22 @@ def test_planner_assign_target_files_keyword_match() -> None:
     tasks = parse_stories(_MULTI_STORY_PRD)
     anchors = [
         CodeAnchor(
-            file="models/user.py", symbol="UserModel",
-            reason="core data model definition", confidence=0.9,
+            file="models/user.py",
+            symbol="UserModel",
+            reason="core data model definition",
+            confidence=0.9,
         ),
         CodeAnchor(
-            file="validators/user.py", symbol="validate_user",
-            reason="input validation for model", confidence=0.8,
+            file="validators/user.py",
+            symbol="validate_user",
+            reason="input validation for model",
+            confidence=0.8,
         ),
         CodeAnchor(
-            file="api/routes.py", symbol="api_endpoint",
-            reason="API endpoint for data model", confidence=0.7,
+            file="api/routes.py",
+            symbol="api_endpoint",
+            reason="API endpoint for data model",
+            confidence=0.7,
         ),
     ]
     assign_target_files(tasks, anchors)
@@ -852,8 +847,10 @@ def test_planner_plan_function(tmp_path: Path) -> None:
     prd_file.write_text(_MULTI_STORY_PRD)
     anchors = [
         CodeAnchor(
-            file="models/user.py", symbol="UserModel",
-            reason="core data model", confidence=0.9,
+            file="models/user.py",
+            symbol="UserModel",
+            reason="core data model",
+            confidence=0.9,
         ),
     ]
     tasks, strategy = plan(str(prd_file), anchors)
