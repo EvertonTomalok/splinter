@@ -23,6 +23,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # tasks routinely run many minutes; default to an hour so a slow call is
         # never killed mid-thought. Override with `splinter configure --timeout`.
         "timeout": 3600,
+        "budget": None,
     },
 }
 
@@ -34,6 +35,17 @@ def configured_timeout() -> int:
         return int(value)
     except (ValueError, TypeError):
         return 3600
+
+
+def configured_budget() -> float | None:
+    """The session budget target (USD) from config; None means no limit."""
+    try:
+        value = load_config().get("defaults", {}).get("budget")
+        if value is None:
+            return None
+        return float(value)
+    except (ValueError, TypeError):
+        return None
 
 
 def _config_path(scope: str = "project") -> Path:

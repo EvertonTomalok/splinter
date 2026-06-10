@@ -42,7 +42,9 @@ class CascadeStrategy(DirectStrategy):
         eval_skill: str | None = None,
         cowabunga: bool = False,
         resume: bool = False,
-        gap_fallback_tier: int | None = None,
+        claude_runner_fallback: bool = False,
+        user_guidance: str | None = None,
+        jump_premium: bool = False,
     ) -> list[RunResult]:
         ordered = self._topo_sort(tasks)
 
@@ -91,7 +93,6 @@ class CascadeStrategy(DirectStrategy):
                 eval_skill=eval_skill,
                 cowabunga=cowabunga,
                 resume=False,
-                gap_fallback_tier=gap_fallback_tier,
             )
 
             if result is not None:

@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from typing import Any
 
 from splinter.procreg import run_subprocess
 from splinter.providers.base import ModelProvider, ProviderResponse
+
+# Child of "splinter" so the run-pane log handler surfaces these live.
+_stream_log = logging.getLogger("splinter.live")
 
 
 @dataclass(frozen=True)
@@ -51,6 +55,94 @@ def _normalize_effort(effort: str | None) -> str | None:
     return None  # unknown → let the CLI use its default rather than crash
 
 
+def _tool_detail(inp: dict[str, Any]) -> str:
+    for key in ("description", "command", "file_path", "path", "pattern", "filePath"):
+        val = inp.get(key)
+        if val:
+            return str(val)
+    return ""
+
+
+def _stream_claude_event(line: str) -> None:
+    """Log a one-line, human-readable summary of a claude stream-json event."""
+    line = line.strip()
+    if not line:
+        return
+    try:
+        obj = json.loads(line)
+    except (json.JSONDecodeError, ValueError):
+        return
+    if not isinstance(obj, dict):
+        return
+
+    msg_type = obj.get("type")
+    if msg_type == "assistant":
+        message = obj.get("message")
+        if not isinstance(message, dict):
+            return
+        content = message.get("content")
+        if not isinstance(content, list):
+            return
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "tool_use":
+                tool = block.get("name") or "tool"
+                raw_inp = block.get("input")
+                inp: dict[str, Any] = raw_inp if isinstance(raw_inp, dict) else {}
+                detail = _tool_detail(inp)
+                _stream_log.info("  🔧 %s %s", tool, detail[:90].replace("\n", " "))
+            elif block.get("type") == "text":
+                txt = str(block.get("text", "")).strip().replace("\n", " ")
+                if txt:
+                    _stream_log.info("  💬 %s", txt[:120])
+        return
+
+    if msg_type != "stream_event":
+        return
+    event = obj.get("event")
+    if not isinstance(event, dict):
+        return
+    etype = event.get("type")
+    if etype == "content_block_start":
+        cb = event.get("content_block")
+        if isinstance(cb, dict) and cb.get("type") == "tool_use":
+            _stream_log.info("  🔧 %s …", cb.get("name") or "tool")
+
+
+def _parse_stream_json(stdout: str) -> dict[str, Any]:
+    """Collect the final ``result`` event from an NDJSON stream-json run."""
+    last_result: dict[str, Any] | None = None
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict) and obj.get("type") == "result":
+            last_result = obj
+    if last_result is not None:
+        return last_result
+    text = stdout.strip()
+    if not text:
+        return {}
+    try:
+        obj = json.loads(text)
+    except json.JSONDecodeError:
+        return {"result": text}
+    return obj if isinstance(obj, dict) else {"result": text}
+
+
+def _parse_json_output(text: str) -> dict[str, Any]:
+    try:
+        raw = json.loads(text)
+    except json.JSONDecodeError:
+        raw = {"result": text}
+    return raw if isinstance(raw, dict) else {"result": text}
+
+
 def run(
     prompt: str,
     model: str,
@@ -65,11 +157,15 @@ def run(
         from splinter.configure import configured_timeout
 
         timeout = configured_timeout()
+    stream_json = output_format == "json"
+    cli_format = "stream-json" if stream_json else output_format
     cmd: list[str] = [
         "claude", "-p", "--model", model,
-        "--output-format", output_format,
+        "--output-format", cli_format,
         "--dangerously-skip-permissions",
     ]
+    if stream_json:
+        cmd.append("--verbose")
     effort = _normalize_effort(effort)
     if effort is not None:
         cmd.extend(["--effort", effort])
@@ -81,17 +177,17 @@ def run(
     # whose first line is the '---' YAML fence) isn't mistaken for a CLI flag.
     cmd.extend(["--", prompt])
 
-    proc = run_subprocess(cmd, timeout=timeout)
+    proc = run_subprocess(
+        cmd,
+        timeout=timeout,
+        on_line=_stream_claude_event if stream_json else None,
+    )
     if proc.returncode != 0:
         raise RuntimeError(f"claude exited {proc.returncode}: {proc.stderr.strip()}")
 
-    raw: dict[str, Any] = {}
     text = proc.stdout.strip()
     if output_format == "json":
-        try:
-            raw = json.loads(text)
-        except json.JSONDecodeError:
-            raw = {"result": text}
+        raw = _parse_stream_json(proc.stdout) if stream_json else _parse_json_output(text)
         # The CLI exits 0 even on API errors (e.g. a bad --model 404s) and tucks
         # the message into `result`. Surface it as a failure instead of letting
         # the error string flow downstream as if it were a real response.

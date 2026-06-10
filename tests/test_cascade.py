@@ -320,8 +320,8 @@ class TestPlannerCascadeIntegration:
 
     def test_prd_frontmatter_strategy_cascade(self) -> None:
         """PRD frontmatter strategy: cascade is returned by plan()."""
+
         from splinter.agents.planner import _parse_frontmatter
-        import yaml
 
         prd = "---\nstrategy: cascade\n---\n### US-001: task\n**Description:** do it\n- [ ] done\n"
         fm, _body = _parse_frontmatter(prd)

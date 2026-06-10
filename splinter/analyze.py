@@ -57,6 +57,8 @@ def _run_state(session: Session) -> str:
     state = str(status.get("state", ""))
     if state == "running":
         return "RUNNING" if _pid_alive(status.get("pid")) else "INTERRUPTED"
+    if state == "awaiting_user":
+        return "AWAITING_USER"
     if state:
         return state.upper()
     return "DONE" if session.read("trace.md") else "UNKNOWN"
@@ -157,6 +159,25 @@ def _verdict_tag(verdict: str) -> str:
     return f"[{color}]{verdict}[/]"
 
 
+def format_run_completion(session: Session) -> str:
+    """One-line summary for a finished run (tasks, cost, runs)."""
+    status = session.read_status()
+    metrics = _trace_metrics(session.read("trace.md"))
+    parts: list[str] = []
+    task_total = status.get("task_total") or status.get("tasks")
+    task_index = status.get("task_index")
+    if task_total:
+        done = task_index if task_index is not None else task_total
+        parts.append(f"{done}/{task_total} tasks")
+    cost = metrics.get("cost")
+    if cost:
+        parts.append(f"${cost}")
+    runs = metrics.get("runs")
+    if runs:
+        parts.append(f"{runs} runs")
+    return " · ".join(parts) if parts else "done"
+
+
 def render_overview(session: Session, state: str) -> str:
     import os
 
@@ -168,17 +189,22 @@ def render_overview(session: Session, state: str) -> str:
 
     state_color = {
         "RUNNING": "yellow", "COMPLETED": "green", "DONE": "green",
-        "FAILED": "red", "INTERRUPTED": "dark_orange",
+        "FAILED": "red", "INTERRUPTED": "dark_orange", "AWAITING_USER": "magenta",
     }.get(state, "white")
     emoji = _OVERVIEW_EMOJI.get(state, "⚪")
+    completed = state in ("COMPLETED", "DONE")
 
     lines = [
         f"[bold]splinter[/] · [cyan]{session.id}[/]",
         f"{emoji} [bold {state_color}]{state}[/]",
-        "",
+    ]
+    if completed:
+        lines.append(f"[bold green]✅ All tasks complete[/] — {format_run_completion(session)}")
+    lines.append("")
+    lines.extend([
         f"[dim]strategy[/] [b]{status.get('strategy', '?')}[/]  "
         f"[dim]·[/]  [b]{status.get('tasks', '?')}[/] [dim]tasks[/]",
-    ]
+    ])
 
     metrics = _trace_metrics(trace)
     if metrics:
@@ -227,10 +253,19 @@ def render_overview(session: Session, state: str) -> str:
     lines.append(step(bool(plan), current_stage == "plan", "plan", plan_detail))
     if iters:
         n, tier, _ = iters[-1]
-        lines.append(step(bool(iters), running and current_stage == "run" and not passed,
-                          "run", f"iter {n}/{max_iters} · {tier}"))
+        lines.append(step(
+            bool(iters),
+            running and current_stage == "run" and not passed and not completed,
+            "run",
+            f"iter {n}/{max_iters} · {tier}" if not completed else "done",
+        ))
         eval_detail = f"last: {last_verdict}" if last_verdict else ""
-        lines.append(step(passed, running and has_eval and not passed, "eval", eval_detail))
+        lines.append(step(
+            passed or completed,
+            running and has_eval and not passed and not completed,
+            "eval",
+            eval_detail if not completed else "PASS",
+        ))
     else:
         lines.append(step(False, current_stage == "run", "run"))
         lines.append(step(False, False, "eval"))

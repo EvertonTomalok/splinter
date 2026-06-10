@@ -46,7 +46,11 @@ def test_prompt_with_leading_dashes_is_not_parsed_as_flag(
 
     captured: dict[str, list[str]] = {}
 
-    def fake_subprocess(cmd: list[str], timeout: int = 0) -> object:
+    def fake_subprocess(
+        cmd: list[str],
+        timeout: int = 0,
+        on_line: object = None,
+    ) -> object:
         captured["cmd"] = cmd
         return SimpleNamespace(returncode=0, stdout='{"result": "ok"}', stderr="")
 
@@ -57,6 +61,46 @@ def test_prompt_with_leading_dashes_is_not_parsed_as_flag(
     # The prompt is the final arg, immediately preceded by the '--' terminator.
     assert cmd[-1].startswith("---\nname: prd")
     assert cmd[-2] == "--"
+    assert "stream-json" in cmd
+
+
+def test_claude_json_runs_use_stream_json_for_live_trace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from splinter.providers import claude_cli
+
+    captured: dict[str, object] = {}
+
+    def fake_subprocess(
+        cmd: list[str],
+        timeout: int = 0,
+        on_line: object = None,
+    ) -> object:
+        captured["cmd"] = cmd
+        captured["on_line"] = on_line
+        stdout = (
+            '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read",'
+            '"input":{"file_path":"foo.py"}}]}}\n'
+            '{"type":"result","result":"ok","usage":{"input_tokens":1,"output_tokens":2},'
+            '"session_id":"sid1","is_error":false}\n'
+        )
+        if on_line is not None:
+            for line in stdout.splitlines():
+                on_line(line)
+        return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(claude_cli, "run_subprocess", fake_subprocess)
+    result = claude_cli.run("hi", "sonnet")
+
+    cmd = captured["cmd"]
+    assert isinstance(cmd, list)
+    assert "stream-json" in cmd
+    assert "--verbose" in cmd
+    assert captured["on_line"] is claude_cli._stream_claude_event
+    assert result.text == "ok"
+    assert result.raw.get("_session_id") == "sid1"
 
 
 def test_configured_timeout_default_and_override(
@@ -84,7 +128,11 @@ def test_claude_run_uses_configured_timeout_when_unset(
 
     seen: dict[str, int] = {}
 
-    def fake_subprocess(cmd: list[str], timeout: int = 0) -> object:
+    def fake_subprocess(
+        cmd: list[str],
+        timeout: int = 0,
+        on_line: object = None,
+    ) -> object:
         seen["timeout"] = timeout
         return SimpleNamespace(returncode=0, stdout='{"result": "ok"}', stderr="")
 
@@ -259,7 +307,9 @@ def test_resume_completed_session_opens_analyze(
     session.set_status("completed", source="prd")
     assert resume_session("ses_done") == 0
     assert opened == ["run"]
-    assert "opening analyze" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "finished" in out
+    assert "Opening analyze" in out
 
 
 # --- tui frontmatter helpers -------------------------------------------------
@@ -291,12 +341,15 @@ def _drive_loop(
     verdicts: list[EvalVerdict],
     *,
     cowabunga: bool,
+    task: Task | None = None,
+    session: Session | None = None,
+    prd: str | None = None,
 ) -> tuple[Session, list[int]]:
     """Run DirectStrategy with scripted eval verdicts; return (session, tiers seen)."""
     monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
     tiers_seen: list[int] = []
 
-    def fake_run_task(task: Task, plan: str, tier: int, ladder: object, **kw: object) -> RunResult:
+    def fake_run_task(t: Task, plan: str, tier: int, ladder: object, **kw: object) -> RunResult:
         tiers_seen.append(tier)
         return RunResult(
             text="did the thing", model="stub", tier=tier,
@@ -324,15 +377,18 @@ def _drive_loop(
 
     from splinter.models.roster import load_ladder
 
-    session = Session("ses_test_loop")
+    run_session = session or Session("ses_test_loop")
+    if prd:
+        run_session.write("prd.md", prd)
+    run_task = task or Task(description="t", acceptance="a", effort="normal")
     DirectStrategy().execute(
-        [Task(description="t", acceptance="a", effort="normal")],
-        session,
+        [run_task],
+        run_session,
         load_ladder(),
         max_iterations=6,
         cowabunga=cowabunga,
     )
-    return session, tiers_seen
+    return run_session, tiers_seen
 
 
 def _v(decision: str) -> EvalVerdict:
@@ -342,12 +398,15 @@ def _v(decision: str) -> EvalVerdict:
 def test_ask_user_stops_without_cowabunga(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    session, tiers = _drive_loop(
-        monkeypatch, tmp_path, [_v(Decision.ASK_USER)], cowabunga=False
-    )
-    # Stopped after the very first iteration, handed to the human.
-    assert tiers == [1]
+    from splinter.strategies.base import AskUserPause
+
+    with pytest.raises(AskUserPause):
+        _drive_loop(
+            monkeypatch, tmp_path, [_v(Decision.ASK_USER)], cowabunga=False
+        )
+    session = Session("ses_test_loop")
     assert "ASK_USER" in session.read("loop.md")
+    assert session.read("run_checkpoint.json").strip()
 
 
 def test_ask_user_stops_with_cowabunga(
@@ -372,6 +431,99 @@ def test_jump_premium_skips_to_premium_tier(
     # Started at tier 1 (normal), jumped straight to premium tier 3.
     assert tiers[0] == 1
     assert tiers[1] == 3
+
+
+def test_max_tier_without_pass_pauses(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from splinter.strategies.base import AskUserPause
+
+    with pytest.raises(AskUserPause):
+        _drive_loop(
+            monkeypatch,
+            tmp_path,
+            [_v(Decision.ESCALATE)] * 5,
+            cowabunga=True,
+        )
+
+
+def test_jump_premium_stuck_pauses(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from splinter.strategies.base import AskUserPause
+
+    with pytest.raises(AskUserPause):
+        _drive_loop(
+            monkeypatch,
+            tmp_path,
+            [_v(Decision.JUMP_PREMIUM), _v(Decision.JUMP_PREMIUM)],
+            cowabunga=False,
+        )
+
+
+def test_loop_exhausted_without_pass_pauses(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from splinter.strategies.base import AskUserPause
+
+    with pytest.raises(AskUserPause):
+        _drive_loop(
+            monkeypatch,
+            tmp_path,
+            [_v(Decision.RETRY)] * 6,
+            cowabunga=False,
+            task=Task(description="US-001: First", acceptance="a", effort="normal"),
+            prd="""---
+strategy: direct
+---
+
+### US-001: First
+**Acceptance Criteria:**
+- [ ] does A
+""",
+        )
+
+
+def test_pause_blocks_next_prd_task(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from splinter.strategies.base import AskUserPause
+
+    monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
+    ran: list[str] = []
+
+    def fake_run_task(task: Task, plan: str, tier: int, ladder: object, **kw: object) -> RunResult:
+        ran.append(task.description)
+        return RunResult(
+            text="did the thing", model="stub", tier=tier,
+            tokens={"in": 1, "out": 1}, cost=0.0, raw={}, opencode_session=None,
+        )
+
+    def boom_gate() -> object:
+        raise RuntimeError("no gate")
+
+    monkeypatch.setattr("splinter.strategies.stages.run_task", fake_run_task)
+    monkeypatch.setattr("splinter.strategies.stages.run_gate", boom_gate)
+    monkeypatch.setattr(
+        "splinter.strategies.stages.Evaluator.judge",
+        lambda self, *a, **k: _v(Decision.ASK_USER),
+    )
+    monkeypatch.setattr(
+        "splinter.strategies.direct._make_plan", lambda *a, **k: "the plan"
+    )
+
+    from splinter.models.roster import load_ladder
+
+    session = Session("ses_pause_multi")
+    session.write("prd.md", _PRD)
+    tasks = [
+        Task(description="US-001: First", acceptance="a", effort="normal"),
+        Task(description="US-002: Second", acceptance="b", effort="normal"),
+    ]
+    with pytest.raises(AskUserPause):
+        DirectStrategy().execute(tasks, session, load_ladder(), cowabunga=False)
+    assert len(ran) == 1
+    assert ran[0].startswith("US-001")
 
 
 # --- PRD as source of truth: checkbox progress + multi-task resume -----------

@@ -210,6 +210,19 @@ def test_resolve_model_claude(isolated_ladder: "object") -> None:
     assert resolve_model(4, ladder)[1] == "opencode"
 
 
+def test_rewrite_runners_claude(isolated_ladder: "object") -> None:
+    from splinter.enums import Variant
+    from splinter.models.roster import rewrite_runners_claude
+
+    ladder = isolated_ladder
+    rewrite_runners_claude(ladder)
+    for level in range(6):
+        model_id, provider = resolve_model(level, ladder)
+        assert provider == "claude"
+        assert model_id == "sonnet"
+        assert ladder.tier_variant(level) == Variant.HIGH
+
+
 def test_session_write_read(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
     monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
     session = Session("ses_test")

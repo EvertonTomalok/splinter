@@ -48,6 +48,7 @@ from splinter.analyze import (
     _prd_phases,
     _run_state,
     _trace_metrics,
+    format_run_completion,
     render_overview,
 )
 from splinter.memory.session import Session, delete_session, list_sessions
@@ -59,6 +60,8 @@ _STATE_EMOJI = {
     "COMPLETED": "🟢",
     "FAILED": "🔴",
     "INTERRUPTED": "🟠",
+    "AWAITING_USER": "🟣",
+    "PAUSED": "🟠",
     "DONE": "🟢",
     "UNKNOWN": "⚪",
 }
@@ -658,6 +661,106 @@ class _GapModal(ModalScreen[str]):
         self.dismiss("exit")
 
 
+class _AskUserModal(ModalScreen[tuple[str, str] | None]):
+    """Shown when the eval loop needs human judgment (ASK_USER / max-tier escalate)."""
+
+    DEFAULT_CSS = """
+    _AskUserModal {
+        align: center middle;
+        background: $background 60%;
+    }
+    _AskUserModal > Vertical#ask-dialog {
+        width: 80;
+        height: auto;
+        max-height: 90%;
+        border: round $primary;
+        background: $surface;
+        padding: 1 2;
+    }
+    _AskUserModal #ask-title {
+        text-style: bold;
+        color: $primary;
+        margin-bottom: 1;
+    }
+    _AskUserModal #ask-reason {
+        color: $text-muted;
+        margin-bottom: 1;
+    }
+    _AskUserModal #ask-response {
+        height: 8;
+        margin-bottom: 1;
+    }
+    _AskUserModal #ask-actions {
+        height: 3;
+        align-horizontal: center;
+    }
+    _AskUserModal Button {
+        width: 1fr;
+        height: 3;
+        margin: 0 1;
+        border: none;
+        text-style: bold;
+    }
+    """
+
+    BINDINGS = [
+        ("a", "submit_answer", "Answer"),
+        ("p", "jump_premium", "Jump Premium"),
+        ("c", "action_cowabunga", "Cowabunga"),
+        ("e", "exit_modal", "Exit"),
+        ("escape", "exit_modal", "Cancel"),
+    ]
+
+    def __init__(self, reason: str = "", corrections: str = "") -> None:
+        super().__init__()
+        self._reason = reason
+        self._corrections = corrections
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="ask-dialog"):
+            yield Static("❓  Run Paused · Your input needed", id="ask-title")
+            yield Rule()
+            yield Static(
+                self._reason or "The evaluator needs guidance to continue.",
+                id="ask-reason",
+            )
+            yield Label("Your answer (optional context for the runner):")
+            yield TextArea(self._corrections, id="ask-response")
+            with Horizontal(id="ask-actions"):
+                yield Button("  Answer  (a)", id="answer", variant="success")
+                yield Button("  Jump Premium  (p)", id="jump_premium", variant="primary")
+                yield Button("  Cowabunga  (c)", id="cowabunga", variant="warning")
+                yield Button("  Exit  (e)", id="exit", variant="error")
+
+    def on_mount(self) -> None:
+        self.query_one("#answer", Button).focus()
+
+    def action_submit_answer(self) -> None:
+        self.query_one("#answer", Button).press()
+
+    def action_jump_premium(self) -> None:
+        self.query_one("#jump_premium", Button).press()
+
+    def action_cowabunga(self) -> None:
+        self.query_one("#cowabunga", Button).press()
+
+    def action_exit_modal(self) -> None:
+        self.query_one("#exit", Button).press()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        bid = event.button.id or "exit"
+        if bid == "answer":
+            text = self.query_one("#ask-response", TextArea).text.strip()
+            self.dismiss(("answer", text))
+        elif bid == "jump_premium":
+            text = self.query_one("#ask-response", TextArea).text.strip()
+            self.dismiss(("jump_premium", text))
+        elif bid == "cowabunga":
+            self.dismiss(("cowabunga", ""))
+        else:
+            self.dismiss(None)
+
+
 class RunApp(App[int]):
     """Live dashboard for ``splinter run``: overview + streaming activity log."""
 
@@ -697,8 +800,92 @@ class RunApp(App[int]):
         splog = logging.getLogger("splinter")
         splog.setLevel(logging.INFO)
         splog.addHandler(self._handler)
+        logging.getLogger("splinter.live").setLevel(logging.INFO)
 
-        self.run_worker(self._work, thread=True, name="pipeline", exclusive=True)
+        if self.session.read_status().get("state") == "awaiting_user":
+            self.call_after_refresh(self._show_ask_user_modal)
+        else:
+            self.run_worker(self._work, thread=True, name="pipeline", exclusive=True)
+
+    def _show_ask_user_modal(self) -> None:
+        st = self.session.read_status()
+        reason = str(st.get("ask_reason", ""))
+        corrections = str(st.get("ask_corrections", ""))
+        cp = self.session.read("run_checkpoint.json").strip()
+        if cp:
+            try:
+                import json
+
+                data = json.loads(cp)
+                gate = str(data.get("gate_output", "")).strip()
+                corr = str(data.get("corrections", "")).strip()
+                parts = [p for p in (corr, gate) if p]
+                if parts:
+                    corrections = "\n\n".join(parts)
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        def _on_choice(result: tuple[str, str] | None) -> None:
+            if self._timer is None:
+                self._timer = self.set_interval(0.5, self._refresh)
+            if result is None:
+                self.exit(3)
+                return
+            action, text = result
+            if action == "answer":
+                self.write_log("— continuing with your answer —", logging.WARNING)
+                self._run_pipeline_worker(
+                    resume=True, user_guidance=text or None, jump_premium=False, cowabunga=False
+                )
+            elif action == "jump_premium":
+                self.write_log("— jumping to premium tier —", logging.WARNING)
+                self._run_pipeline_worker(
+                    resume=True,
+                    user_guidance=text or None,
+                    jump_premium=True,
+                    cowabunga=False,
+                )
+            elif action == "cowabunga":
+                self.write_log("— cowabunga — proceeding autonomously —", logging.WARNING)
+                self._run_pipeline_worker(
+                    resume=True, user_guidance=None, jump_premium=False, cowabunga=True
+                )
+            else:
+                self.exit(3)
+
+        self.push_screen(_AskUserModal(reason, corrections), callback=_on_choice)
+
+    def _run_pipeline_worker(
+        self,
+        *,
+        resume: bool = False,
+        user_guidance: str | None = None,
+        jump_premium: bool = False,
+        cowabunga: bool = False,
+        claude_runner_fallback: bool = False,
+    ) -> None:
+        def _run() -> None:
+            from splinter.pipeline import run_pipeline
+
+            kwargs = {
+                **self.run_kwargs,
+                "resume": resume,
+                "user_guidance": user_guidance,
+                "jump_premium": jump_premium,
+                "cowabunga": cowabunga or bool(self.run_kwargs.get("cowabunga")),
+                "claude_runner_fallback": claude_runner_fallback,
+            }
+            try:
+                self.rc = run_pipeline(**kwargs)
+            except BaseException as exc:  # noqa: BLE001
+                self.rc = 1
+                self.error = str(exc)
+                try:
+                    self.call_from_thread(self.write_log, f"ERROR: {exc}", logging.ERROR)
+                except Exception:
+                    pass
+
+        self.run_worker(_run, thread=True, name="pipeline", exclusive=True)
 
     def on_unmount(self) -> None:
         if self._handler is not None:
@@ -723,31 +910,7 @@ class RunApp(App[int]):
         self.exit(2)
 
     def _work(self) -> None:
-        from splinter.pipeline import run_pipeline
-
-        try:
-            self.rc = run_pipeline(**self.run_kwargs)
-        except BaseException as exc:  # noqa: BLE001 — surface any failure in the log
-            self.rc = 1
-            self.error = str(exc)
-            try:
-                self.call_from_thread(self.write_log, f"ERROR: {exc}", logging.ERROR)
-            except Exception:
-                pass
-
-    def _work_with_claude_fallback(self) -> None:
-        from splinter.pipeline import run_pipeline
-
-        kwargs = {**self.run_kwargs, "gap_fallback_tier": 4, "resume": True}
-        try:
-            self.rc = run_pipeline(**kwargs)
-        except BaseException as exc:  # noqa: BLE001
-            self.rc = 1
-            self.error = str(exc)
-            try:
-                self.call_from_thread(self.write_log, f"ERROR: {exc}", logging.ERROR)
-            except Exception:
-                pass
+        self._run_pipeline_worker()
 
     def write_log(self, msg: str, level: int = logging.INFO) -> None:
         # Streamed model text/tool args are arbitrary — escape so stray `[` markup
@@ -755,6 +918,13 @@ class RunApp(App[int]):
         safe = escape(msg)
         color = {logging.ERROR: "red", logging.WARNING: "yellow"}.get(level)
         self.query_one("#log", RichLog).write(f"[{color}]{safe}[/]" if color else safe)
+
+    def _write_run_complete(self) -> None:
+        summary = format_run_completion(self.session)
+        log = self.query_one("#log", RichLog)
+        log.write(f"[bold green]✅ RUN COMPLETE[/] — {escape(summary)}")
+        log.write("[dim]press q to quit · uv run splinter analyze to inspect[/]")
+        self.sub_title = f"🟢 COMPLETE · {summary}"
 
     def _refresh(self) -> None:
         state = _run_state(self.session)
@@ -774,7 +944,7 @@ class RunApp(App[int]):
             self._timer = None
 
         if self.rc == 0:
-            self.write_log("— finished — press q to quit —")
+            self._write_run_complete()
         elif self.rc == 2:
             self.write_log("— run PAUSED (provider gap) —", logging.WARNING)
             st = self.session.read_status()
@@ -782,6 +952,9 @@ class RunApp(App[int]):
             provider = str(st.get("provider", ""))
             retry_after = st.get("retry_after")
             self.call_after_refresh(self._show_gap_modal, kind, provider, retry_after)
+        elif self.rc == 3:
+            self.write_log("— run PAUSED (needs your input) —", logging.WARNING)
+            self.call_after_refresh(self._show_ask_user_modal)
         else:
             # On failure, finish the TUI automatically (after a brief glimpse).
             self.write_log(f"— run failed (rc={self.rc}) — closing —", logging.ERROR)
@@ -802,34 +975,15 @@ class RunApp(App[int]):
             if self._timer is None:
                 self._timer = self.set_interval(0.5, self._refresh)
             if choice == "claude":
-                self.write_log("— switching to Claude (tier 4) —", logging.WARNING)
-                self.run_worker(
-                    self._work_with_claude_fallback,
-                    thread=True,
-                    name="pipeline",
-                    exclusive=True,
-                )
+                self.write_log("— switching to Claude (sonnet @ high) —", logging.WARNING)
+                self._run_pipeline_worker(resume=True, claude_runner_fallback=True)
             elif choice == "retry":
                 self.write_log("— sleep done, retrying… —", logging.WARNING)
-                self.run_worker(self._work_retry, thread=True, name="pipeline", exclusive=True)
+                self._run_pipeline_worker(resume=True)
             else:
                 self.exit(2)
 
         self.push_screen(_GapModal(kind, provider, ra), callback=_on_choice)
-
-    def _work_retry(self) -> None:
-        from splinter.pipeline import run_pipeline
-
-        kwargs = {**self.run_kwargs, "resume": True}
-        try:
-            self.rc = run_pipeline(**kwargs)
-        except BaseException as exc:  # noqa: BLE001
-            self.rc = 1
-            self.error = str(exc)
-            try:
-                self.call_from_thread(self.write_log, f"ERROR: {exc}", logging.ERROR)
-            except Exception:
-                pass
 
 
 def run_with_tui(run_kwargs: dict[str, Any], session: Session | None = None) -> int:
@@ -1703,7 +1857,7 @@ def resume_session(session_id: str | None, *, reset: bool = False) -> int:
     from splinter.analyze import _run_state
     from splinter.memory.session import list_sessions
 
-    resumable_run = {"FAILED", "INTERRUPTED", "PAUSED"}
+    resumable_run = {"FAILED", "INTERRUPTED", "PAUSED", "AWAITING_USER"}
     sessions = list_sessions()
 
     sid = session_id
@@ -1735,7 +1889,8 @@ def resume_session(session_id: str | None, *, reset: bool = False) -> int:
         print(f"session {sid} is still running — not resumable while its process is alive.")
         return 1
     if state in ("COMPLETED", "DONE"):
-        print(f"session {sid} already completed — opening analyze.")
+        summary = format_run_completion(session)
+        print(f"session {sid} finished ({summary}). Opening analyze.")
         AnalyzeApp(session).run()
         return 0
     if state in resumable_run:

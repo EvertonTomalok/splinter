@@ -8,6 +8,23 @@ uv run ruff check && uv run mypy splinter && uv run pytest
 
 All three must pass with zero errors.
 
+## Unit Tests (pytest gate)
+
+The pytest gate must finish in seconds. **No real external calls** — unit tests never spawn CLIs or hit live models.
+
+When exercising the run loop (`_run_task_loop`, `DirectStrategy.execute`, etc.), mock every I/O boundary:
+
+| Boundary | Mock target |
+|---|---|
+| Planner | `splinter.strategies.direct._make_plan` |
+| Runner / gate / eval chain | `splinter.strategies.stages.run_task`, `run_gate`, `Evaluator.judge`, or `build_chain` |
+| Provider dispatch | `splinter.providers.dispatch.run_text`, `run_text_session` |
+| Subprocess | `splinter.providers.claude_cli.run_subprocess`, opencode equivalents |
+
+If a test takes more than a second, it is probably calling `_make_plan` or `run_text` for real. Fix the mock before committing.
+
+Real CLI/model calls belong only in manual E2E runs (`uv run splinter run …`), not in `uv run pytest`.
+
 ## Testing the Pipeline End-to-End
 
 ### Quick task (no PRD)

@@ -121,13 +121,20 @@ def run_pipeline(
     cowabunga: bool = False,
     resume: bool = False,
     session: Session | None = None,
-    gap_fallback_tier: int | None = None,
+    claude_runner_fallback: bool = False,
+    user_guidance: str | None = None,
+    jump_premium: bool = False,
 ) -> int:
     ladder = load_ladder()
     if eval_model:
         ladder.eval_model = eval_model
     if eval_effort:
         ladder.eval_effort = eval_effort
+    if claude_runner_fallback:
+        from splinter.models.roster import rewrite_runners_claude
+
+        rewrite_runners_claude(ladder)
+        log.info("runtime: runner tiers rewritten to sonnet @ high")
     if session is None:
         # Fresh session per run so prior runs (especially failed ones) are kept.
         session = Session(new_session_id())
@@ -243,7 +250,9 @@ def run_pipeline(
             eval_skill=eval_skill,
             cowabunga=cowabunga,
             resume=resume,
-            gap_fallback_tier=gap_fallback_tier,
+            claude_runner_fallback=claude_runner_fallback,
+            user_guidance=user_guidance,
+            jump_premium=jump_premium,
         )
 
         session.set_status("completed", stage="done")
@@ -253,6 +262,22 @@ def run_pipeline(
         print(f"  runs: {len(results)}")
         print(f"  cost: ${total:.4f}")
         return 0
+    except Exception as ask_exc:
+        from splinter.strategies.base import AskUserPause
+        if not isinstance(ask_exc, AskUserPause):
+            raise
+        session.set_status(
+            "awaiting_user",
+            ask_reason=ask_exc.reason,
+            ask_corrections=ask_exc.corrections,
+            ask_tier=ask_exc.tier,
+            ask_iteration=ask_exc.iteration,
+            task_index=ask_exc.task_index,
+        )
+        log.warning("run paused — needs your input: %s", ask_exc.reason)
+        print(f"run paused — needs your input.\n  {ask_exc.reason}")
+        print(f"  resume: splinter resume {session.id}")
+        return 3
     except Exception as gap_exc:
         from splinter.providers.base import ProviderGapError
         if not isinstance(gap_exc, ProviderGapError):

@@ -27,6 +27,17 @@ class EvalVerdict:
         return self.decision == Decision.PASS
 
 
+@dataclass
+class AskUserPause(Exception):
+    """Eval loop needs human judgment before continuing."""
+
+    reason: str
+    corrections: str = ""
+    tier: int = 0
+    iteration: int = 0
+    task_index: int = 0
+
+
 class Strategy(ABC):
     """A turtle: orchestrates plan/run/gate/eval over a list of tasks."""
 
@@ -47,6 +58,8 @@ class Strategy(ABC):
         eval_skill: str | None = None,
         cowabunga: bool = False,
         resume: bool = False,
-        gap_fallback_tier: int | None = None,
+        claude_runner_fallback: bool = False,
+        user_guidance: str | None = None,
+        jump_premium: bool = False,
     ) -> list[RunResult]:
         ...

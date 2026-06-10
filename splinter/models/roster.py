@@ -84,6 +84,19 @@ class Ladder:
         return self.effort_map.get(effort)
 
 
+def rewrite_runners_claude(
+    ladder: Ladder,
+    *,
+    model: str = "sonnet",
+    variant: str = "high",
+) -> None:
+    """Rewrite all runner tiers to Claude for one pipeline invocation."""
+    for tier in ladder.tiers:
+        tier.models = [model]
+        tier.provider = provider_for(model)
+        ladder.tier_variants[tier.level] = variant
+
+
 def _load_raw() -> dict[str, Any]:
     ref = importlib.resources.files("splinter.models") / "ladder.yaml"
     with importlib.resources.as_file(ref) as p:
