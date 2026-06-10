@@ -2233,7 +2233,9 @@ def run_prd_interactive(run_kwargs: dict[str, Any]) -> int:
     session = Session(new_session_id())
     result = PrdSessionApp(session, run_kwargs).run()
     if result is None:
-        if session.dir.exists():
+        if session.is_empty():
+            delete_session(session.id)  # abandoned before any work — don't litter
+        elif session.dir.exists():
             print(f"PRD session aborted — resume later: uv run splinter resume {session.id}")
         return 0
     if isinstance(result, int) and result == 0:

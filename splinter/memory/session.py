@@ -71,7 +71,11 @@ def resolve_session(session_id: str | None = None) -> str:
 class Session:
     def __init__(self, session_id: str | None = None) -> None:
         self.id = resolve_session(session_id)
-        self.dir = session_dir(self.id)
+        self.dir = _sessions_dir() / self.id
+
+    def _ensure_dir(self) -> None:
+        self.dir.mkdir(parents=True, exist_ok=True)
+        (self.dir / "knowledge").mkdir(exist_ok=True)
 
     def index_path(self) -> Path:
         return self.dir / "index.md"
@@ -83,12 +87,14 @@ class Session:
         return ""
 
     def write(self, filename: str, content: str) -> Path:
+        self._ensure_dir()
         p = self.dir / filename
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content)
         return p
 
     def append(self, filename: str, content: str) -> Path:
+        self._ensure_dir()
         p = self.dir / filename
         with open(p, "a") as f:
             f.write(content)
@@ -113,15 +119,15 @@ class Session:
         return ""
 
     def knowledge_dir(self) -> Path:
-        d = self.dir / "knowledge"
-        d.mkdir(exist_ok=True)
-        return d
+        self._ensure_dir()
+        return self.dir / "knowledge"
 
     def status_path(self) -> Path:
         return self.dir / "status.json"
 
     def set_status(self, state: str, **fields: Any) -> None:
         """Persist run state (running/completed/failed) plus arbitrary fields."""
+        self._ensure_dir()
         data = self.read_status()
         data["state"] = state
         data["updated"] = datetime.now(timezone.utc).isoformat()
@@ -137,3 +143,19 @@ class Session:
             except json.JSONDecodeError:
                 return {}
         return {}
+
+    def is_empty(self) -> bool:
+        """No real work captured — only a status stamp / blank scaffolding.
+
+        Used to garbage-collect sessions that get a ``refining`` status the
+        moment a PRD UI mounts but are abandoned before anything is written.
+        """
+        if not self.dir.exists():
+            return True
+        for name in ("prd.md", "loop.md", "trace.md", "eval.md"):
+            if self.read(name).strip():
+                return False
+        kdir = self.dir / "knowledge"
+        if kdir.exists() and any(p.stat().st_size > 0 for p in kdir.glob("*.md")):
+            return False
+        return True
