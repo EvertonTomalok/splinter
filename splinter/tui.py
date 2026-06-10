@@ -1964,7 +1964,7 @@ class PrdSessionApp(App[int | None]):
         prd_session.log_phase(self.session, "refine")
         self.phase = "chat"
         self._save_state()
-        self._set_preview(draft)
+        self._set_preview(prd_session.extract_working_draft(draft))
         self._say("[green]Updated. Answer remaining questions, 'fulfilled', or 'cowabunga'.[/]")
         self._render_actions("chat")
         self._set_busy(False, "your answers / fulfilled / cowabunga")

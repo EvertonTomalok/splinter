@@ -194,6 +194,25 @@ def generate_prd(instructions: str, *, strategy: str | None = None) -> Turn:
     return _ask(prompt, resume=None)
 
 
+def extract_working_draft(text: str) -> str:
+    """Extract the PRD content from a refine response.
+
+    The refine prompt asks the model to output '## Working Draft' followed by
+    the PRD in a fenced code block, then '## Open Questions'. Strip all that
+    and return just the PRD markdown. Falls back to the full text if the
+    expected structure is absent.
+    """
+    # Try to pull out the first fenced code block after ## Working Draft
+    m = re.search(r"## Working Draft.*?```(?:markdown)?\n(.*?)```", text, re.DOTALL | re.IGNORECASE)
+    if m:
+        return m.group(1).strip()
+    # Fallback: strip everything up to the first --- frontmatter marker
+    m2 = re.search(r"^(---\n.*)", text, re.DOTALL | re.MULTILINE)
+    if m2:
+        return m2.group(1).strip()
+    return text.strip()
+
+
 def route_prd(prd_text: str) -> str:
     """Route PRD text to generate or refine flow.
 
