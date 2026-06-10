@@ -35,6 +35,239 @@ The loop continues until the judge is satisfied or you hit `opus-4.8` at the top
 
 ---
 
+## Requirements
+
+Splinter is the conductor, not the models. You bring the two CLIs it drives:
+
+- **[uv](https://github.com/astral-sh/uv)** the Python project manager Splinter
+  is built on
+- **Python 3.11+** (uv can install it for you)
+- **[Claude Code](https://docs.claude.com/en/docs/claude-code/overview)** the
+  `claude` CLI, authenticated, with access to `sonnet` and `opus-4.8`
+- **[opencode](https://opencode.ai)** the `opencode` CLI, authenticated on the
+  `opencode-go` provider _(not needed if you use `--use-cc-only`, see below)_
+
+No extra language toolchains required. The validation tasks are all Python, which
+uv already gives you.
+
+## Setup
+
+### Option 1 — install with uv (recommended)
+
+If you already have [uv](https://github.com/astral-sh/uv):
+
+```bash
+uv tool install git+https://github.com/evertontomalok/splinter.git
+```
+
+That is it. The `splinter` command is now available globally.
+
+<details>
+<summary>Don't have uv yet?</summary>
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+</details>
+
+### Option 2 — clone and install locally
+
+```bash
+git clone https://github.com/evertontomalok/splinter.git
+cd splinter
+uv sync
+```
+
+With a local install, prefix every command with `uv run` (e.g. `uv run splinter setup`).
+
+### Authenticate the providers (one time)
+
+```bash
+claude            # sign in to Claude Code
+opencode auth login
+```
+
+### Let opencode edit files non-interactively (one time)
+
+```bash
+mkdir -p ~/.config/opencode
+cat > ~/.config/opencode/opencode.json <<'JSON'
+{
+  "permission": {
+    "edit": "allow"
+  }
+}
+JSON
+```
+
+### Verify everything is wired up
+
+```bash
+splinter setup        # or: uv run splinter setup (local install)
+```
+
+The disciples write code by editing files directly. opencode needs
+`permission.edit: allow` in `~/.config/opencode/opencode.json` (step 3) so it can
+do that without prompting; Splinter also passes `--agent build` and
+`--dangerously-skip-permissions`, and drives `claude -p` with
+`--dangerously-skip-permissions`.
+
+`splinter setup` does not just check the binaries exist, it pings each provider
+for real:
+
+```
+checking providers...
+  claude -p (sonnet) ..... OK
+  opencode models ........ OK (14 models)
+  ladder vs roster ....... OK
+  python (uv run) ........ OK (3.11.x)
+environment ready.
+```
+
+If a provider is missing or not authenticated, setup tells you exactly which one
+and exits non zero, so you can drop it in CI too.
+
+---
+
+## Running with Claude Code only
+
+No opencode account? Pass `--use-cc-only` to switch Splinter to a Claude-only
+ladder. Everything runs through `claude -p` — no opencode binary needed, no
+`opencode auth login`, no `opencode.json`.
+
+```bash
+splinter configure --use-cc-only
+```
+
+The ladder becomes:
+
+| Tier | Role | Model |
+|------|------|-------|
+| T0 / T1 | easy → moderate | `haiku` |
+| T2 / T3 | moderate-hard → hard | `sonnet` |
+| T4 / T5 | critical → last-resort | `opus` |
+
+Localizer and eval also run on `haiku` and `opus` respectively. Same pipeline,
+same strategies, same judge loop — just no open models.
+
+When you want to switch back to the full opencode roster:
+
+```bash
+splinter configure --use-default
+```
+
+Minimal setup for Claude-only mode:
+
+```bash
+claude                          # sign in (one time)
+splinter configure --use-cc-only
+splinter setup
+```
+
+---
+
+## Manual configuration
+
+`splinter configure` (no flags, run in a terminal) opens an interactive TUI to
+pick per-step models and effort levels and writes the result to
+`.splinter/config.yaml`.
+
+For non-interactive use, pass flags directly:
+
+```bash
+# set the per-call model timeout (default 3600 s)
+splinter configure --timeout 7200
+
+# replace the gate check suite with your own commands (comma-separated)
+splinter configure --gate-checks "pytest,ruff check,mypy splinter"
+
+# scaffold editable prompt templates into .splinter/prompts/
+splinter configure --init-prompts
+
+# overwrite existing templates
+splinter configure --init-prompts --force
+
+# skip the TUI even in a terminal
+splinter configure --no-interactive --timeout 3600
+```
+
+All of these write to `.splinter/config.yaml` in your project. You can also edit
+that file directly — it is plain YAML:
+
+```yaml
+defaults:
+  strategy: cascade
+  effort: auto
+  max_iterations: 5
+  timeout: 3600
+  budget: null          # USD cap; null = no limit
+
+gate_checks:
+  - {name: pytest,  cmd: "uv run pytest",        when: tests_exist}
+  - {name: ruff,    cmd: "uv run ruff check",    when: always}
+  - {name: mypy,    cmd: "uv run mypy splinter", when: always}
+
+models:
+  planner: opus
+  eval: opus
+  localizer_recall: haiku
+  localizer_precision: haiku
+  tiers: [haiku, haiku, sonnet, sonnet, opus, opus]
+
+efforts:
+  planner: high
+  eval: high
+  tiers: [high, max, high, max, high, max]
+```
+
+A user-level config at `~/.splinter/config.yaml` is also supported — project
+config takes precedence when both exist.
+
+---
+
+## Quickstart
+
+Create a PRD interactively, then run it. `splinter prd` asks a few lettered
+questions (including which turtle to use), writes the PRD into the session, and
+records the strategy in its frontmatter:
+
+```bash
+# describe the work; answer the clarifying questions it asks
+uv run splinter prd "add priority levels to tasks"
+
+# the strategy lives in the PRD, so run just points at it
+uv run splinter run --prd .splinter/sessions/<id>/prd.md
+```
+
+For a quick single task without a full PRD, the `direct` strategy takes a task
+file straight away:
+
+```bash
+uv run splinter run --strategy raphael --task task.yaml
+```
+
+```yaml
+# task.yaml
+description: "write a hello world in python and run it"
+acceptance: "the script runs with exit 0 and prints something containing 'hello'"
+eval_skill: "run_python"   # runs the script, captures stdout and exit code
+effort: trivial            # task difficulty, sets the starting tier
+reasoning_effort: auto     # how hard the model thinks, or let the agent decide
+suggested_tier: 0
+```
+
+The `run_python` skill just executes the generated file with the project
+interpreter (`uv run python <file>`), so the first task needs zero extra
+toolchains beyond what setup already verified.
+
+That run will: ask the sensei for a plan, hand it to a flash tier model, let it
+create the folder, write the Rust, compile and execute, then let the judge
+confirm the output. If the cheap model trips, Splinter quietly levels up and
+tries again.
+
+---
+
 ## The problem
 
 Most agent setups burn a top tier model on every single step. Planning,
@@ -124,141 +357,6 @@ Four strategies, four personalities. Each has a formal name (what you pass to
 | `sprint` | 🟠 **Michelangelo** | Chill. Always starts on flash tier, short loops, bails up a tier the moment it stalls. |
 
 So `--strategy cascade` and `--strategy leonardo` are the same thing.
-
----
-
-## Requirements
-
-Splinter is the conductor, not the models. You bring the two CLIs it drives:
-
-- **[uv](https://github.com/astral-sh/uv)** the Python project manager Splinter
-  is built on
-- **Python 3.11+** (uv can install it for you)
-- **[Claude Code](https://docs.claude.com/en/docs/claude-code/overview)** the
-  `claude` CLI, authenticated, with access to `sonnet` and `opus-4.8`
-- **[opencode](https://opencode.ai)** the `opencode` CLI, authenticated on the
-  `opencode-go` provider
-
-No extra language toolchains required. The validation tasks are all Python, which
-uv already gives you.
-
-## Setup
-
-### Option 1 — install with uv (recommended)
-
-If you already have [uv](https://github.com/astral-sh/uv):
-
-```bash
-uv tool install git+https://github.com/evertontomalok/splinter.git
-```
-
-That is it. The `splinter` command is now available globally.
-
-<details>
-<summary>Don't have uv yet?</summary>
-
-```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-```
-
-</details>
-
-### Option 2 — clone and install locally
-
-```bash
-git clone https://github.com/evertontomalok/splinter.git
-cd splinter
-uv sync
-```
-
-With a local install, prefix every command with `uv run` (e.g. `uv run splinter setup`).
-
-### Authenticate the providers (one time)
-
-```bash
-claude            # sign in to Claude Code
-opencode auth login
-```
-
-### Let opencode edit files non-interactively (one time)
-
-```bash
-mkdir -p ~/.config/opencode
-cat > ~/.config/opencode/opencode.json <<'JSON'
-{
-  "permission": {
-    "edit": "allow"
-  }
-}
-JSON
-```
-
-### Verify everything is wired up
-
-```bash
-splinter setup        # or: uv run splinter setup (local install)
-```
-
-The disciples write code by editing files directly. opencode needs
-`permission.edit: allow` in `~/.config/opencode/opencode.json` (step 3) so it can
-do that without prompting; Splinter also passes `--agent build` and
-`--dangerously-skip-permissions`, and drives `claude -p` with
-`--dangerously-skip-permissions`.
-
-`splinter setup` does not just check the binaries exist, it pings each provider
-for real:
-
-```
-checking providers...
-  claude -p (sonnet) ..... OK
-  opencode models ........ OK (14 models)
-  ladder vs roster ....... OK
-  python (uv run) ........ OK (3.11.x)
-environment ready.
-```
-
-If a provider is missing or not authenticated, setup tells you exactly which one
-and exits non zero, so you can drop it in CI too.
-
-## Quickstart
-
-Create a PRD interactively, then run it. `splinter prd` asks a few lettered
-questions (including which turtle to use), writes the PRD into the session, and
-records the strategy in its frontmatter:
-
-```bash
-# describe the work; answer the clarifying questions it asks
-uv run splinter prd "add priority levels to tasks"
-
-# the strategy lives in the PRD, so run just points at it
-uv run splinter run --prd .splinter/sessions/<id>/prd.md
-```
-
-For a quick single task without a full PRD, the `direct` strategy takes a task
-file straight away:
-
-```bash
-uv run splinter run --strategy raphael --task task.yaml
-```
-
-```yaml
-# task.yaml
-description: "write a hello world in python and run it"
-acceptance: "the script runs with exit 0 and prints something containing 'hello'"
-eval_skill: "run_python"   # runs the script, captures stdout and exit code
-effort: trivial            # task difficulty, sets the starting tier
-reasoning_effort: auto     # how hard the model thinks, or let the agent decide
-suggested_tier: 0
-```
-
-The `run_python` skill just executes the generated file with the project
-interpreter (`uv run python <file>`), so the first task needs zero extra
-toolchains beyond what setup already verified.
-
-That run will: ask the sensei for a plan, hand it to a flash tier model, let it
-create the folder, write the Rust, compile and execute, then let the judge
-confirm the output. If the cheap model trips, Splinter quietly levels up and
-tries again.
 
 ---
 
