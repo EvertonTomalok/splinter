@@ -36,6 +36,10 @@ def setup() -> None:
 def prd(
     description: Annotated[str, typer.Argument(help="Feature/bug description")] = "",
     strategy: Annotated[str | None, typer.Option(help="Pre-select strategy")] = None,
+    no_ground: Annotated[
+        bool,
+        typer.Option("--no-ground", help="Skip codebase grounding before PRD Q&A"),
+    ] = False,
 ) -> None:
     """Generate a PRD interactively."""
     import os
@@ -45,7 +49,7 @@ def prd(
     if not tty or os.environ.get("SPLINTER_NO_TUI"):
         from splinter.prd import run_prd
 
-        raise typer.Exit(run_prd(description=description, strategy=strategy))
+        raise typer.Exit(run_prd(description=description, strategy=strategy, no_ground=no_ground))
 
     from splinter.tui import run_prd_interactive
 
@@ -58,6 +62,7 @@ def prd(
         "budget": None,
         "max_iterations": 5,
         "cowabunga": False,
+        "no_ground": no_ground,
     }
     raise typer.Exit(run_prd_interactive(run_kwargs))
 
@@ -86,6 +91,10 @@ def run(
             "--cowabunga",
             help="Full autonomy: skip the PRD Q&A and never wake the human on ASK_USER",
         ),
+    ] = False,
+    no_ground: Annotated[
+        bool,
+        typer.Option("--no-ground", help="Skip codebase grounding before PRD Q&A"),
     ] = False,
     quiet: Annotated[bool, typer.Option(help="Plain log output instead of the live TUI")] = False,
     use_cc_only: Annotated[
@@ -118,6 +127,7 @@ def run(
         "eval_model": eval_model,
         "eval_effort": eval_effort,
         "cowabunga": cowabunga,
+        "no_ground": no_ground,
     }
 
     tty = sys.stdin.isatty() and sys.stdout.isatty()
@@ -252,7 +262,7 @@ def main(argv: list[str] | None = None) -> int:
         # standalone_mode=False makes Click return the value instead of sys.exit.
         result = app(args=argv, standalone_mode=False)
     except typer.Exit as exc:
-        return exc.exit_code
+        return int(exc.exit_code)
     except KeyboardInterrupt:
         print("\naborted.")
         return 130

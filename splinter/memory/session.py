@@ -129,6 +129,8 @@ class Session:
         """Persist run state (running/completed/failed) plus arbitrary fields."""
         self._ensure_dir()
         data = self.read_status()
+        if "started_at" not in data:
+            data["started_at"] = datetime.now(timezone.utc).isoformat()
         data["state"] = state
         data["updated"] = datetime.now(timezone.utc).isoformat()
         data.update(fields)
@@ -142,6 +144,29 @@ class Session:
                 return loaded
             except json.JSONDecodeError:
                 return {}
+        return {}
+
+    def log_llm_usage(self, model: str, tokens: dict[str, int], cost: float) -> None:
+        """Accumulate LLM usage outside the main run trace (PRD, planner, etc.)."""
+        p = self.dir / "pre_run_usage.json"
+        try:
+            data: dict[str, Any] = json.loads(p.read_text()) if p.exists() else {}
+        except json.JSONDecodeError:
+            data = {}
+        data["input"] = int(data.get("input", 0)) + tokens.get("input", 0)
+        data["output"] = int(data.get("output", 0)) + tokens.get("output", 0)
+        data["cost"] = float(data.get("cost", 0.0)) + cost
+        self._ensure_dir()
+        p.write_text(json.dumps(data))
+
+    def read_pre_run_usage(self) -> dict[str, Any]:
+        p = self.dir / "pre_run_usage.json"
+        if p.exists():
+            try:
+                loaded: dict[str, Any] = json.loads(p.read_text())
+                return loaded
+            except json.JSONDecodeError:
+                pass
         return {}
 
     def is_empty(self) -> bool:

@@ -21,7 +21,7 @@ def _load_prd_skill() -> str:
     return ""
 
 
-def run_prd(*, description: str = "", strategy: str | None = None) -> int:
+def run_prd(*, description: str = "", strategy: str | None = None, no_ground: bool = False) -> int:
     session = Session()
     skill_text = _load_prd_skill()
 
@@ -36,9 +36,18 @@ def run_prd(*, description: str = "", strategy: str | None = None) -> int:
     if strategy:
         strategy_hint = f"\nThe user has pre-selected the strategy: {strategy}\n"
 
+    grounding = ""
+    if not no_ground:
+        from splinter import prd_session
+        from splinter.models.roster import load_ladder
+
+        grounding = prd_session.ground_localization(session, load_ladder(), description)
+    ground_section = f"## Codebase Localization (grounding)\n{grounding}\n\n" if grounding else ""
+
     turn1_prompt = (
         f"{skill_text}\n\n"
         f"User request: {description}\n"
+        f"{ground_section}"
         f"{strategy_hint}\n"
         "Generate 3-5 clarifying questions with lettered options (A/B/C/D). "
         "Include a strategy question unless a strategy was pre-selected. "
@@ -57,6 +66,7 @@ def run_prd(*, description: str = "", strategy: str | None = None) -> int:
         return 1
 
     turn2_prompt = (
+        f"{ground_section}"
         f"User answers:\n{answers}\n\n"
         "Now generate the full PRD following the skill template. "
         "Include YAML frontmatter with feature, strategy, kind, created. "

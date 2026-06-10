@@ -20,6 +20,11 @@ from pathlib import Path
 
 PROMPTS_PACKAGE = "splinter.prompts"
 
+SEQUENTIAL_DIRECTIVE = (
+    "Runs are sequential-only. No strategy selection. "
+    "No parallel execution. One task at a time.\n"
+)
+
 #: Template names the harness ships and that ``configure`` scaffolds.
 TEMPLATE_NAMES = (
     "plan",
@@ -53,7 +58,7 @@ def load_template(name: str) -> str:
     return packaged_template(name)
 
 
-class _Blanks(dict):
+class _Blanks(dict[str, str]):
     """format_map backing dict that renders any missing placeholder as empty."""
 
     def __missing__(self, key: str) -> str:

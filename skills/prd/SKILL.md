@@ -1,8 +1,10 @@
 ---
 name: prd
-description: "Generate a Product Requirements Document (PRD) for a new feature or bug fix, adapted for the Splinter harness. Use when planning a feature, starting a new project, fixing a bug, or when asked to create a PRD. Triggers on: create a prd, write prd for, plan this feature, requirements for, spec out, fix bug. Saves into Splinter session files and records which strategy (turtle) to run."
+description: "Generate a Product Requirements Document (PRD) for a new feature or bug fix, adapted for the Splinter harness. Use when planning a feature, starting a new project, fixing a bug, or when asked to create a PRD. Triggers on: create a prd, write prd for, plan this feature, requirements for, spec out, fix bug. Saves into Splinter session files."
 user-invocable: true
 ---
+
+Runs are sequential-only. No strategy selection. No parallel execution. One task at a time.
 
 # PRD Generator (Splinter)
 
@@ -12,21 +14,46 @@ Valid for features and bug fixes alike.
 
 This skill is invoked by `uv run splinter prd`. It produces a PRD that Splinter
 can consume directly: each user story maps to a Splinter task, acceptance criteria
-map to gate/eval checks, and the chosen strategy is recorded in the frontmatter so
-`splinter run` knows which turtle to use without asking again.
+map to gate/eval checks. Strategy is decided later in the pipeline; the PRD remains
+strategy-agnostic and grounded in codebase analysis.
 
 ---
 
 ## The Job
 
 1. Receive a feature or bug description from the user.
-2. Ask 3-5 essential clarifying questions (with lettered options). One of them is
-   always the **strategy** question, unless a strategy was already passed in.
-3. Generate a structured PRD based on the answers.
-4. Save to the Splinter session: `.splinter/sessions/<session-id>/prd.md` and
+2. Read injected localization grounding (codebase anchors: file:func findings).
+3. Ask 3-4 essential clarifying questions (with lettered options) grounded in real
+   code locations.
+4. Generate a structured PRD based on the answers, with critical-analysis findings
+   tied to specific files/functions.
+5. Save to the Splinter session: `.splinter/sessions/<session-id>/prd.md` and
    update `index.md` to point at it.
 
 **Important:** Do NOT start implementing. Just create the PRD.
+
+---
+
+## Step 0: Localization (First)
+
+Before any question or PRD text, ground your analysis in the codebase.
+
+**Injected grounding block:** Read `.splinter/sessions/<session-id>/knowledge/localization.md`
+(and per-task `localization-N.md` if present). This block contains real `file:func` anchors
+discovered by the localizer.
+
+**Hot-path read strategy:**
+- **Anchors marked `relevance: high`**: Read inline using the `rtk:` tip per anchor.
+  Format: `rtk read <file> | sed -n 'A,Bp'` (read lines A to B of file).
+- **Anchors marked `relevance: medium` or `low`**: Pointer only; read on demand if
+  a question or PRD section requires grounding.
+
+**Critical-analysis mandate:** Before asking any question or generating any PRD section:
+- Name concrete files and functions (never vague references like "the auth code").
+- Flag regressions and impact: "Changing X in `file:func` will require updating
+  Y in `file:func`" (cite both anchors).
+- Ground every assertion in a real `file:func` anchor from localization.
+- No hand-waving; no claims without anchors.
 
 ---
 
@@ -38,8 +65,6 @@ Ask only critical questions where the prompt is ambiguous. Always cover:
 - **Core Functionality:** What are the key actions?
 - **Scope/Boundaries:** What should it NOT do?
 - **Success Criteria:** How do we know it is done?
-- **Strategy:** Which Splinter turtle fits this work? (skip only if `--strategy`
-  was passed to `splinter prd`)
 
 ### Format Questions Like This
 
@@ -56,23 +81,35 @@ Ask only critical questions where the prompt is ambiguous. Always cover:
    C. Just the backend/API
    D. Just the UI
 
-3. Which Splinter strategy should run this?
-   A. cascade (leonardo): big PRD, many small tasks, run sequentially
-   B. direct (raphael): one focused change or bug fix, loop until it passes
-   C. adaptive (donatello): cost sensitive, route each task to the cheapest capable model
-   D. sprint (michelangelo): trivial or batch work, fast and cheap
+3. Which files or systems will this change?
+   A. Only frontend (app/* components)
+   B. Only backend (internal/handlers/*, internal/services/*)
+   C. Both frontend and backend
+   D. Other (please specify)
+
+4. What are the acceptance criteria for success?
+   A. Must pass tests and lint
+   B. Must not break existing features
+   C. Must include user acceptance verification
+   D. Other: [please specify]
 ```
 
-Users respond with "1A, 2C, 3B" for quick iteration. Indent the options.
+Users respond with "1A, 2C, 3B, 4C" for quick iteration. Indent the options.
 
-### Strategy guidance
+### Citing Real Findings
 
-When recommending a strategy, use this rule of thumb:
+Each question MUST cite a real `file:func` finding from localization. Example:
 
-- Many user stories spanning several files -> `cascade`
-- Single story, bug fix, or tight focused change -> `direct`
-- Budget is a hard constraint, lots of medium tasks -> `adaptive`
-- Trivial or repetitive low risk work -> `sprint`
+```
+1. localizer.localize() caches on knowledge/localization.md — should grounding
+   move into prd_session.py?
+   A. Yes, add grounding to _load_prd_skill()
+   B. No, keep it injected as a separate prompt section
+   C. Defer to Step 2 generation
+   D. Other: [please specify]
+```
+
+This ensures questions target actual code anchors and improve PRD quality.
 
 ---
 
@@ -84,14 +121,14 @@ Splinter can parse it.
 ```markdown
 ---
 feature: [feature-name-kebab-case]
-strategy: [cascade | direct | adaptive | sprint]
 kind: [feature | bugfix]
 created: [ISO date]
 ---
 ```
 
 ### 1. Introduction/Overview
-Brief description of the feature and the problem it solves.
+Brief description of the feature and the problem it solves. Ground high-impact
+design decisions in `file:func` anchors from localization.
 
 ### 2. Goals
 Specific, measurable objectives (bullet list).
@@ -145,6 +182,10 @@ What this feature will NOT include. Critical for scope.
 
 ### 7. Technical Considerations (Optional)
 - Known constraints, dependencies, integration points, performance needs.
+- **Impact analysis:** Name each file:func anchor that will be modified; flag
+  regressions and downstream effects tied to real code locations.
+- **Regression list:** For each story, list code paths that must not break,
+  anchored to specific files/functions.
 
 ### 8. Success Metrics
 How success is measured, including the project-wide gates:
@@ -178,7 +219,7 @@ ambiguous criterion costs you escalation cycles (and tokens).
 - **Format:** Markdown (`.md`) with the YAML frontmatter above.
 - **Location:** `.splinter/sessions/<session-id>/prd.md`
 - After saving, update `.splinter/sessions/<session-id>/index.md` with a one line
-  pointer to the PRD and the chosen strategy.
+  pointer to the PRD.
 
 ---
 
@@ -186,12 +227,13 @@ ambiguous criterion costs you escalation cycles (and tokens).
 
 Before saving the PRD:
 
-- [ ] Asked clarifying questions with lettered options (including strategy, unless
-      passed in)
+- [ ] Localization grounding read (Step 0)
+- [ ] Each clarifying question cites a real `file:func` anchor from localization
 - [ ] Incorporated the user's answers
-- [ ] Frontmatter includes `feature`, `strategy`, `kind`
+- [ ] Frontmatter includes `feature`, `kind`, `created`
 - [ ] User stories are small, specific, and carry `effort` hints
 - [ ] Acceptance criteria are verifiable (they drive the EVAL)
 - [ ] Machine-checkable criteria are explicit (they drive the GATE)
 - [ ] Non-goals define clear boundaries
+- [ ] §7 Technical Considerations names regressions/impact with `file:func` anchors
 - [ ] Saved to `.splinter/sessions/<session-id>/prd.md` and `index.md` updated

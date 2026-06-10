@@ -11,7 +11,7 @@ from pathlib import Path
 import yaml
 
 from splinter.agents import planner
-from splinter.agents.localizer import CodeAnchor, filter_task_context, localize
+from splinter.agents.localizer import CodeAnchor, filter_task_context, localize, rtk_cat_tip
 from splinter.agents.runner import Task
 from splinter.memory.session import Session, new_session_id
 from splinter.models.roster import load_ladder
@@ -143,6 +143,7 @@ def run_pipeline(
     claude_runner_fallback: bool = False,
     user_guidance: str | None = None,
     jump_premium: bool = False,
+    no_ground: bool = False,
 ) -> int:
     ladder = load_ladder()
     if eval_model:
@@ -238,7 +239,11 @@ def run_pipeline(
                 localization = session.read("knowledge/localization.md")
                 from splinter.agents.localizer import _parse_anchors
 
-                anchors = _parse_anchors(localization)
+                anchors = _parse_anchors(
+                    localization,
+                    hot=ladder.localizer_relevance_hot,
+                    medium=ladder.localizer_relevance_medium,
+                )
                 log.info("resume: re-parsed %d anchor(s)", len(anchors))
             else:
                 log.info("localizing against the codebase…")
@@ -279,11 +284,7 @@ def run_pipeline(
                         if loc_part
                         else f"{a.file} — {a.symbol}"
                     )
-                    if a.line_start:
-                        line_end = a.line_end or a.line_start
-                        rtk_tip = f"rtk read {a.file} | sed -n '{a.line_start},{line_end}p'"
-                    else:
-                        rtk_tip = f"rtk read {a.file}"
+                    rtk_tip = rtk_cat_tip(a)
                     loc_lines.append(
                         f"### {label}\n"
                         f"file: {a.file}\n"

@@ -325,6 +325,9 @@ class AnalyzeApp(App[None]):
         overview = tree.root.add_leaf("📊 Overview", data={"kind": "overview"})
         overview.allow_expand = False
 
+        trace = tree.root.add_leaf("🔍 trace", data={"kind": "trace"})
+        trace.allow_expand = False
+
         steps = tree.root.add("🧩 Steps", expand=True)
         if self.session.read("prd.md"):
             steps.add_leaf("prd", data={"kind": "file", "label": "PRD", "file": "prd.md"})
@@ -340,8 +343,6 @@ class AnalyzeApp(App[None]):
             steps.add_leaf(
                 "plan", data={"kind": "file", "label": "Plan", "file": "knowledge/plan.md"}
             )
-        steps.add_leaf("trace", data={"kind": "trace"})
-
         notes = _knowledge_notes(self.session)
         extra = [
             (fn, lbl)
@@ -506,7 +507,7 @@ class SessionPicker(App[str | None]):
         if table.row_count == 0:
             return None
         row = table.coordinate_to_cell_key(table.cursor_coordinate).row_key
-        return row.value
+        return str(row.value) if row.value is not None else None
 
     def action_open(self) -> None:
         self.exit(self._current_id())
@@ -1032,7 +1033,7 @@ class RunApp(App[int]):
         self.rc = 2
         self.exit(2)
 
-def _work(self) -> None:
+    def _work(self) -> None:
         self._run_pipeline_worker()
 
     def write_log(self, msg: str, level: int = logging.INFO) -> None:
@@ -1471,7 +1472,7 @@ class EditorPane(Static):
 
     def get_content(self) -> str:
         try:
-            return self.query_one("#editor", TextArea).text
+            return str(self.query_one("#editor", TextArea).text)
         except Exception:
             return ""
 
@@ -1550,6 +1551,7 @@ class PrdSessionApp(App[int | None]):
         self.run_kwargs = run_kwargs
         self.cowabunga = bool(run_kwargs.get("cowabunga"))
         self.resuming = bool(run_kwargs.get("resume"))
+        self.no_ground = bool(run_kwargs.get("no_ground"))
         self.trusted = False
         self.phase = "init"
         self.claude_session = ""
@@ -1597,6 +1599,17 @@ class PrdSessionApp(App[int | None]):
 
         self.title = "splinter · PRD"
         self.sub_title = "🤙 cowabunga" if self.cowabunga else "refining"
+
+        if not self.resuming:
+            # Stamp started_at before any worker/LLM call so elapsed is accurate.
+            self.session.set_status(
+                "refining",
+                source="prd",
+                phase="init",
+                claude_session=self.claude_session,
+                strategy=self.strategy or "?",
+            )
+
         path = self.run_kwargs.get("prd_path")
         try:
             self._initial_prd = Path(path).read_text() if path else ""
@@ -1711,7 +1724,7 @@ class PrdSessionApp(App[int | None]):
     def _read_draft(self) -> str:
         """Read current PRD from #draft-edit if mounted, else fall back to final_prd."""
         try:
-            return self.query_one("#draft-edit", TextArea).text
+            return str(self.query_one("#draft-edit", TextArea).text)
         except Exception:
             return self.final_prd or self._initial_prd
 
@@ -1865,15 +1878,29 @@ class PrdSessionApp(App[int | None]):
             return None
         return self._read_draft() or None
 
+    def _grounding(self, text: str) -> str:
+        """Return grounding string from cached localization, or "" if --no-ground."""
+        if self.no_ground:
+            return ""
+        from splinter import prd_session
+        from splinter.models.roster import load_ladder
+
+        return prd_session.ground_localization(self.session, load_ladder(), text)
+
     # --- workers (run off the UI thread) ---
     def _questions_worker(self) -> None:
         from splinter import prd_session
 
         try:
-            turn = prd_session.open_questions(self._initial_prd, strategy=self.strategy)
+            turn = prd_session.open_questions(
+                self._initial_prd,
+                strategy=self.strategy,
+                localization=self._grounding(self._initial_prd),
+            )
         except Exception as exc:  # noqa: BLE001
             self.call_from_thread(self._fail, f"PRD model: {exc}")
             return
+        self.session.log_llm_usage(prd_session.PRD_MODEL, turn.tokens, turn.cost)
         self.call_from_thread(self._after_questions, turn.text, turn.session_id)
 
     def _refine_worker(self, answers: str) -> None:
@@ -1884,6 +1911,7 @@ class PrdSessionApp(App[int | None]):
         except Exception as exc:  # noqa: BLE001
             self.call_from_thread(self._fail, f"PRD model: {exc}")
             return
+        self.session.log_llm_usage(prd_session.PRD_MODEL, turn.tokens, turn.cost)
         self.call_from_thread(self._after_refine, turn.text, turn.session_id)
 
     def _finalize_worker(self, autodecide: bool) -> None:
@@ -1895,6 +1923,7 @@ class PrdSessionApp(App[int | None]):
                 strategy=self.strategy,
                 autodecide=autodecide,
                 prd_text=self._seed(),
+                localization=self._grounding(self._seed() or self._initial_prd),
             )
             prd = prd_session.ensure_frontmatter(
                 turn.text, description=self._desc, strategy=self.strategy
@@ -1902,6 +1931,7 @@ class PrdSessionApp(App[int | None]):
         except Exception as exc:  # noqa: BLE001
             self.call_from_thread(self._fail, f"PRD model: {exc}")
             return
+        self.session.log_llm_usage(prd_session.PRD_MODEL, turn.tokens, turn.cost)
         self.call_from_thread(self._after_finalize, prd, turn.session_id)
 
     def _revise_worker(self, instructions: str) -> None:
@@ -1917,19 +1947,25 @@ class PrdSessionApp(App[int | None]):
         except Exception as exc:  # noqa: BLE001
             self.call_from_thread(self._fail, f"PRD model: {exc}")
             return
+        self.session.log_llm_usage(prd_session.PRD_MODEL, turn.tokens, turn.cost)
         self.call_from_thread(self._after_revise, prd, turn.session_id)
 
     def _generate_worker(self, instructions: str) -> None:
         from splinter import prd_session
 
         try:
-            turn = prd_session.generate_prd(instructions, strategy=self.strategy)
+            turn = prd_session.generate_prd(
+                instructions,
+                strategy=self.strategy,
+                localization=self._grounding(instructions),
+            )
             prd = prd_session.ensure_frontmatter(
                 turn.text, description=self._desc or "feature", strategy=self.strategy
             )
         except Exception as exc:  # noqa: BLE001
             self.call_from_thread(self._fail, f"PRD model: {exc}")
             return
+        self.session.log_llm_usage(prd_session.PRD_MODEL, turn.tokens, turn.cost)
         self.call_from_thread(self._after_generate, prd, turn.session_id)
 
     # --- worker callbacks (back on the UI thread) ---

@@ -284,7 +284,9 @@ def format_run_completion(session: Session) -> str:
 
 
 def render_overview(session: Session, state: str) -> str:
+    import ast
     import os
+    from datetime import datetime, timezone
 
     status = session.read_status()
     localization = session.read("knowledge/localization.md")
@@ -314,16 +316,42 @@ def render_overview(session: Session, state: str) -> str:
     lines.append("")
 
     metrics = _trace_metrics(trace)
-    if metrics:
+    pre_run = session.read_pre_run_usage()
+    if metrics or pre_run:
+        run_cost = float(metrics.get("cost", 0) or 0)
+        pre_cost = float(pre_run.get("cost", 0) or 0)
+        total_cost = run_cost + pre_cost
+
+        run_tokens: dict[str, int] = {}
+        try:
+            run_tokens = ast.literal_eval(metrics["tokens"]) if metrics.get("tokens") else {}
+        except (ValueError, SyntaxError):
+            pass
+        total_inp = int(run_tokens.get("input", 0) or 0) + int(pre_run.get("input", 0) or 0)
+        total_out = int(run_tokens.get("output", 0) or 0) + int(pre_run.get("output", 0) or 0)
+
         bits = [
-            f"[green]💰 ${metrics.get('cost', '0')}[/]",
+            f"[green]💰 ${total_cost:.4f}[/]",
             f"[dim]⟳[/] {metrics.get('runs', '0')} [dim]runs[/]",
         ]
-        tokens = _fmt_tokens(metrics.get("tokens", ""))
-        if tokens:
-            bits.append(tokens)
-        if metrics.get("elapsed"):
-            bits.append(f"[dim]⏱[/] {_fmt_elapsed(metrics['elapsed'])}")
+        if total_inp or total_out:
+            bits.append(f"[dim]↑[/] {_hnum(total_inp)} [dim]↓[/] {_hnum(total_out)}")
+
+        # Live elapsed for active sessions; static from trace.md for completed ones.
+        elapsed_str = ""
+        started_at = status.get("started_at") or status.get("started")
+        if started_at and state in ("RUNNING", "REFINING"):
+            try:
+                t0 = datetime.fromisoformat(started_at)
+                secs = (datetime.now(timezone.utc) - t0).total_seconds()
+                elapsed_str = f"{secs:.1f}s"
+            except (ValueError, TypeError):
+                elapsed_str = metrics.get("elapsed", "")
+        else:
+            elapsed_str = metrics.get("elapsed", "")
+
+        if elapsed_str:
+            bits.append(f"[dim]⏱[/] {_fmt_elapsed(elapsed_str)}")
         lines.append("   [dim]·[/]  ".join(bits))
 
     if status.get("source"):
@@ -335,7 +363,7 @@ def render_overview(session: Session, state: str) -> str:
     # Multi-task progress bar (direct/adaptive strategies report task_index live).
     try:
         task_total = int(status.get("task_total") or status.get("tasks") or 0)
-        task_index = int(status.get("task_index"))
+        task_index = int(status.get("task_index") or 0)
     except (TypeError, ValueError):
         task_total = task_index = 0
     if task_total > 1 and status.get("task_index") is not None:

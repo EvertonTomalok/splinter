@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import shutil
 from dataclasses import dataclass
 
 from splinter.memory.knowledge import KnowledgeStore
@@ -28,6 +29,30 @@ class CodeAnchor:
     confidence: float
     line_start: int | None = None
     line_end: int | None = None
+    relevance: str = ""
+
+
+def _rtk_available() -> bool:
+    """Check if rtk command is available in PATH."""
+    return shutil.which("rtk") is not None
+
+
+def rtk_cat_tip(anchor: CodeAnchor) -> str:
+    """Generate a command-line tip to read the anchor's code."""
+    if anchor.line_start:
+        end = anchor.line_end or anchor.line_start
+        return f"rtk read {anchor.file} | sed -n '{anchor.line_start},{end}p'"
+    return f"rtk read {anchor.file}"
+
+
+def _relevance_from_confidence(conf: float, *, hot: float, medium: float) -> str:
+    """Derive relevance tag from confidence value using thresholds."""
+    if conf >= hot:
+        return "hot"
+    elif conf >= medium:
+        return "medium"
+    else:
+        return "low"
 
 
 def _count_anchors(text: str) -> int:
@@ -70,7 +95,7 @@ def _extract_search_terms(prd_text: str) -> list[str]:
     return unique[:10]
 
 
-def _parse_anchors(text: str) -> list[CodeAnchor]:
+def _parse_anchors(text: str, *, hot: float = 0.8, medium: float = 0.4) -> list[CodeAnchor]:
     anchors: list[CodeAnchor] = []
 
     def _items_from_json(raw: str) -> list[CodeAnchor]:
@@ -86,14 +111,19 @@ def _parse_anchors(text: str) -> list[CodeAnchor]:
                 continue
             ls = item.get("line_start")
             le = item.get("line_end")
+            conf = float(item.get("confidence", 0.5))
+            rel = item.get("relevance")
+            if not rel:
+                rel = _relevance_from_confidence(conf, hot=hot, medium=medium)
             result.append(
                 CodeAnchor(
                     file=item.get("file", ""),
                     symbol=item.get("symbol", ""),
                     reason=item.get("reason", ""),
-                    confidence=float(item.get("confidence", 0.5)),
+                    confidence=conf,
                     line_start=int(ls) if ls is not None else None,
                     line_end=int(le) if le is not None else None,
+                    relevance=rel,
                 )
             )
         return result
@@ -122,14 +152,21 @@ def _parse_anchors(text: str) -> list[CodeAnchor]:
         conf_m = re.search(r"^confidence:\s*([\d.]+)$", block, re.MULTILINE)
         ls_m = re.search(r"^line_start:\s*(\d+)$", block, re.MULTILINE)
         le_m = re.search(r"^line_end:\s*(\d+)$", block, re.MULTILINE)
+        rel_m = re.search(r"^relevance:\s*(.+)$", block, re.MULTILINE)
+        conf = float(conf_m.group(1)) if conf_m else 0.5
+        if rel_m:
+            rel = rel_m.group(1).strip()
+        else:
+            rel = _relevance_from_confidence(conf, hot=hot, medium=medium)
         anchors.append(
             CodeAnchor(
                 file=file_m.group(1).strip(),
                 symbol=symbol_m.group(1).strip() if symbol_m else "",
                 reason=reason_m.group(1).strip() if reason_m else "",
-                confidence=float(conf_m.group(1)) if conf_m else 0.5,
+                confidence=conf,
                 line_start=int(ls_m.group(1)) if ls_m else None,
                 line_end=int(le_m.group(1)) if le_m else None,
+                relevance=rel,
             )
         )
     return anchors
@@ -314,7 +351,11 @@ def localize(
     """
     if not force and session.has("knowledge/localization.md"):
         existing = session.read("knowledge/localization.md")
-        anchors = _parse_anchors(existing)
+        anchors = _parse_anchors(
+            existing,
+            hot=ladder.localizer_relevance_hot,
+            medium=ladder.localizer_relevance_medium,
+        )
         if anchors:
             return anchors
 
@@ -356,7 +397,14 @@ def localize(
     # Prefer structured anchors (file + symbol + reason) so per-task targeting in
     # assign_target_files can actually match; fall back to bare file paths if the
     # cheap model didn't emit parseable JSON.
-    anchors = _parse_anchors(recall_output) or _anchors_from_recall(recall_output)
+    anchors = (
+        _parse_anchors(
+            recall_output,
+            hot=ladder.localizer_relevance_hot,
+            medium=ladder.localizer_relevance_medium,
+        )
+        or _anchors_from_recall(recall_output)
+    )
     log.info("localize: %d candidate anchor(s) from recall", len(anchors))
 
     if not anchors:
@@ -375,6 +423,8 @@ def localize(
         if a.line_end is not None:
             block += f"line_end: {a.line_end}\n"
         block += f"reason: {a.reason}\nconfidence: {a.confidence}\n"
+        if a.relevance:
+            block += f"relevance: {a.relevance}\n"
         lines.append(block)
 
     # Localization lives in the run's knowledge store (knowledge/localization.md) —
@@ -383,3 +433,47 @@ def localize(
     ks.write_note("localization", "\n".join(lines) + "\n")
 
     return anchors
+
+
+def grounding_block(anchors: list[CodeAnchor]) -> str:
+    """Build compact grounding string from hot/medium/low anchors.
+
+    Hot anchors render inline as <file>:L<a>-L<b> — <symbol> with one-line insight.
+    Medium/low anchors collapse under a single pointer line.
+    Empty list yields "" (no header noise).
+    """
+    if not anchors:
+        return ""
+
+    hot_lines: list[str] = []
+    has_medium_low = False
+
+    for a in anchors:
+        if a.relevance.lower() == "hot":
+            line_range = ""
+            if a.line_start is not None and a.line_end is not None:
+                line_range = f":L{a.line_start}-{a.line_end}"
+            elif a.line_start is not None:
+                line_range = f":L{a.line_start}"
+
+            location = f"{a.file}{line_range}"
+
+            insight = ""
+            if a.reason:
+                insight = a.reason.split("\n")[0].strip()
+
+            if insight:
+                hot_lines.append(f"{location} — {a.symbol}\n  {insight}")
+            else:
+                hot_lines.append(f"{location} — {a.symbol}")
+        else:
+            has_medium_low = True
+
+    result_parts: list[str] = []
+    if hot_lines:
+        result_parts.extend(hot_lines)
+
+    if has_medium_low:
+        result_parts.append("deeper context lives in knowledge/localization.md")
+
+    return "\n".join(result_parts)

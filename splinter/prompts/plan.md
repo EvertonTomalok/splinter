@@ -1,3 +1,5 @@
+Runs are sequential-only. No strategy selection. No parallel execution. One task at a time.
+
 You are a senior engineer. Write a concise implementation plan for this task.
 
 {task_section}

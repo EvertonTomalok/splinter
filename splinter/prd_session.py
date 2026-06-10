@@ -21,7 +21,7 @@ deliberately pass no ``--effort`` here.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -30,6 +30,7 @@ from splinter.providers import claude_cli
 
 if TYPE_CHECKING:
     from splinter.memory.session import Session
+    from splinter.models.roster import Ladder
 
 #: opus-4.8 defaults to high effort — passing --effort would be redundant/wrong.
 #: ``opus`` is the claude CLI alias; ``opus-4.8`` is NOT a valid --model id (404).
@@ -50,6 +51,22 @@ def log_phase(session: "Session", phase: str, detail: str = "") -> None:
     session.append(PRD_PHASE_FILE, f"- {phase} · {detail}" if detail else f"- {phase}")
 
 
+def ground_localization(session: "Session", ladder: "Ladder", text: str) -> str:
+    """Run cached localization and return a compact grounding string.
+
+    Best-effort: returns "" on any failure so the PRD flow is never blocked.
+    Cache: ``localize`` short-circuits on existing ``knowledge/localization.md``,
+    so resumed/cowabunga sessions reuse cached anchors without re-grepping.
+    """
+    try:
+        from splinter.agents.localizer import grounding_block, localize
+
+        anchors = localize(text, session, ladder)
+        return grounding_block(anchors)
+    except Exception:
+        return ""
+
+
 def is_cowabunga(text: str) -> bool:
     return text.strip().lower() == COWABUNGA
 
@@ -64,6 +81,8 @@ class Turn:
 
     text: str
     session_id: str
+    tokens: dict[str, int] = field(default_factory=dict)
+    cost: float = 0.0
 
 
 def _load_prd_skill() -> str:
@@ -77,10 +96,17 @@ def _ask(prompt: str, *, resume: str | None) -> Turn:
     # No effort: opus-4.8's default (high) is exactly what we want here.
     result = claude_cli.run(prompt, PRD_MODEL, output_format="json", resume=resume)
     sid = result.raw.get("_session_id", "") or (resume or "")
-    return Turn(text=result.text, session_id=sid)
+    tokens = {
+        "input": result.usage.get("input_tokens", 0) or 0,
+        "output": result.usage.get("output_tokens", 0) or 0,
+    }
+    cost = claude_cli._calc_cost(PRD_MODEL, result.usage)
+    return Turn(text=result.text, session_id=sid, tokens=tokens, cost=cost)
 
 
-def open_questions(prd_text: str, *, strategy: str | None = None) -> Turn:
+def open_questions(
+    prd_text: str, *, strategy: str | None = None, localization: str = ""
+) -> Turn:
     """First turn: read the PRD and ask clarifying questions (lettered options)."""
     skill = _load_prd_skill()
     strat_hint = (
@@ -88,10 +114,14 @@ def open_questions(prd_text: str, *, strategy: str | None = None) -> Turn:
         if strategy
         else "\nInclude a strategy question (cascade/direct/adaptive/sprint).\n"
     )
+    ground_section = (
+        f"## Codebase Localization (grounding)\n{localization}\n\n" if localization else ""
+    )
     prompt = (
         f"{skill}\n\n"
         "You are refining a draft PRD with the user before implementation begins.\n"
         f"## Draft PRD / request\n{prd_text}\n"
+        f"{ground_section}"
         f"{strat_hint}\n"
         "Ask 3-5 essential clarifying questions, each with lettered options (A/B/C/D). "
         "Cover only genuinely ambiguous points. Output ONLY the questions, no preamble."
@@ -111,13 +141,19 @@ def _resume_preamble(prd_text: str | None, *, resume: str | None) -> str:
     )
 
 
-def refine(answers: str, *, resume: str, prd_text: str | None = None) -> Turn:
+def refine(
+    answers: str, *, resume: str, prd_text: str | None = None, localization: str = ""
+) -> Turn:
     """Incorporate the user's answers; return the updated draft + remaining questions.
 
     ``prd_text`` re-anchors a resumed session whose conversation id was lost.
     """
+    ground_section = (
+        f"## Codebase Localization (grounding)\n{localization}\n\n" if localization else ""
+    )
     prompt = (
         f"{_resume_preamble(prd_text, resume=resume)}"
+        f"{ground_section}"
         f"User answers:\n{answers}\n\n"
         "Incorporate these into the PRD. Then output two clearly separated parts:\n"
         "1. '## Working Draft' — the PRD so far in markdown.\n"
@@ -129,7 +165,12 @@ def refine(answers: str, *, resume: str, prd_text: str | None = None) -> Turn:
 
 
 def finalize(
-    *, resume: str, strategy: str | None, autodecide: bool, prd_text: str | None = None
+    *,
+    resume: str,
+    strategy: str | None,
+    autodecide: bool,
+    prd_text: str | None = None,
+    localization: str = "",
 ) -> Turn:
     """Emit the complete PRD with frontmatter and ``US-NNN`` user stories."""
     decide = (
@@ -143,8 +184,12 @@ def finalize(
         if strategy
         else "Pick the best strategy yourself and set it in the frontmatter.\n"
     )
+    ground_section = (
+        f"## Codebase Localization (grounding)\n{localization}\n\n" if localization else ""
+    )
     prompt = (
         f"{_resume_preamble(prd_text, resume=resume)}"
+        f"{ground_section}"
         f"{decide}{strat_line}"
         "Now output the COMPLETE final PRD in markdown following the skill template:\n"
         "- YAML frontmatter with feature, strategy, kind, created.\n"
@@ -167,7 +212,9 @@ def revise_final(instructions: str, *, resume: str, prd_text: str | None = None)
     return _ask(prompt, resume=resume)
 
 
-def generate_prd(instructions: str, *, strategy: str | None = None) -> Turn:
+def generate_prd(
+    instructions: str, *, strategy: str | None = None, localization: str = ""
+) -> Turn:
     """Generate a complete PRD directly from instructions (no Q&A).
 
     Used when user provides full instructions in the TUI without needing
@@ -179,10 +226,14 @@ def generate_prd(instructions: str, *, strategy: str | None = None) -> Turn:
         if strategy
         else "\nPick an appropriate strategy and set it in the frontmatter.\n"
     )
+    ground_section = (
+        f"## Codebase Localization (grounding)\n{localization}\n\n" if localization else ""
+    )
     prompt = (
         f"{skill}\n\n"
         "You are generating a complete PRD from user instructions.\n"
         f"## Instructions\n{instructions}\n"
+        f"{ground_section}"
         f"{strat_hint}\n"
         "Generate the COMPLETE final PRD in markdown following the skill template:\n"
         "- YAML frontmatter with feature, strategy, kind, created.\n"

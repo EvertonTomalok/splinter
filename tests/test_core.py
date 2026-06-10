@@ -858,3 +858,251 @@ def test_planner_plan_function(tmp_path: Path) -> None:
     assert len(tasks) == 3
     assert tasks[0].id == "US-001"
     assert tasks[0].target_files is not None
+
+
+# ── US-003: PRD grounding before Q&A ─────────────────────────────────────────
+
+
+def test_ground_localization_returns_grounding_string(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
+) -> None:
+    """ground_localization returns non-empty string when localize returns hot anchors."""
+    from splinter import prd_session
+    from splinter.agents.localizer import CodeAnchor
+    from splinter.memory.session import Session
+
+    monkeypatch.chdir(tmp_path)
+    session = Session()
+    ladder = load_ladder()
+    anchor = CodeAnchor(
+        file="app.py", symbol="main", reason="entry point", confidence=0.9, relevance="hot"
+    )
+    monkeypatch.setattr("splinter.agents.localizer.localize", lambda *a, **kw: [anchor])
+    result = prd_session.ground_localization(session, ladder, "build something")
+    assert "app.py" in result
+    assert "main" in result
+
+
+def test_ground_localization_returns_empty_on_failure(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
+) -> None:
+    """ground_localization returns '' when localize raises — never blocks PRD flow."""
+    from splinter import prd_session
+    from splinter.memory.session import Session
+
+    monkeypatch.chdir(tmp_path)
+    session = Session()
+    ladder = load_ladder()
+
+    monkeypatch.setattr(
+        "splinter.agents.localizer.localize",
+        lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("model down")),
+    )
+    result = prd_session.ground_localization(session, ladder, "build something")
+    assert result == ""
+
+
+def test_open_questions_embeds_grounding(monkeypatch: "pytest.MonkeyPatch") -> None:
+    """open_questions prompt contains grounding section when localization= non-empty."""
+    from splinter import prd_session
+
+    captured: list[str] = []
+
+    def _fake_ask(prompt: str, *, resume: str | None) -> prd_session.Turn:
+        captured.append(prompt)
+        return prd_session.Turn(text="Q1?", session_id="sid")
+
+    monkeypatch.setattr(prd_session, "_ask", _fake_ask)
+    prd_session.open_questions("## Draft\ndo stuff", localization="app.py — main\n  entry")
+    assert "## Codebase Localization (grounding)" in captured[0]
+    assert "app.py — main" in captured[0]
+
+
+def test_open_questions_omits_grounding_when_empty(monkeypatch: "pytest.MonkeyPatch") -> None:
+    """open_questions prompt omits grounding section when localization=''."""
+    from splinter import prd_session
+
+    captured: list[str] = []
+
+    def _fake_ask(prompt: str, *, resume: str | None) -> prd_session.Turn:
+        captured.append(prompt)
+        return prd_session.Turn(text="Q1?", session_id="sid")
+
+    monkeypatch.setattr(prd_session, "_ask", _fake_ask)
+    prd_session.open_questions("## Draft\ndo stuff", localization="")
+    assert "## Codebase Localization" not in captured[0]
+
+
+def test_generate_prd_embeds_grounding(monkeypatch: "pytest.MonkeyPatch") -> None:
+    """generate_prd prompt contains grounding section when localization= non-empty."""
+    from splinter import prd_session
+
+    captured: list[str] = []
+
+    def _fake_ask(prompt: str, *, resume: str | None) -> prd_session.Turn:
+        captured.append(prompt)
+        return prd_session.Turn(text="---\nfeature: x\n---\n", session_id="sid")
+
+    monkeypatch.setattr(prd_session, "_ask", _fake_ask)
+    prd_session.generate_prd("build an API", localization="api.py — router")
+    assert "## Codebase Localization (grounding)" in captured[0]
+    assert "api.py — router" in captured[0]
+
+
+def test_generate_prd_omits_grounding_when_empty(monkeypatch: "pytest.MonkeyPatch") -> None:
+    """generate_prd prompt omits grounding section when localization=''."""
+    from splinter import prd_session
+
+    captured: list[str] = []
+
+    def _fake_ask(prompt: str, *, resume: str | None) -> prd_session.Turn:
+        captured.append(prompt)
+        return prd_session.Turn(text="---\nfeature: x\n---\n", session_id="sid")
+
+    monkeypatch.setattr(prd_session, "_ask", _fake_ask)
+    prd_session.generate_prd("build an API", localization="")
+    assert "## Codebase Localization" not in captured[0]
+
+
+def test_finalize_embeds_grounding(monkeypatch: "pytest.MonkeyPatch") -> None:
+    """finalize prompt contains grounding section when localization= non-empty."""
+    from splinter import prd_session
+
+    captured: list[str] = []
+
+    def _fake_ask(prompt: str, *, resume: str | None) -> prd_session.Turn:
+        captured.append(prompt)
+        return prd_session.Turn(text="---\nfeature: x\n---\n", session_id="sid")
+
+    monkeypatch.setattr(prd_session, "_ask", _fake_ask)
+    prd_session.finalize(
+        resume="sid", strategy="direct", autodecide=False, localization="config.py — Config"
+    )
+    assert "## Codebase Localization (grounding)" in captured[0]
+    assert "config.py — Config" in captured[0]
+
+
+def test_finalize_omits_grounding_when_empty(monkeypatch: "pytest.MonkeyPatch") -> None:
+    """finalize prompt omits grounding section when localization=''."""
+    from splinter import prd_session
+
+    captured: list[str] = []
+
+    def _fake_ask(prompt: str, *, resume: str | None) -> prd_session.Turn:
+        captured.append(prompt)
+        return prd_session.Turn(text="---\nfeature: x\n---\n", session_id="sid")
+
+    monkeypatch.setattr(prd_session, "_ask", _fake_ask)
+    prd_session.finalize(resume="sid", strategy="direct", autodecide=False, localization="")
+    assert "## Codebase Localization" not in captured[0]
+
+
+def test_refine_embeds_grounding(monkeypatch: "pytest.MonkeyPatch") -> None:
+    """refine prompt contains grounding section when localization= non-empty."""
+    from splinter import prd_session
+
+    captured: list[str] = []
+
+    def _fake_ask(prompt: str, *, resume: str | None) -> prd_session.Turn:
+        captured.append(prompt)
+        return prd_session.Turn(
+            text="## Working Draft\n```\n---\nfeature: x\n---\n```\n## Open Questions\nNone",
+            session_id="sid",
+        )
+
+    monkeypatch.setattr(prd_session, "_ask", _fake_ask)
+    prd_session.refine("A, B, C", resume="sid", localization="router.py — handle")
+    assert "## Codebase Localization (grounding)" in captured[0]
+    assert "router.py — handle" in captured[0]
+
+
+def test_refine_omits_grounding_when_empty(monkeypatch: "pytest.MonkeyPatch") -> None:
+    """refine prompt omits grounding section when localization=''."""
+    from splinter import prd_session
+
+    captured: list[str] = []
+
+    def _fake_ask(prompt: str, *, resume: str | None) -> prd_session.Turn:
+        captured.append(prompt)
+        return prd_session.Turn(
+            text="## Working Draft\n```\n---\nfeature: x\n---\n```\n## Open Questions\nNone",
+            session_id="sid",
+        )
+
+    monkeypatch.setattr(prd_session, "_ask", _fake_ask)
+    prd_session.refine("A, B, C", resume="sid", localization="")
+    assert "## Codebase Localization" not in captured[0]
+
+
+def test_localize_cache_skips_search(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
+) -> None:
+    """localize short-circuits without calling _run_search_tools when cache exists."""
+    from splinter.agents import localizer
+    from splinter.memory.knowledge import KnowledgeStore
+    from splinter.memory.session import Session
+
+    monkeypatch.chdir(tmp_path)
+    session = Session()
+    ladder = load_ladder()
+
+    # Pre-populate session cache
+    cache_md = (
+        "# Localization\n\n"
+        "file: app.py\n"
+        "symbol: main\n"
+        "reason: entry\n"
+        "confidence: 0.9\n"
+        "relevance: hot\n"
+    )
+    KnowledgeStore(session).write_note("localization", cache_md)
+
+    search_called = False
+
+    def _spy_search(*a: object, **kw: object) -> str:
+        nonlocal search_called
+        search_called = True
+        return ""
+
+    monkeypatch.setattr(localizer, "_run_search_tools", _spy_search)
+    result = localizer.localize("rebuild everything", session, ladder)
+    assert not search_called, "_run_search_tools must not fire when cache exists"
+    assert len(result) > 0
+    assert result[0].file == "app.py"
+
+
+def test_no_ground_flag_skips_ground_localization(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
+) -> None:
+    """run_prd with no_ground=True never calls ground_localization."""
+    from splinter import prd_session
+    from splinter.prd import run_prd
+
+    monkeypatch.chdir(tmp_path)
+
+    ground_called = False
+
+    def _spy_ground(*a: object, **kw: object) -> str:
+        nonlocal ground_called
+        ground_called = True
+        return "app.py — main"
+
+    monkeypatch.setattr(prd_session, "ground_localization", _spy_ground)
+
+    fake_result = type("R", (), {"text": "Q1?", "raw": {"_session_id": "sid"}})()
+    _prd_body = (
+        "---\nfeature: x\nstrategy: direct\nkind: feature\ncreated: 2026-06-10\n---\n"
+        "### US-001: X\n**Description:** d\n**Acceptance Criteria:**\n- [ ] c\n"
+    )
+    fake_result2 = type("R", (), {"text": _prd_body, "raw": {"_session_id": "sid"}})()
+
+    import splinter.providers.claude_cli as cc
+
+    def _fake_cc_run(*a: object, **kw: object) -> object:
+        return fake_result if not kw.get("resume") else fake_result2
+
+    monkeypatch.setattr(cc, "run", _fake_cc_run)
+    monkeypatch.setattr("builtins.input", lambda *a: "1A")
+
+    run_prd(description="add auth", no_ground=True)
+    assert not ground_called, "ground_localization must not be called with --no-ground"

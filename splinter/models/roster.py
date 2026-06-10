@@ -46,6 +46,8 @@ class Ladder:
     localizer_precision_variant: str = "low"
     localizer_recall_fallback_model: str = "haiku"
     localizer_agent: str = "explore"
+    localizer_relevance_hot: float = 0.8
+    localizer_relevance_medium: float = 0.4
     # per-tier reasoning variant override, keyed by tier level (else effort_map)
     tier_variants: dict[int, str] = field(default_factory=dict)
     # per-step subprocess timeout (seconds); default filled from config in load_ladder
@@ -145,6 +147,8 @@ def load_ladder(raw: dict[str, Any] | None = None) -> Ladder:
         localizer_precision_model=loc_cfg.get("precision_model", "opencode/deepseek-v4-flash-free"),
         localizer_recall_fallback_model=loc_cfg.get("recall_fallback_model", "haiku"),
         localizer_agent=loc_cfg.get("agent", "explore"),
+        localizer_relevance_hot=float(loc_cfg.get("relevance_hot", 0.8)),
+        localizer_relevance_medium=float(loc_cfg.get("relevance_medium", 0.4)),
     )
     # Seed every per-step timeout from the global default, then let per-step
     # config entries override individual steps in _apply_config_overrides.
