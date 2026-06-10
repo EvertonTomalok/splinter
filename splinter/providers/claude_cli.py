@@ -23,6 +23,23 @@ class ClaudeResult:
 _CLI_EFFORTS = {"low", "medium", "high", "xhigh", "max"}
 _EFFORT_ALIASES = {"minimal": "low", "auto": None}
 
+# $/1M tokens — input, output
+_PRICING: dict[str, tuple[float, float]] = {
+    "sonnet": (3.00, 15.00),
+    "claude-sonnet-4-6": (3.00, 15.00),
+    "opus": (5.00, 25.00),
+    "claude-opus-4-8": (5.00, 25.00),
+}
+
+
+def _calc_cost(model: str, usage: dict[str, Any]) -> float:
+    prices = _PRICING.get(model)
+    if not prices:
+        return 0.0
+    inp = usage.get("input_tokens", 0) or 0
+    out = usage.get("output_tokens", 0) or 0
+    return (inp * prices[0] + out * prices[1]) / 1_000_000
+
 
 def _normalize_effort(effort: str | None) -> str | None:
     if effort is None:
@@ -123,11 +140,18 @@ class ClaudeProvider(ModelProvider):
         session: str | None = None,
         timeout: int | None = None,
     ) -> ProviderResponse:
-        result = run(prompt, model, effort=variant, resume=session, timeout=timeout)
+        from splinter.providers.base import detect_provider_gap
+        try:
+            result = run(prompt, model, effort=variant, resume=session, timeout=timeout)
+        except Exception as exc:
+            gap = detect_provider_gap(exc, self.name, model)
+            if gap:
+                raise gap from exc
+            raise
         return ProviderResponse(
             text=result.text,
             tokens=result.usage,
-            cost=0.0,
+            cost=_calc_cost(model, result.usage),
             raw=result.raw,
             session_id=result.raw.get("_session_id") or None,
         )

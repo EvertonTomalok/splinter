@@ -1,14 +1,18 @@
 """Raphael — the ``direct`` single-task strategy.
 
 Flow: plan **once**, then *run is the loop*. Each iteration runs the task at the
-current tier and is judged by the evaluator:
+current tier; the mechanical gate records a pass/fail (never a veto) and a
+frontier-LLM evaluator judges the code generation against the task. The evaluator
+alone decides what happens next:
 
 * **PASS** -> done.
-* **fail, same model** -> re-run in the *same* opencode session with the
-  evaluator's corrections (cheapest retry; the model keeps its context).
-* **fail again** -> escalate one tier. The higher model starts a fresh session
-  and receives the corrections *plus the session knowledge memory* directly — the
-  original plan is reused, never regenerated.
+* **fix, same model** -> re-run in the *same* session with the evaluator's
+  corrections plus the gate output (so the model understands what broke). Cheapest
+  retry — both the runner and the evaluator keep their conversation context. A
+  gate failure is normal and lands here, not in an escalation.
+* **change the runner** (ESCALATE / JUMP_PREMIUM) -> bump the tier; the new model
+  AND a fresh quality eval start from clean sessions, with the corrections plus the
+  session knowledge memory. The original plan is reused, never regenerated.
 
 The per-iteration Run -> Gate -> Eval pipeline is a Chain of Responsibility (see
 :mod:`splinter.strategies.stages`); this class owns only the retry/escalate policy.
@@ -26,6 +30,7 @@ from splinter.memory.session import Session
 from splinter.models.roster import Ladder
 from splinter.obs.trace import Trace
 from splinter.providers.dispatch import run_text
+from splinter.skills import resolve_eval_skill
 from splinter.strategies.base import Strategy
 from splinter.strategies.registry import register
 from splinter.strategies.stages import (
@@ -39,10 +44,8 @@ from splinter.templating import render, section
 
 log = logging.getLogger("splinter.loop")
 
-#: Ceiling tier — ``opus-4.8``; the loop stops escalating here.
-MAX_TIER = 4
-#: Consecutive failures at one tier before escalating to the next.
-FAILS_BEFORE_ESCALATE = 2
+#: Ceiling tier — ``last-resort`` (sonnet @ max); the loop stops escalating here.
+MAX_TIER = 5
 
 
 @register
@@ -60,10 +63,15 @@ class DirectStrategy(Strategy):
         budget: float | None = None,
         max_iterations: int = 5,
         localization: str = "",
+        eval_skill: str | None = None,
         cowabunga: bool = False,
         resume: bool = False,
     ) -> list[RunResult]:
-        trace = Trace()
+        existing_trace = session.read("trace.md")
+        if resume and existing_trace.strip():
+            trace = Trace.from_markdown(existing_trace)
+        else:
+            trace = Trace()
         knowledge = KnowledgeStore(session)
         results: list[RunResult] = []
 
@@ -94,10 +102,12 @@ class DirectStrategy(Strategy):
                 ladder,
                 trace,
                 knowledge,
+                task_index=i,
                 effort=effort,
                 budget=budget,
                 max_iterations=max_iterations,
                 localization=localization,
+                eval_skill=eval_skill,
                 cowabunga=cowabunga,
                 resume=task_resume,
             )
@@ -139,10 +149,12 @@ class DirectStrategy(Strategy):
         trace: Trace,
         knowledge: KnowledgeStore,
         *,
+        task_index: int = 0,
         effort: str | None,
         budget: float | None,
         max_iterations: int,
         localization: str,
+        eval_skill: str | None = None,
         cowabunga: bool = False,
         resume: bool = False,
     ) -> RunResult | None:
@@ -154,21 +166,27 @@ class DirectStrategy(Strategy):
         existing_plan = session.read("knowledge/plan.md").strip()
         if resume and existing_plan:
             log.info("resume: reusing existing plan")
-            # plan.md is stored as "# Plan\n\n<plan>"; drop the header to match a fresh plan.
             plan = existing_plan[len("# Plan"):].lstrip("\n") \
                 if existing_plan.startswith("# Plan") else existing_plan
+            if not session.read(f"knowledge/plan-{task_index + 1}.md").strip():
+                session.write(f"knowledge/plan-{task_index + 1}.md", f"# Plan\n\n{plan}\n")
         else:
             log.info("planning with %s (once)", ladder.planner_model)
             plan = _make_plan(task, ladder, localization)
-            # Plan is model-consumed memory → knowledge store, not a loose root file.
             session.write("knowledge/plan.md", f"# Plan\n\n{plan}\n")
+            session.write(f"knowledge/plan-{task_index + 1}.md", f"# Plan\n\n{plan}\n")
 
-        chain = build_chain(RunStage(), GateStage(), EvalStage())
+        resolved = resolve_eval_skill(eval_skill or task.eval_skill)
+        chain = build_chain(RunStage(), GateStage(), EvalStage(resolved_skill=resolved))
         evaluator = Evaluator(ladder)
         eval_history: list[str] = []
+        # The runner and the evaluator each keep a provider session that lives as
+        # long as the runner model is unchanged. When the eval decides to change
+        # the runner (escalate), both are reset so the new model — and a fresh
+        # quality eval — start from a clean conversation.
         oc_session: str | None = None
+        eval_session: str | None = None
         corrections = ""
-        consecutive_fails = 0
         last_result: RunResult | None = None
 
         for iteration in range(1, max_iterations + 1):
@@ -184,8 +202,10 @@ class DirectStrategy(Strategy):
                 localization=localization,
                 effort_override=effort,
                 oc_session=oc_session,
+                eval_session=eval_session,
                 corrections=corrections,
                 eval_history=eval_history,
+                task_index=task_index,
             )
             chain.handle(ctx)
 
@@ -193,25 +213,14 @@ class DirectStrategy(Strategy):
 
             last_result = ctx.run_result
             oc_session = ctx.oc_session
-
-            if not ctx.gate_passed:
-                consecutive_fails += 1
-                if consecutive_fails >= FAILS_BEFORE_ESCALATE:
-                    if tier >= MAX_TIER:
-                        session.append("loop.md", f"## Max tier reached (T{tier}), stopping.\n\n")
-                        return ctx.run_result
-
-                    tier += 1
-                    log.info("escalating to T%d (gate failures)", tier)
-                    session.append("loop.md", f"## Escalate to tier {tier} (gate failures)\n\n")
-                    oc_session = None
-                    consecutive_fails = 0
-                    corrections = ""
-                continue
+            eval_session = ctx.eval_session
 
             verdict = ctx.verdict
             assert verdict is not None and ctx.run_result is not None
 
+            # The evaluator owns the verdict. A gate failure never short-circuits
+            # it and never escalates on its own — it is fed back to the runner as
+            # corrections. The runner changes ONLY when the eval says so.
             action = evaluator.next_action(
                 verdict, tier, max_tier=MAX_TIER, cowabunga=cowabunga
             )
@@ -234,33 +243,23 @@ class DirectStrategy(Strategy):
                     session.append("loop.md", f"## Max tier reached (T{tier}), stopping.\n\n")
                 return ctx.run_result
 
+            retry_notes = _retry_corrections(verdict.corrections, ctx.gate_output)
+
             if action.next_tier != tier:
+                # Eval judged this runner incapable → change it. Fresh runner AND
+                # eval sessions: the new model gets a clean slate and the quality
+                # eval re-judges its output from scratch.
                 tier = action.next_tier
-                log.info("escalating to T%d (plan reused)", tier)
-                session.append("loop.md", f"## Escalate to tier {tier} (plan reused)\n\n")
+                log.info("escalating to T%d (eval changed the runner; fresh sessions)", tier)
+                session.append(
+                    "loop.md", f"## Escalate to tier {tier} (eval changed the runner)\n\n"
+                )
                 oc_session = None
-                consecutive_fails = 0
-                corrections = _correction_context(knowledge, verdict.corrections)
+                eval_session = None
+                corrections = _correction_context(knowledge, retry_notes)
             else:
-                consecutive_fails += 1
-                corrections = verdict.corrections
-
-                if consecutive_fails >= FAILS_BEFORE_ESCALATE:
-                    if tier >= MAX_TIER:
-                        log.warning("max tier T%d reached — stopping", tier)
-                        session.append(
-                            "loop.md", f"## Max tier reached (T{tier}), stopping.\n\n"
-                        )
-                        return ctx.run_result
-
-                    tier += 1
-                    log.info("escalating to T%d (plan reused)", tier)
-                    session.append(
-                        "loop.md", f"## Escalate to tier {tier} (plan reused)\n\n"
-                    )
-                    oc_session = None
-                    consecutive_fails = 0
-                    corrections = _correction_context(knowledge, verdict.corrections)
+                # Same runner, same session — let it understand and fix what's wrong.
+                corrections = retry_notes
 
             if budget is not None and trace.total_cost >= budget:
                 session.append("loop.md", f"## Budget exhausted (${trace.total_cost:.4f})\n")
@@ -291,6 +290,16 @@ def _mark_story_done(session: Session, task: Task) -> None:
     if updated != prd:
         session.write("prd.md", updated)
         log.info("PRD: %s acceptance criteria checked off (done)", sid)
+
+
+def _retry_corrections(corrections: str, gate_output: str) -> str:
+    """Combine evaluator corrections + gate output into the retry context string."""
+    parts = []
+    if corrections:
+        parts.append(corrections)
+    if gate_output:
+        parts.append(f"## Gate Output\n{gate_output}")
+    return "\n\n".join(parts)
 
 
 def _correction_context(knowledge: KnowledgeStore, latest: str) -> str:

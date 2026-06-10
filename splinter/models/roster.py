@@ -141,6 +141,12 @@ def load_ladder(raw: dict[str, Any] | None = None) -> Ladder:
     ladder.localizer_recall_large_timeout = gdefault
     ladder.localizer_precision_timeout = gdefault
 
+    # Per-tier reasoning variant declared in ladder.yaml (each tier is a fixed
+    # model + reasoning level). Config `efforts.tiers` can still override below.
+    for td in raw["tiers"]:
+        if td.get("variant"):
+            ladder.tier_variants[td["level"]] = td["variant"]
+
     _apply_config_overrides(ladder)
     return ladder
 

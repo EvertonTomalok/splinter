@@ -40,7 +40,9 @@ from textual.worker import Worker, WorkerState
 
 from splinter.analyze import (
     _iterations,
+    _knowledge_notes,
     _loop_block,
+    _plan_files,
     _prd_phases,
     _run_state,
     _trace_metrics,
@@ -84,7 +86,15 @@ def _overview_md(session: Session, state: str) -> str:
 
     lines.append("## Steps")
     lines.append(f"- localize — {len(anchors)} anchors")
-    lines.append(f"- plan — {'✓' if session.read('knowledge/plan.md') else 'pending'}")
+    all_plans = _plan_files(session)
+    if len(all_plans) > 1:
+        lines.append(f"- plan — {len(all_plans)} plans")
+        for filename, label in all_plans:
+            content = session.read(filename)
+            has_plan = "✓" if content.strip() else "pending"
+            lines.append(f"  - {label} — {has_plan}")
+    else:
+        lines.append(f"- plan — {'✓' if session.read('knowledge/plan.md') else 'pending'}")
     if iters:
         n, tier, verdict = iters[-1]
         lines.append(f"- run/eval — iter {n}/{status.get('max_iterations', '?')} "
@@ -249,9 +259,24 @@ class AnalyzeApp(App[None]):
             steps.add_leaf("prd", data={"kind": "file", "label": "PRD", "file": "prd.md"})
         steps.add_leaf("localize", data={"kind": "file", "label": "Localization",
                                          "file": "knowledge/localization.md"})
-        steps.add_leaf("plan", data={"kind": "file", "label": "Plan",
-                                      "file": "knowledge/plan.md"})
+        plans = _plan_files(self.session)
+        if plans:
+            for filename, label in plans:
+                steps.add_leaf(label, data={"kind": "file", "label": label, "file": filename})
+        else:
+            steps.add_leaf("plan", data={"kind": "file", "label": "Plan",
+                                          "file": "knowledge/plan.md"})
         steps.add_leaf("trace", data={"kind": "trace"})
+
+        notes = _knowledge_notes(self.session)
+        extra = [
+            (fn, lbl) for fn, lbl in notes
+            if lbl not in ("plan", "localization") and not lbl.startswith("plan-")
+        ]
+        if extra:
+            kn = tree.root.add("📝 Knowledge", expand=False)
+            for filename, label in extra:
+                kn.add_leaf(label, data={"kind": "file", "label": label, "file": filename})
 
         self._traj_node = tree.root.add("📈 Trajectory", expand=True)
         self._refresh_trajectory()

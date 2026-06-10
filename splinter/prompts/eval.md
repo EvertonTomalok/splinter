@@ -8,10 +8,20 @@ satisfies this task's acceptance criteria — nothing else.
 
 {output_section}
 
+{gate_section}
+
+{skill_section}
+
 {previous_evals_section}
 
 How to decide:
 
+- YOU are the authority on quality. Read the actual code/output and judge it
+  against the Acceptance Criteria. Do not defer to the mechanical gate.
+- The Mechanical Gate Result is only a secondary signal. A gate FAIL is NORMAL
+  and usually a fixable slip (a lint nit, a flaky/slow test, a missing import) —
+  it is NOT by itself a reason to fail the task or change the model. A gate PASS
+  is NOT by itself a reason to PASS: weak or off-target code can still pass lint.
 - Judge strictly against the Acceptance Criteria above. If every criterion is
   clearly met, the verdict is PASS — even if you can imagine further polish.
 - Base the verdict on what the output actually demonstrates (code, test results,

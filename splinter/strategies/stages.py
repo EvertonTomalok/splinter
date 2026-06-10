@@ -1,10 +1,11 @@
 """Chain-of-Responsibility stages for one iteration of the orchestration loop.
 
-A single iteration is Run -> Gate -> Eval. The gate is a short-circuit link: when
-mechanical checks fail there is no point paying for an LLM eval, so ``GateStage``
-returns ``False`` and the chain stops before ``EvalStage`` runs. The per-task
-orchestration (retry vs. escalate, budget, replanning policy) lives in the
-strategy that drives this chain, not in the stages themselves.
+A single iteration is Run -> Gate -> Eval. The gate is NOT a veto: it runs the
+mechanical checks and records the result, but never short-circuits the chain. The
+evaluator is a frontier LLM that judges the actual code generation against the
+task — it is the authority on quality and always runs, with the gate result as a
+secondary signal. The per-task orchestration (retry vs. escalate, budget,
+replanning policy) lives in the strategy that drives this chain.
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ from splinter.memory.knowledge import KnowledgeStore
 from splinter.memory.session import Session
 from splinter.models.roster import Ladder
 from splinter.obs.trace import Trace, log_run
+from splinter.skills import ResolvedSkill
 from splinter.strategies.base import EvalVerdict
 
 log = logging.getLogger("splinter.loop")
@@ -40,12 +42,16 @@ class IterationContext:
     localization: str = ""
     effort_override: str | None = None
     oc_session: str | None = None
+    #: Evaluator's provider session — continued across same-runner retries.
+    eval_session: str | None = None
     corrections: str = ""
     eval_history: list[str] = field(default_factory=list)
+    task_index: int = 0
     # produced by the stages
     run_result: RunResult | None = None
     gate_passed: bool = True
     gate_detail: str = ""
+    gate_output: str = ""
     verdict: EvalVerdict | None = None
     _loop_lines: list[str] = field(default_factory=list)
 
@@ -108,7 +114,7 @@ class RunStage(Stage):
         log.info("iter %d · ran %s · tokens=%s · $%.4f",
                  ctx.iteration, result.model, result.tokens, result.cost)
         ctx.run_result = result
-        log_run(ctx.trace, result, ctx.iteration)
+        log_run(ctx.trace, result, ctx.iteration, ctx.task_index)
         if ctx.oc_session is None and result.opencode_session:
             ctx.oc_session = result.opencode_session
 
@@ -135,19 +141,31 @@ class RunStage(Stage):
 
 
 class GateStage(Stage):
-    """Run deterministic checks; short-circuit the chain on failure."""
+    """Run the deterministic checks and record the result — never a veto.
+
+    The gate is a mechanical signal, not the judge. A failure is normal and gets
+    fed back to the runner (so it understands what's wrong) and to the evaluator
+    (as secondary context); the chain always continues to ``EvalStage``, which
+    owns the quality verdict.
+    """
 
     def process(self, ctx: IterationContext) -> bool:
         try:
             result = run_gate(session_dir=ctx.session.dir)
         except Exception:
-            # Gate unavailable in this project — treat as a pass and let eval decide.
+            # Gate unavailable in this project — nothing to record, eval decides.
             return True
 
         ctx.gate_passed = result.passed
         if not result.passed:
             failed = [name for name, passed, _ in result.checks if not passed]
             ctx.gate_detail = f"failed: {', '.join(failed)}"
+            # Keep the actual failing output so the runner can see what broke.
+            ctx.gate_output = "\n\n".join(
+                f"### {name}\n{out}".rstrip()
+                for name, passed, out in result.checks
+                if not passed and out
+            )
         log.info("iter %d · gate %s%s", ctx.iteration,
                  "PASS" if result.passed else "FAIL",
                  f" ({ctx.gate_detail})" if not result.passed else "")
@@ -155,19 +173,20 @@ class GateStage(Stage):
         ctx._loop_lines.append(
             f"- gate: {'PASS' if result.passed else 'FAIL'} {ctx.gate_detail}".rstrip()
         )
-        if not ctx.gate_passed:
-            ctx._loop_lines.append(f"- verdict: RETRY (gate failed: {ctx.gate_detail})")
-            ctx.flush_loop()
-            return False
         return True
 
 
 class EvalStage(Stage):
     """Judge the run output against acceptance criteria and persist the verdict."""
 
-    def __init__(self, evaluator: Evaluator | None = None) -> None:
+    def __init__(
+        self,
+        evaluator: Evaluator | None = None,
+        resolved_skill: ResolvedSkill | None = None,
+    ) -> None:
         super().__init__()
         self._evaluator = evaluator
+        self._resolved_skill = resolved_skill
 
     def process(self, ctx: IterationContext) -> bool:
         assert ctx.run_result is not None
@@ -181,9 +200,15 @@ class EvalStage(Stage):
             eval_model=ctx.ladder.eval_model,
             eval_effort=eval_effort,
             previous_evals="\n".join(ctx.eval_history[-2:]),
+            eval_skill=self._resolved_skill,
+            gate_passed=ctx.gate_passed,
+            gate_detail=ctx.gate_detail,
+            session=ctx.eval_session,
             timeout=ctx.ladder.eval_timeout,
         )
         ctx.verdict = verdict
+        # Keep the eval conversation alive for the next same-runner retry.
+        ctx.eval_session = verdict.eval_session
         log.info("iter %d · eval %s — %s", ctx.iteration, verdict.decision, verdict.reason)
         ctx.eval_history.append(
             f"Iter {ctx.iteration} [{verdict.decision}]: "

@@ -51,6 +51,14 @@ def run(
     effort: Annotated[str | None, typer.Option(help="Override reasoning effort")] = None,
     budget: Annotated[float | None, typer.Option(help="Max cost in dollars")] = None,
     max_iterations: Annotated[int, typer.Option(help="Max loop iterations")] = 5,
+    eval: Annotated[
+        str | None, typer.Option("--eval", help="Override eval skill (skill name)")] = None,
+    eval_model: Annotated[
+        str | None, typer.Option("--eval-model", help="Override evaluator model")] = None,
+    eval_effort: Annotated[
+        str | None,
+        typer.Option("--eval-effort", help="Override evaluator reasoning effort"),
+    ] = None,
     cowabunga: Annotated[
         bool,
         typer.Option(
@@ -73,6 +81,9 @@ def run(
         "effort": effort,
         "budget": budget,
         "max_iterations": max_iterations,
+        "eval_skill": eval,
+        "eval_model": eval_model,
+        "eval_effort": eval_effort,
         "cowabunga": cowabunga,
     }
 

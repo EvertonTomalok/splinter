@@ -28,3 +28,29 @@ def run_text(
     return claude_cli.run(
         prompt, model, effort=variant, output_format=output_format, timeout=timeout
     ).text
+
+
+def run_text_session(
+    prompt: str,
+    model: str,
+    *,
+    variant: str | None = None,
+    output_format: str = "json",
+    session: str | None = None,
+    timeout: int | None = None,
+) -> tuple[str, str | None]:
+    """Like :func:`run_text`, but resumes ``session`` and returns the (text, new
+    session id). Used by the evaluator to keep one conversation across retries of
+    the same runner — pass the returned id back in to continue it."""
+    if provider_for(model) == "opencode":
+        oc = opencode.run(
+            prompt, model, variant=variant, fmt=output_format,
+            session=session, timeout=timeout,
+        )
+        sid = session or oc.raw.get("session_id") or oc.raw.get("session")
+        return oc.text, sid
+    cl = claude_cli.run(
+        prompt, model, effort=variant, output_format=output_format,
+        resume=session, timeout=timeout,
+    )
+    return cl.text, (cl.raw.get("_session_id") or session)

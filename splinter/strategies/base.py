@@ -17,6 +17,10 @@ class EvalVerdict:
     reason: str
     corrections: str = ""
     raw: str = ""
+    #: The evaluator's own provider session id. Reused across same-runner retries
+    #: so the eval LLM keeps context on this runner's attempts; reset to a fresh
+    #: session only when the eval decides to change the runner (escalate).
+    eval_session: str | None = None
 
     @property
     def passed(self) -> bool:
@@ -40,6 +44,7 @@ class Strategy(ABC):
         budget: float | None = None,
         max_iterations: int = 5,
         localization: str = "",
+        eval_skill: str | None = None,
         cowabunga: bool = False,
         resume: bool = False,
     ) -> list[RunResult]:

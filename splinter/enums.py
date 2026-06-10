@@ -35,6 +35,8 @@ class Variant(StrEnum):
 
     MINIMAL = "minimal"
     LOW = "low"
+    MEDIUM = "medium"
     HIGH = "high"
+    XHIGH = "xhigh"  # "high+": between high and max
     MAX = "max"
     AUTO = "auto"

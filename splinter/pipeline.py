@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import logging
 import os
-import re
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
 import yaml
 
-from splinter.agents.localizer import localize
+from splinter.agents import planner
+from splinter.agents.localizer import CodeAnchor, localize
 from splinter.agents.runner import Task
 from splinter.memory.session import Session, new_session_id
 from splinter.models.roster import load_ladder
@@ -74,6 +74,9 @@ def _resolve_gate(session: Session, ladder: object) -> None:
 def _classify_failure(exc: BaseException) -> str:
     """Transient (provider/network blip → resume continues) vs critical (bad command,
     bug → resume rolls the failing stage back and redoes it)."""
+    from splinter.providers.base import ProviderGapError
+    if isinstance(exc, ProviderGapError):
+        return "gap"
     if isinstance(exc, (TimeoutError, subprocess.TimeoutExpired)):
         return "transient"
     msg = str(exc).lower()
@@ -98,55 +101,9 @@ def _load_task_from_yaml(path: str) -> Task:
 
 def _load_tasks_from_prd(prd_path: str) -> tuple[list[Task], str | None]:
     text = Path(prd_path).read_text()
-    fm: dict[str, str] = {}
-    body = text
-    if text.startswith("---"):
-        parts = text.split("---", 2)
-        if len(parts) >= 3:
-            fm = yaml.safe_load(parts[1]) or {}
-            body = parts[2]
-
+    fm, _body = planner._parse_frontmatter(text)
     strategy = fm.get("strategy")
-
-    tasks: list[Task] = []
-    us_pattern = re.compile(
-        r"###\s+(US-\d+):\s*(.+?)\n(.*?)(?=###\s+US-|\Z)",
-        re.DOTALL,
-    )
-    for m in us_pattern.finditer(body):
-        us_id = m.group(1)
-        title = m.group(2).strip()
-        block = m.group(3)
-
-        desc_match = re.search(r"\*\*Description:\*\*\s*(.+)", block)
-        desc = desc_match.group(1).strip() if desc_match else title
-
-        effort_match = re.search(r"effort:\s*(\w+)", block)
-        effort = effort_match.group(1) if effort_match else "normal"
-
-        skill_match = re.search(r"eval_skill:\s*(\S+)", block)
-        skill = skill_match.group(1) if skill_match else None
-
-        ac_lines = re.findall(r"- \[[ x]\]\s*(.+)", block)
-        acceptance = "\n".join(ac_lines) if ac_lines else desc
-
-        tasks.append(
-            Task(
-                description=f"{us_id}: {desc}",
-                acceptance=acceptance,
-                effort=effort,
-                eval_skill=skill,
-            )
-        )
-
-    if not tasks:
-        tasks.append(
-            Task(
-                description=body[:200].strip(),
-                acceptance="implementation matches the PRD description",
-            )
-        )
-
+    tasks = planner.parse_stories(text)
     return tasks, strategy
 
 
@@ -158,11 +115,18 @@ def run_pipeline(
     effort: str | None = None,
     budget: float | None = None,
     max_iterations: int = 5,
+    eval_skill: str | None = None,
+    eval_model: str | None = None,
+    eval_effort: str | None = None,
     cowabunga: bool = False,
     resume: bool = False,
     session: Session | None = None,
 ) -> int:
     ladder = load_ladder()
+    if eval_model:
+        ladder.eval_model = eval_model
+    if eval_effort:
+        ladder.eval_effort = eval_effort
     if session is None:
         # Fresh session per run so prior runs (especially failed ones) are kept.
         session = Session(new_session_id())
@@ -234,6 +198,7 @@ def run_pipeline(
             prd_text = tasks[0].description
 
         localization = ""
+        anchors: list[CodeAnchor] = []
         if prd_text:
             existing_loc = session.read("knowledge/localization.md")
             if resume and existing_loc.strip():
@@ -241,8 +206,11 @@ def run_pipeline(
                 localization = existing_loc
             else:
                 log.info("localizing against the codebase…")
-                localize(prd_text, session, ladder)
+                anchors = localize(prd_text, session, ladder)
                 localization = session.read("knowledge/localization.md")
+
+        if anchors and tasks:
+            planner.assign_target_files(tasks, anchors)
 
         _resolve_gate(session, ladder)
 
@@ -255,6 +223,7 @@ def run_pipeline(
             budget=budget,
             max_iterations=max_iterations,
             localization=localization,
+            eval_skill=eval_skill,
             cowabunga=cowabunga,
             resume=resume,
         )
@@ -266,6 +235,14 @@ def run_pipeline(
         print(f"  runs: {len(results)}")
         print(f"  cost: ${total:.4f}")
         return 0
+    except Exception as gap_exc:
+        from splinter.providers.base import ProviderGapError
+        if not isinstance(gap_exc, ProviderGapError):
+            raise
+        session.set_status("paused", kind=gap_exc.kind, resumable=gap_exc.resumable)
+        log.warning("run paused — %s", gap_exc)
+        print(gap_exc.guidance)
+        return 2
     except BaseException as exc:
         fail_class = _classify_failure(exc)
         session.set_status("failed", fail_class=fail_class)

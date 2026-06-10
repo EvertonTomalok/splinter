@@ -37,12 +37,23 @@ def test_new_session_id_format() -> None:
 
 def test_ladder_loads() -> None:
     ladder = load_ladder()
-    assert len(ladder.tiers) == 5
+    assert len(ladder.tiers) == 6
     assert ladder.tiers[0].name == "easy"
-    assert ladder.tiers[4].name == "top"
+    assert ladder.tiers[4].name == "critical"
+    assert ladder.tiers[5].name == "last-resort"
     assert len(ladder.all_model_ids()) > 0
-    # floor is glm-5.1 (no weak models)
-    assert ladder.tiers[0].models[0] == "opencode-go/glm-5.1"
+    # workhorse floor is deepseek-v4-pro (no weak models)
+    assert ladder.tiers[0].models[0] == "opencode-go/deepseek-v4-pro"
+    # per-tier reasoning variants climb deepseek, then qwen, then sonnet high→max
+    assert ladder.tier_variant(0) == "medium"
+    assert ladder.tier_variant(1) == "high"
+    assert ladder.tier_variant(2) == "max"
+    assert ladder.tier_variant(3) == "xhigh"
+    assert ladder.tier_variant(4) == "high"
+    assert ladder.tier_variant(5) == "max"
+    # last two rungs are both sonnet (claude), high then max
+    assert ladder.tier_by_level(4).models[0] == "sonnet"
+    assert ladder.tier_by_level(5).models[0] == "sonnet"
 
 
 def test_ladder_tier_by_level() -> None:
@@ -50,7 +61,7 @@ def test_ladder_tier_by_level() -> None:
     t0 = ladder.tier_by_level(0)
     assert t0.name == "easy"
     t4 = ladder.tier_by_level(4)
-    assert t4.name == "top"
+    assert t4.name == "critical"
 
 
 def test_normal_effort_defaults_to_deepseek_v4_pro() -> None:
@@ -103,15 +114,16 @@ def test_config_effort_overrides_apply_to_ladder(
             "planner": "max",
             "eval": "low",
             "localizer_recall": "high",
-            "tiers": ["high", "", "", "", ""],  # blank tiers fall back to effort_map
+            # tier 0 overridden to high; blank tiers keep the ladder.yaml default.
+            "tiers": ["high", "", "", "", ""],
         },
     )
     ladder = load_ladder()
     assert ladder.planner_effort == "max"
     assert ladder.eval_effort == "low"
     assert ladder.localizer_recall_variant == "high"
-    assert ladder.tier_variant(0) == "high"
-    assert ladder.tier_variant(1) is None  # blank → no override
+    assert ladder.tier_variant(0) == "high"   # config override wins
+    assert ladder.tier_variant(1) == "high"   # blank → ladder.yaml default (high)
 
 
 def test_configure_tui_saves_models_and_efforts(
@@ -147,14 +159,16 @@ def test_ladder_effort_mapping() -> None:
     em = ladder.effort_mapping("trivial")
     assert em is not None
     assert em.start_tier == 0
-    assert em.variant == "minimal"
+    # Agentic floor: real-easy tasks run at `medium`, never minimal/low.
+    assert em.variant == "medium"
 
 
 def test_resolve_variant_auto() -> None:
     ladder = load_ladder()
     task = Task(description="test", acceptance="test", effort="hard", reasoning_effort="auto")
     v = resolve_variant(task, None, ladder)
-    assert v == "high"
+    # hard → xhigh ("high+") for complex agentic work.
+    assert v == "xhigh"
 
 
 def test_resolve_variant_override() -> None:
@@ -173,7 +187,8 @@ def test_resolve_model() -> None:
 
 def test_resolve_model_claude() -> None:
     ladder = load_ladder()
-    model_id, provider = resolve_model(3, ladder)
+    # sonnet is the last-resort top tier (level 4); tier 3 is qwen (opencode).
+    model_id, provider = resolve_model(4, ladder)
     assert provider == "claude"
     assert model_id == "sonnet"
 
@@ -654,3 +669,163 @@ def test_session_picker_navigate_delete_open(
         assert app.return_value in {"ses_a", "ses_c"}
 
     asyncio.run(drive())
+
+
+# --- planner: parse_stories + assign_target_files ----------------------------
+
+
+_MULTI_STORY_PRD = """\
+---
+feature: multi
+strategy: direct
+---
+
+# Multi-Story Feature
+
+### US-001: Create data model
+**Description:** Define the core data model with id and name fields.
+
+**Splinter hints:**
+- effort: trivial
+- eval_skill: run_python
+
+**Acceptance Criteria:**
+- [ ] Model class exists
+- [ ] Has id and name fields
+
+### US-002: Add validation
+**Description:** Add input validation for the data model.
+
+Depends on US-001
+
+**Splinter hints:**
+- effort: normal
+- eval_skill: run_python
+
+**Acceptance Criteria:**
+- [ ] Validation rejects empty names
+- [ ] Validation rejects duplicate ids
+
+### US-003: Build API endpoint
+**Description:** Expose the data model via an API endpoint.
+
+Depends on US-001
+Blocked until US-002
+
+**Splinter hints:**
+- effort: hard
+- eval_skill: run_python
+
+**Acceptance Criteria:**
+- [ ] GET endpoint returns model
+- [ ] POST endpoint creates model
+"""
+
+
+def test_planner_parse_stories_sets_id() -> None:
+    from splinter.agents.planner import parse_stories
+
+    tasks = parse_stories(_MULTI_STORY_PRD)
+    assert len(tasks) == 3
+    assert tasks[0].id == "US-001"
+    assert tasks[1].id == "US-002"
+    assert tasks[2].id == "US-003"
+
+
+def test_planner_parse_stories_deps() -> None:
+    from splinter.agents.planner import parse_stories
+
+    tasks = parse_stories(_MULTI_STORY_PRD)
+    assert tasks[0].deps is None
+    assert tasks[1].deps == ["US-001"]
+    assert tasks[2].deps == ["US-001", "US-002"]
+
+
+def test_planner_parse_stories_back_compat() -> None:
+    from splinter.agents.planner import parse_stories
+
+    tasks = parse_stories(_MULTI_STORY_PRD)
+    assert "US-001" in tasks[0].description
+    assert "core data model" in tasks[0].description
+    assert tasks[0].effort == "trivial"
+    assert tasks[0].eval_skill == "run_python"
+    assert "Model class exists" in tasks[0].acceptance
+    assert tasks[2].effort == "hard"
+
+
+def test_planner_parse_stories_hello_world_prd() -> None:
+    from splinter.agents.planner import parse_stories
+
+    prd_text = Path("samples/hello-world-prd.md").read_text()
+    tasks = parse_stories(prd_text)
+    assert len(tasks) == 1
+    assert tasks[0].id == "US-001"
+    assert tasks[0].effort == "trivial"
+    assert tasks[0].eval_skill == "run_python"
+    assert "hello" in tasks[0].acceptance.lower()
+
+
+def test_planner_assign_target_files_keyword_match() -> None:
+    from splinter.agents.localizer import CodeAnchor
+    from splinter.agents.planner import assign_target_files, parse_stories
+
+    tasks = parse_stories(_MULTI_STORY_PRD)
+    anchors = [
+        CodeAnchor(
+            file="models/user.py", symbol="UserModel",
+            reason="core data model definition", confidence=0.9,
+        ),
+        CodeAnchor(
+            file="validators/user.py", symbol="validate_user",
+            reason="input validation for model", confidence=0.8,
+        ),
+        CodeAnchor(
+            file="api/routes.py", symbol="api_endpoint",
+            reason="API endpoint for data model", confidence=0.7,
+        ),
+    ]
+    assign_target_files(tasks, anchors)
+    assert tasks[0].target_files is not None
+    assert "models/user.py" in tasks[0].target_files
+    assert tasks[2].target_files is not None
+    assert "api/routes.py" in tasks[2].target_files
+
+
+def test_planner_assign_target_files_fallback() -> None:
+    from splinter.agents.localizer import CodeAnchor
+    from splinter.agents.planner import assign_target_files
+
+    tasks = [Task(description="unrelated task", acceptance="works")]
+    anchors = [
+        CodeAnchor(file="foo.py", symbol="Foo", reason="something else", confidence=0.5),
+        CodeAnchor(file="bar.py", symbol="Bar", reason="another thing", confidence=0.5),
+    ]
+    assign_target_files(tasks, anchors)
+    assert tasks[0].target_files == ["foo.py", "bar.py"]
+
+
+def test_planner_assign_target_files_empty_anchors() -> None:
+    from splinter.agents.planner import assign_target_files
+
+    tasks = [Task(description="test", acceptance="test")]
+    assign_target_files(tasks, [])
+    assert tasks[0].target_files is None
+
+
+def test_planner_plan_function(tmp_path: Path) -> None:
+    from splinter.agents.localizer import CodeAnchor
+    from splinter.agents.planner import plan
+
+    prd_file = tmp_path / "test-prd.md"
+    prd_file.write_text(_MULTI_STORY_PRD)
+    anchors = [
+        CodeAnchor(
+            file="models/user.py", symbol="UserModel",
+            reason="core data model", confidence=0.9,
+        ),
+    ]
+    tasks, strategy = plan(str(prd_file), anchors)
+    assert strategy == "direct"
+    assert len(tasks) == 3
+    assert tasks[0].id == "US-001"
+    assert tasks[0].target_files is not None

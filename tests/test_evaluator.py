@@ -216,8 +216,8 @@ def test_judge_calls_run_text_with_injected_model() -> None:
     ev = Evaluator(ladder)
     task = Task(description="test task", acceptance="must work")
 
-    with patch("splinter.agents.evaluator.run_text", return_value=(
-        "VERDICT: PASS\nREASON: ok\nCORRECTIONS: none"
+    with patch("splinter.agents.evaluator.run_text_session", return_value=(
+        "VERDICT: PASS\nREASON: ok\nCORRECTIONS: none", "eval-sess-1"
     )) as mock_run:
         verdict = ev.judge(
             task, "some output",
@@ -226,6 +226,7 @@ def test_judge_calls_run_text_with_injected_model() -> None:
         )
 
     assert verdict.passed
+    assert verdict.eval_session == "eval-sess-1"
     mock_run.assert_called_once()
     call_args = mock_run.call_args
     assert call_args.args[1] == "opencode-go/test-model"
@@ -237,8 +238,8 @@ def test_judge_uses_ladder_defaults() -> None:
     ev = Evaluator(ladder)
     task = Task(description="test task", acceptance="must work")
 
-    with patch("splinter.agents.evaluator.run_text", return_value=(
-        "VERDICT: RETRY\nREASON: fix\nCORRECTIONS: do better"
+    with patch("splinter.agents.evaluator.run_text_session", return_value=(
+        "VERDICT: RETRY\nREASON: fix\nCORRECTIONS: do better", None
     )) as mock_run:
         ev.judge(task, "some output")
 

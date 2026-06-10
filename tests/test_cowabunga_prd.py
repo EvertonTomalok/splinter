@@ -479,3 +479,95 @@ def test_resume_skips_completed_stories_via_prd(
     prd = prd_session.mark_story_done(prd_session.mark_story_done(_PRD, "US-001"), "US-002")
     session, ran = _drive_tasks(monkeypatch, tmp_path, tasks, resume=True, prd=prd)
     assert ran == ["US-003: Third"]
+
+
+# --- gate never vetoes the eval; eval session continuity ---------------------
+
+
+def test_gate_failure_does_not_veto_eval(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A failing gate must NOT short-circuit the eval. If the frontier eval says
+    PASS, the task passes — the gate is only a secondary signal."""
+    from splinter.agents.gate import GateResult
+
+    monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
+    runs: list[int] = []
+
+    def fake_run_task(task: Task, plan: str, tier: int, ladder: object, **kw: object) -> RunResult:
+        runs.append(tier)
+        return RunResult(text="x", model="stub", tier=tier,
+                         tokens={"in": 1}, cost=0.0, raw={}, opencode_session=None)
+
+    monkeypatch.setattr("splinter.strategies.stages.run_task", fake_run_task)
+    monkeypatch.setattr(
+        "splinter.strategies.stages.run_gate",
+        lambda **k: GateResult(passed=False, checks=[("pytest", False, "boom")]),
+    )
+    def fake_judge_pass(self: object, *a: object, **k: object) -> EvalVerdict:
+        return EvalVerdict(decision=Decision.PASS, reason="ok", corrections="", raw="")
+
+    monkeypatch.setattr("splinter.strategies.stages.Evaluator.judge", fake_judge_pass)
+    monkeypatch.setattr("splinter.strategies.direct._make_plan", lambda *a, **k: "plan")
+
+    from splinter.models.roster import load_ladder
+
+    session = Session("ses_gate_noveto")
+    DirectStrategy().execute(
+        [Task(description="t", acceptance="a")], session, load_ladder(), max_iterations=3
+    )
+    # Passed on the very first iteration despite the gate failing.
+    assert runs == [1]
+    assert "gate: FAIL" in session.read("loop.md")
+
+
+def test_eval_session_continues_same_runner_resets_on_escalate(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Same runner → eval keeps its session; on escalate (runner change) the eval
+    session resets, and the gate output reaches the runner's corrections."""
+    from splinter.agents.gate import GateResult
+
+    monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
+    eval_sessions_in: list[str | None] = []
+    corrections_in: list[str] = []
+
+    def fake_run_task(
+        task: Task, plan: str, tier: int, ladder: object, *, corrections: str = "", **kw: object
+    ) -> RunResult:
+        corrections_in.append(corrections)
+        return RunResult(text="x", model="stub", tier=tier,
+                         tokens={"in": 1}, cost=0.0, raw={}, opencode_session=f"oc{tier}")
+
+    verdicts = iter([
+        EvalVerdict(Decision.RETRY, "fix", corrections="do X", eval_session="ev1"),
+        EvalVerdict(Decision.ESCALATE, "cant", corrections="harder", eval_session="ev2"),
+        EvalVerdict(Decision.PASS, "ok", eval_session="ev3"),
+    ])
+
+    def fake_judge(
+        self: object, *a: object, session: str | None = None, **k: object
+    ) -> EvalVerdict:
+        eval_sessions_in.append(session)
+        return next(verdicts)
+
+    monkeypatch.setattr("splinter.strategies.stages.run_task", fake_run_task)
+    monkeypatch.setattr(
+        "splinter.strategies.stages.run_gate",
+        lambda **k: GateResult(passed=False, checks=[("pytest", False, "TRACEBACK boom")]),
+    )
+    monkeypatch.setattr("splinter.strategies.stages.Evaluator.judge", fake_judge)
+    monkeypatch.setattr("splinter.strategies.direct._make_plan", lambda *a, **k: "plan")
+
+    from splinter.models.roster import load_ladder
+
+    session = Session("ses_evalsess")
+    DirectStrategy().execute(
+        [Task(description="t", acceptance="a", effort="normal")],
+        session, load_ladder(), max_iterations=3,
+    )
+    # iter1 starts with no eval session; iter2 (same tier RETRY) continues "ev1";
+    # iter2's ESCALATE resets it, so iter3 (new tier) starts fresh (None).
+    assert eval_sessions_in == [None, "ev1", None]
+    # The gate output rode along into the runner's corrections on retry.
+    assert any("TRACEBACK boom" in c for c in corrections_in)

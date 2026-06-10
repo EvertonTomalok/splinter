@@ -24,7 +24,7 @@ from splinter.memory.session import Session
 # Renders the markup in render_overview() for the non-TUI (print) code paths.
 _console = Console()
 
-EXPANDABLE = ("plan", "loop", "eval", "localization", "trace", "all")
+EXPANDABLE = ("plan", "loop", "eval", "localization", "trace", "knowledge", "all")
 
 _EXPAND_FILES = {
     "plan": "knowledge/plan.md",
@@ -118,6 +118,26 @@ def _trace_metrics(trace_md: str) -> dict[str, str]:
     return metrics
 
 
+def _plan_files(session: Session) -> list[tuple[str, str]]:
+    kdir = session.dir / "knowledge"
+    if not kdir.exists():
+        return []
+    plans = sorted(kdir.glob("plan-*.md"))
+    result: list[tuple[str, str]] = []
+    for p in plans:
+        label = p.stem.replace("plan-", "plan-")
+        result.append((f"knowledge/{p.name}", label))
+    return result
+
+
+def _knowledge_notes(session: Session) -> list[tuple[str, str]]:
+    kdir = session.dir / "knowledge"
+    if not kdir.exists():
+        return []
+    notes = sorted(kdir.glob("*.md"))
+    return [(f"knowledge/{p.name}", p.stem) for p in notes]
+
+
 # --- renderers (return strings; pure, testable) ----------------------------
 
 
@@ -179,6 +199,7 @@ def render_overview(session: Session, state: str) -> str:
 
     anchors = len([ln for ln in localization.splitlines() if ln.strip().startswith("- ")])
     plan_steps = len(re.findall(r"^\s*\d+\.", plan, re.MULTILINE))
+    all_plans = _plan_files(session)
 
     def step(done: bool, current: bool, name: str, detail: str = "") -> str:
         if current and running:
@@ -197,8 +218,13 @@ def render_overview(session: Session, state: str) -> str:
     lines.append("[bold]STEPS[/]")
     lines.append(step(bool(localization), current_stage == "localize", "localize",
                       f"{anchors} anchors" if localization else ""))
-    lines.append(step(bool(plan), current_stage == "plan", "plan",
-                      f"{plan_steps} steps" if plan else ""))
+    plan_detail = ""
+    if plan:
+        if len(all_plans) > 1:
+            plan_detail = f"{len(all_plans)} plans · {plan_steps} steps"
+        else:
+            plan_detail = f"{plan_steps} steps"
+    lines.append(step(bool(plan), current_stage == "plan", "plan", plan_detail))
     if iters:
         n, tier, _ = iters[-1]
         lines.append(step(bool(iters), running and current_stage == "run" and not passed,
@@ -253,8 +279,56 @@ def render_iteration(session: Session, n: int) -> str:
 
 
 def render_expand(session: Session, what: str) -> str:
-    targets = list(_EXPAND_FILES) if what == "all" else [what]
-    out: list[str] = []
+    if what == "knowledge":
+        notes = _knowledge_notes(session)
+        if not notes:
+            return "===== knowledge =====\n(empty)"
+        out: list[str] = []
+        for filename, label in notes:
+            content = session.read(filename)
+            out.append(f"===== {label} =====\n{content.strip() if content else '(empty)'}")
+        return "\n\n".join(out)
+
+    if what == "plan":
+        plans = _plan_files(session)
+        if plans:
+            out = []
+            for filename, label in plans:
+                content = session.read(filename)
+                out.append(f"===== {label} =====\n{content.strip() if content else '(empty)'}")
+            return "\n\n".join(out)
+        content = session.read(_EXPAND_FILES["plan"])
+        return f"===== plan =====\n{content.strip() if content else '(empty)'}"
+
+    if what == "all":
+        targets = list(_EXPAND_FILES)
+        out = []
+        for name in targets:
+            if name == "plan":
+                plans = _plan_files(session)
+                if plans:
+                    for filename, label in plans:
+                        content = session.read(filename)
+                        out.append(
+                            f"===== {label} =====\n"
+                            f"{content.strip() if content else '(empty)'}"
+                        )
+                    continue
+            content = session.read(_EXPAND_FILES[name])
+            out.append(f"===== {name} =====\n{content.strip() if content else '(empty)'}")
+        notes = _knowledge_notes(session)
+        extra = [n for n in notes if n[1] not in ("plan", "localization")
+                 and not n[1].startswith("plan-")]
+        if extra:
+            for filename, label in extra:
+                content = session.read(filename)
+                out.append(
+                    f"===== {label} =====\n{content.strip() if content else '(empty)'}"
+                )
+        return "\n\n".join(out)
+
+    targets = [what]
+    out = []
     for name in targets:
         content = session.read(_EXPAND_FILES[name])
         out.append(f"===== {name} =====\n{content.strip() if content else '(empty)'}")

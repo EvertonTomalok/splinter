@@ -1,54 +1,68 @@
-# Execution ladder. The runner uses each tier's first model; the loop climbs the
-# tiers on repeated failure. No weak models — the floor is glm-5.1 / kimi-k2.6.
+# Execution ladder. Each tier is a fixed model + reasoning variant; the loop climbs
+# the tiers on escalation. deepseek-v4-pro is the workhorse (3 tiers, climbing its
+# reasoning: medium → high → max) before switching models, so most usage stays on
+# it. qwen3.7-max (xhigh) sits above it; sonnet is the LAST RESORT — avoid running
+# it unless everything below was exhausted.
 tiers:
   - name: easy
     level: 0
-    # easy → moderate-easy tasks
+    # real-easy tasks: deepseek-pro at medium reasoning
     models:
-      - opencode-go/glm-5.1
-      - opencode-go/kimi-k2.6
+      - opencode-go/deepseek-v4-pro
+    variant: medium
 
   - name: moderate
     level: 1
-    # default tier for normal work
+    # the workhorse — most runs live here (deepseek-pro, high reasoning)
     models:
       - opencode-go/deepseek-v4-pro
+    variant: high
+
+  - name: moderate-hard
+    level: 2
+    # still deepseek-pro, maxed reasoning, before paying for a different model
+    models:
+      - opencode-go/deepseek-v4-pro
+    variant: max
 
   - name: hard
-    level: 2
-    # moderate+ work
+    level: 3
+    # switch model: qwen3.7-max at xhigh
     models:
       - opencode-go/qwen3.7-max
+    variant: xhigh
 
-  - name: premium
-    level: 3
+  - name: critical
+    level: 4
+    # Frontier claude at high. Avoid running unless the cheaper ladder is exhausted.
     provider: claude
     models:
       - sonnet
-    variants:
-      default: null
-      max: "--effort max"
+    variant: high
 
-  - name: top
-    level: 4
+  - name: last-resort
+    level: 5
+    # The very last rung: sonnet maxed out. Only reached if `critical` still failed.
     provider: claude
     models:
-      - opus   # claude CLI alias; 'opus-4.8' is not a valid --model id (404)
+      - sonnet
+    variant: max
 
-# Task difficulty → starting tier + reasoning variant.
+# Task difficulty → starting tier. Escalation walks up from there; the per-tier
+# `variant` above sets the reasoning level at each rung.
 effort_map:
   trivial:
     start_tier: 0
-    variant: minimal
+    variant: medium
   normal:
-    start_tier: 1   # default: deepseek-v4-pro
-    variant: low
-  hard:
-    start_tier: 2   # qwen3.7-max
+    start_tier: 1   # workhorse: deepseek-v4-pro @ high
     variant: high
+  hard:
+    start_tier: 3   # qwen3.7-max @ xhigh
+    variant: xhigh
   critical:
-    start_tier: 3   # sonnet (effort max)
-    variant: max
+    start_tier: 4   # sonnet — last resort
+    variant: high
 
 eval:
   default_model: sonnet

@@ -279,7 +279,14 @@ class OpencodeProvider(ModelProvider):
         session: str | None = None,
         timeout: int | None = None,
     ) -> ProviderResponse:
-        result = run(prompt, model, variant=variant, session=session, timeout=timeout)
+        from splinter.providers.base import detect_provider_gap
+        try:
+            result = run(prompt, model, variant=variant, session=session, timeout=timeout)
+        except Exception as exc:
+            gap = detect_provider_gap(exc, self.name, model)
+            if gap:
+                raise gap from exc
+            raise
         session_id = session or result.raw.get("session_id") or result.raw.get("session")
         return ProviderResponse(
             text=result.text,

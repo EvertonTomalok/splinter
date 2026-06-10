@@ -13,6 +13,12 @@ from splinter.templating import render, section
 
 @dataclass
 class Task:
+    """§6.3 Task schema.
+
+    Core fields (planner): id, description, target_files, deps, effort, eval_skill.
+    Runner extras: acceptance, reasoning_effort, suggested_tier.
+    """
+
     description: str
     acceptance: str
     effort: str = Effort.NORMAL
@@ -20,6 +26,8 @@ class Task:
     eval_skill: str | None = None
     suggested_tier: int = 0
     target_files: list[str] | None = None
+    id: str = ""
+    deps: list[str] | None = None
 
 
 @dataclass(frozen=True)
@@ -33,10 +41,13 @@ class RunResult:
     opencode_session: str | None = None
 
 
+# Agentic code generation reasons poorly at low/minimal effort — the floor is
+# `medium` (real-easy tasks); moderate work gets `high`, complex `xhigh` ("high+"),
+# and the hardest `max`.
 EFFORT_TO_VARIANT: dict[str, str] = {
-    Effort.TRIVIAL: Variant.MINIMAL,
-    Effort.NORMAL: Variant.LOW,
-    Effort.HARD: Variant.HIGH,
+    Effort.TRIVIAL: Variant.MEDIUM,
+    Effort.NORMAL: Variant.HIGH,
+    Effort.HARD: Variant.XHIGH,
     Effort.CRITICAL: Variant.MAX,
 }
 
@@ -62,7 +73,8 @@ def resolve_variant(
     em = ladder.effort_mapping(task.effort)
     if em:
         return em.variant
-    return Variant.LOW
+    # Agentic floor — never low/minimal for code generation.
+    return Variant.MEDIUM
 
 
 def resolve_model(tier_level: int, ladder: Ladder) -> tuple[str, str]:
