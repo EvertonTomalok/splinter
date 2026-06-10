@@ -1489,8 +1489,8 @@ class PrdSessionApp(App[int | None]):
     """Refine a PRD with the user, pick a strategy, then hand off to the runner.
 
     Left pane: empty editable instructions. Right pane: PRD preview + conversation.
-    Phases: ``generate`` (from instructions) → ``strategy`` (pick a turtle) → ``review``
-    (eyeball the user stories) → exit with the run kwargs.
+    Phases: ``generate`` (from instructions) → ``chat`` (Q&A until "fulfilled") →
+    ``strategy`` (pick a turtle) → ``review`` (eyeball the user stories) → exit with the run kwargs.
     """
 
     CSS = (
@@ -1562,15 +1562,21 @@ class PrdSessionApp(App[int | None]):
         self._desc = run_kwargs.get("description", "")
         self._convo_lines: list[str] = []
         self._generating = False
+        self._started_at: str | None = None
 
     def _save_state(self) -> None:
         """Persist enough to resume this refinement: conversation id, phase, strategy."""
+        from datetime import datetime, timezone
+
+        if self._started_at is None:
+            self._started_at = datetime.now(timezone.utc).isoformat()
         self.session.set_status(
             "refining",
             source="prd",
             phase=self.phase,
             claude_session=self.claude_session,
             strategy=self.strategy or "?",
+            started_at=self._started_at,
         )
 
     def compose(self) -> ComposeResult:
@@ -1601,14 +1607,9 @@ class PrdSessionApp(App[int | None]):
         self.sub_title = "🤙 cowabunga" if self.cowabunga else "refining"
 
         if not self.resuming:
-            # Stamp started_at before any worker/LLM call so elapsed is accurate.
-            self.session.set_status(
-                "refining",
-                source="prd",
-                phase="init",
-                claude_session=self.claude_session,
-                strategy=self.strategy or "?",
-            )
+            from datetime import datetime, timezone
+
+            self._started_at = datetime.now(timezone.utc).isoformat()
 
         path = self.run_kwargs.get("prd_path")
         try:
@@ -2048,7 +2049,11 @@ class PrdSessionApp(App[int | None]):
         prd_session.log_phase(self.session, "generate", f"{n_stories} stories")
         self._set_preview(prd)
         self._mount_draft_editor(prd)
-        self._to_strategy_phase()
+        # Enter Q&A phase on the generated PRD — user types "fulfilled" to proceed to strategy.
+        self._initial_prd = prd
+        self._set_busy(True, "reading the generated PRD, drafting questions…")
+        self._say("[dim]PRD generated. Drafting clarifying questions…[/]")
+        self._spawn(self._questions_worker)
 
     def _show_stories(self) -> None:
         from splinter import prd_session
