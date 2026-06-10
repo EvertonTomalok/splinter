@@ -19,11 +19,12 @@ def run_text(
     variant: str | None = None,
     output_format: str = "json",
     timeout: int | None = None,
+    agent: str = "build",
 ) -> str:
     """Run ``prompt`` on ``model``'s backend and return the response text."""
     if provider_for(model) == "opencode":
         return opencode.run(
-            prompt, model, variant=variant, fmt=output_format, timeout=timeout
+            prompt, model, variant=variant, fmt=output_format, timeout=timeout, agent=agent
         ).text
     return claude_cli.run(
         prompt, model, effort=variant, output_format=output_format, timeout=timeout
@@ -38,6 +39,7 @@ def run_text_session(
     output_format: str = "json",
     session: str | None = None,
     timeout: int | None = None,
+    agent: str = "build",
 ) -> tuple[str, str | None]:
     """Like :func:`run_text`, but resumes ``session`` and returns the (text, new
     session id). Used by the evaluator to keep one conversation across retries of
@@ -45,7 +47,7 @@ def run_text_session(
     if provider_for(model) == "opencode":
         oc = opencode.run(
             prompt, model, variant=variant, fmt=output_format,
-            session=session, timeout=timeout,
+            session=session, timeout=timeout, agent=agent,
         )
         sid = session or oc.raw.get("session_id") or oc.raw.get("session")
         return oc.text, sid

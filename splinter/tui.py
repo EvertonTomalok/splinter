@@ -1807,9 +1807,9 @@ class PrdSessionApp(App[dict[str, Any] | None]):
 
         if autopick or not self.strategy:
             fm, _ = _fm_block(self.final_prd)
-            self.strategy = self.strategy or str(fm.get("strategy") or "") or "direct"
+            self.strategy = self.strategy or str(fm.get("strategy") or "") or "cascade"
             self.final_prd = _set_fm_strategy(self.final_prd, self.strategy)
-        prd_session.log_phase(self.session, "run", self.strategy or "direct")
+        prd_session.log_phase(self.session, "run", self.strategy or "cascade")
         prd_path = self.session.write("prd.md", self.final_prd)
         self.session.update_index(
             f"# Session {self.session.id}\n- prd: prd.md\n- strategy: {self.strategy}\n"

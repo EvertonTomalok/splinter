@@ -72,3 +72,23 @@ def render(name: str, **values: str) -> str:
     filled = load_template(name).format_map(_Blanks(values))
     collapsed = re.sub(r"\n{3,}", "\n\n", filled).strip()
     return collapsed + "\n"
+
+
+def load_standards() -> str:
+    """Return the Code Conventions section from AGENTS.md, or '' if absent.
+
+    Resolution order:
+    1. ``.splinter/AGENTS.md`` (project override)
+    2. ``AGENTS.md`` at cwd (standard project root location)
+    """
+    for candidate in (Path(".splinter") / "AGENTS.md", Path("AGENTS.md")):
+        if candidate.exists():
+            text = candidate.read_text()
+            match = re.search(
+                r"^## Code Conventions\s*\n(.*?)(?=^## |\Z)",
+                text,
+                re.MULTILINE | re.DOTALL,
+            )
+            if match:
+                return match.group(1).strip()
+    return ""

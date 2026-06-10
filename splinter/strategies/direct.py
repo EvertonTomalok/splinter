@@ -252,6 +252,41 @@ class DirectStrategy(Strategy):
                 break
         return start
 
+    def _plan_all_tasks(
+        self,
+        tasks: list[Task],
+        session: Session,
+        ladder: Ladder,
+        localization: str,
+    ) -> None:
+        """Pre-generate plans for all tasks; reuses existing files on resume."""
+        for i, task in enumerate(tasks):
+            task_plan_file = f"knowledge/plan-{i + 1}.md"
+            if session.read(task_plan_file).strip():
+                log.info("plan exists for task %d — reusing", i + 1)
+                continue
+            try:
+                log.info("planning task %d with %s", i + 1, ladder.planner_model)
+                code_ctx = task.filtered_context or localization
+                plan = _make_plan(task, ladder, code_ctx)
+                session.write(task_plan_file, f"# Plan\n\n{plan}\n")
+                if i == 0:
+                    session.write("knowledge/plan.md", f"# Plan\n\n{plan}\n")
+            except Exception as e:
+                # swallow: planner unavailable; _run_task_loop plans per-task as fallback
+                log.warning("bulk planning skipped for task %d: %s", i + 1, e)
+
+    def _run_plan_phase(
+        self,
+        tasks: list[Task],
+        session: Session,
+        ladder: Ladder,
+        localization: str,
+    ) -> None:
+        session.set_status("running", stage="plan")
+        self._plan_all_tasks(tasks, session, ladder, localization)
+        session.set_status("running", stage="run")
+
     def _run_task_loop(
         self,
         task: Task,
@@ -544,11 +579,13 @@ def _correction_context(knowledge: KnowledgeStore, latest: str) -> str:
 
 
 def _make_plan(task: Task, ladder: Ladder, code_ctx: str) -> str:
+    from splinter.templating import load_standards
     prompt = render(
         "plan",
         task_section=section("Task", task.description),
         acceptance_section=section("Acceptance Criteria", task.acceptance),
         code_context_section=section("Code Context", code_ctx),
+        standards_section=section("Code Conventions", load_standards()),
     )
     return run_text(
         prompt, ladder.planner_model, variant=ladder.planner_effort,

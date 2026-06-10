@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from splinter.memory.knowledge import KnowledgeStore
 from splinter.memory.session import Session
 from splinter.models.roster import Ladder
+from splinter.providers.base import ProviderGapError
 from splinter.providers.dispatch import run_text
 from splinter.tools import search as search_tools
 
@@ -143,7 +144,7 @@ def _run_search_tools(prd_text: str, repo_path: str = ".") -> str:
 
 def _recall_phase(
     prd_text: str, search_results: str, model: str, variant: str = "minimal",
-    timeout: int | None = None,
+    timeout: int | None = None, agent: str = "build",
 ) -> str:
     """Cheap model filters the raw search results to a candidate list."""
     text = _strip_frontmatter(prd_text)
@@ -158,7 +159,9 @@ def _recall_phase(
         'and "confidence" (0.0–1.0). Be thorough — coverage over precision. '
         "Output ONLY the JSON array, no prose."
     )
-    return run_text(prompt, model, variant=variant, output_format="text", timeout=timeout)
+    return run_text(
+        prompt, model, variant=variant, output_format="text", timeout=timeout, agent=agent
+    )
 
 
 _FILTER_MAX_FILE_CHARS = 4_000   # per file in the filter context
@@ -244,12 +247,23 @@ def filter_task_context(
         f"## Source Files\n{file_contents}\n\n"
         "Return the relevant code sections with brief notes on why each matters."
     )
-    return run_text(
-        prompt,
-        ladder.localizer_precision_model,
-        variant=ladder.localizer_precision_variant,
-        timeout=ladder.localizer_precision_timeout,
-    )
+    try:
+        return run_text(
+            prompt,
+            ladder.localizer_precision_model,
+            variant=ladder.localizer_precision_variant,
+            timeout=ladder.localizer_precision_timeout,
+            agent=ladder.localizer_agent,
+        )
+    except (ProviderGapError, RuntimeError) as e:
+        log.warning("precision model failed (%s), retrying with fallback model", type(e).__name__)
+        return run_text(
+            prompt,
+            ladder.localizer_recall_fallback_model,
+            variant=ladder.localizer_precision_variant,
+            timeout=ladder.localizer_precision_timeout,
+            agent=ladder.localizer_agent,
+        )
 
 
 def localize(
@@ -286,9 +300,17 @@ def localize(
         log.info("localize: large search context → %s", recall_model)
 
     log.info("localize: recall via %s", recall_model)
-    recall_output = _recall_phase(
-        prd_text, search_results, recall_model, recall_variant, recall_timeout
-    )
+    try:
+        recall_output = _recall_phase(
+            prd_text, search_results, recall_model, recall_variant, recall_timeout,
+            agent=ladder.localizer_agent,
+        )
+    except (ProviderGapError, RuntimeError) as e:
+        log.warning("recall model failed (%s), retrying with fallback model", type(e).__name__)
+        recall_output = _recall_phase(
+            prd_text, search_results, ladder.localizer_recall_fallback_model,
+            recall_variant, recall_timeout, agent=ladder.localizer_agent,
+        )
 
     # Prefer structured anchors (file + symbol + reason) so per-task targeting in
     # assign_target_files can actually match; fall back to bare file paths if the

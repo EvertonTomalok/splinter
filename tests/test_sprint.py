@@ -20,14 +20,14 @@ def test_sprint_registered() -> None:
     assert isinstance(get_strategy("sprint"), SprintStrategy)
 
 
-def test_leonardo_alias_registered() -> None:
-    assert isinstance(get_strategy("leonardo"), SprintStrategy)
+def test_michelangelo_alias_registered() -> None:
+    assert isinstance(get_strategy("michelangelo"), SprintStrategy)
 
 
 def test_sprint_in_available_strategies() -> None:
     names = available_strategies()
     assert "sprint" in names
-    assert "leonardo" in names
+    assert "michelangelo" in names
 
 
 # ---------------------------------------------------------------------------

@@ -20,6 +20,7 @@ _DEFAULT_TOKENS: tuple[int, int] = (8_000, 1_500)
 
 # (input_price_per_mtok, output_price_per_mtok) by model id.
 _MODEL_PRICES: dict[str, tuple[float, float]] = {
+    "opencode/deepseek-v4-flash-free": (0.27, 1.10),
     "opencode-go/deepseek-v4-flash": (0.27, 1.10),
     "opencode-go/deepseek-v4-pro":   (0.27, 1.10),
     "opencode-go/minimax-m3":        (0.80, 4.50),

@@ -91,9 +91,11 @@ def test_normal_effort_defaults_to_deepseek_v4_pro() -> None:
 
 def test_localizer_roster(isolated_ladder: "object") -> None:
     ladder = isolated_ladder
-    assert ladder.localizer_recall_model == "opencode-go/deepseek-v4-flash"
+    assert ladder.localizer_recall_model == "opencode/deepseek-v4-flash-free"
     assert ladder.localizer_recall_large_model == "opencode-go/minimax-m3"
-    assert ladder.localizer_precision_model == "opencode-go/deepseek-v4-flash"
+    assert ladder.localizer_precision_model == "opencode/deepseek-v4-flash-free"
+    assert ladder.localizer_recall_fallback_model == "haiku"
+    assert ladder.localizer_agent == "explore"
 
 
 def test_config_model_overrides_apply_to_ladder(

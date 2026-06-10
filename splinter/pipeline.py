@@ -17,7 +17,7 @@ from splinter.memory.session import Session, new_session_id
 from splinter.models.roster import load_ladder
 from splinter.strategies.registry import available_strategies, get_strategy
 
-DEFAULT_STRATEGY = "direct"
+DEFAULT_STRATEGY = "cascade"
 
 log = logging.getLogger("splinter.pipeline")
 

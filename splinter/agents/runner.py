@@ -50,17 +50,6 @@ class RunResult:
     opencode_session: str | None = None
 
 
-# Agentic code generation reasons poorly at low/minimal effort — the floor is
-# `medium` (real-easy tasks); moderate work gets `high`, complex `xhigh` ("high+"),
-# and the hardest `max`.
-EFFORT_TO_VARIANT: dict[str, str] = {
-    Effort.TRIVIAL: Variant.MEDIUM,
-    Effort.NORMAL: Variant.HIGH,
-    Effort.HARD: Variant.XHIGH,
-    Effort.CRITICAL: Variant.MAX,
-}
-
-
 def resolve_variant(
     task: Task,
     effort_override: str | None,

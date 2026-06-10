@@ -1,4 +1,4 @@
-"""Leonardo — the ``sprint`` flash-first strategy.
+"""Michelangelo — the ``sprint`` flash-first strategy.
 
 Flow: topological sort (like adaptive/cascade), but every task starts at the
 cheapest ladder tier regardless of estimated effort. Escalation happens only
@@ -19,7 +19,7 @@ from splinter.strategies.registry import register
 @register
 class SprintStrategy(AdaptiveStrategy):
     name = "sprint"
-    aliases = ["leonardo"]
+    aliases = ["michelangelo"]
 
     @staticmethod
     def _route_tier(effort: str, ladder: Ladder) -> int:  # type: ignore[override]

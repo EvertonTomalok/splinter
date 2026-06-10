@@ -225,6 +225,6 @@ def test_adaptive_registered() -> None:
     assert isinstance(strategy, AdaptiveStrategy)
 
 
-def test_michelangelo_alias_registered() -> None:
-    strategy = get_strategy("michelangelo")
+def test_donatello_alias_registered() -> None:
+    strategy = get_strategy("donatello")
     assert isinstance(strategy, AdaptiveStrategy)

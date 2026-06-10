@@ -74,6 +74,7 @@ class Evaluator:
         reason to skip this judgment. ``session`` resumes a prior eval conversation
         (same runner); the returned verdict carries the (possibly new) session id.
         """
+        from splinter.templating import load_standards
         model = eval_model or self.ladder.eval_model
         effort = eval_effort or self.ladder.eval_effort
         skill_section_text = ""
@@ -90,6 +91,7 @@ class Evaluator:
             gate_section=section("Mechanical Gate Result", gate_text),
             previous_evals_section=section("Previous Eval Feedback", previous_evals),
             skill_section=skill_section_text,
+            standards_section=section("Code Conventions", load_standards()),
         )
         text, sid = run_text_session(
             prompt, model, variant=effort, session=session, timeout=timeout

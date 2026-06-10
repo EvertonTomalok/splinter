@@ -1,4 +1,4 @@
-"""Michelangelo — the ``adaptive`` per-task cost-routing strategy.
+"""Donatello — the ``adaptive`` per-task cost-routing strategy.
 
 Flow: topological sort (like cascade), then for each task pick the *cheapest*
 ladder tier capable of handling its estimated effort. A soft budget is maintained
@@ -28,7 +28,7 @@ log = logging.getLogger("splinter.loop")
 @register
 class AdaptiveStrategy(CascadeStrategy):
     name = "adaptive"
-    aliases = ["michelangelo"]
+    aliases = ["donatello"]
 
     def execute(
         self,
@@ -62,6 +62,8 @@ class AdaptiveStrategy(CascadeStrategy):
 
         if done:
             log.info("adaptive resume: %d task(s) already checkpointed", len(done))
+
+        self._run_plan_phase(ordered, session, ladder, localization)
 
         for i, task in enumerate(ordered):
             if task.id and task.id in done:

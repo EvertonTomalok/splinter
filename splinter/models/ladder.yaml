@@ -1,40 +1,52 @@
 # Execution ladder. Each tier is a fixed model + reasoning variant; the loop climbs
 # the tiers on escalation. T0 floor → T5 last-resort. Most usage lives on the lower
 # tiers; the Claude rung (last-resort) is reached only by escalation.
+
+# Named model registry. Anchors propagate model changes across all tiers and roles.
+models:
+  deepseek_flash_free: &deepseek_flash_free opencode/deepseek-v4-flash-free
+  deepseek_pro: &deepseek_pro opencode-go/deepseek-v4-pro
+  minimax: &minimax opencode-go/minimax-m3
+  kimi: &kimi opencode-go/kimi-k2.6
+  qwen: &qwen opencode-go/qwen3.7-plus
+  haiku: &haiku haiku
+  sonnet: &sonnet sonnet
+  opus: &opus opus
+
 tiers:
   - name: easy
     level: 0
     # real-easy tasks: cheapest rung
     models:
-      - opencode-go/deepseek-v4-pro
+      - *deepseek_pro
     variant: low
 
   - name: moderate
     level: 1
     # the workhorse — most runs live here
     models:
-      - opencode-go/minimax-m3
+      - *minimax
     variant: high
 
   - name: moderate-hard
     level: 2
     # maxed reasoning before paying for a different model
     models:
-      - opencode-go/deepseek-v4-pro
+      - *deepseek_pro
     variant: high
 
   - name: hard
     level: 3
     # stronger open runner, maxed reasoning
     models:
-      - opencode-go/deepseek-v4-pro
+      - *deepseek_pro
     variant: max
 
   - name: critical
     level: 4
     # reached by escalation — avoid unless cheaper rungs failed
     models:
-      - opencode-go/qwen3.7-plus
+      - *qwen
     variant: high
 
   - name: last-resort
@@ -42,7 +54,7 @@ tiers:
     # the very last rung: Claude maxed out. Only if `critical` still failed.
     provider: claude
     models:
-      - sonnet
+      - *sonnet
     variant: max
 
 # Task difficulty → starting tier. Escalation walks up from there; the per-tier
@@ -62,16 +74,18 @@ effort_map:
     variant: high
 
 eval:
-  default_model: opus
+  default_model: *opus
   default_effort: high
 
 planner:
-  model: opus
+  model: *opus
   effort: high
 
 localizer:
   # recall/search: cheap context grab for the planner
-  recall_model: opencode-go/deepseek-v4-flash
-  recall_model_large: opencode-go/minimax-m3   # large context window for big repos
+  recall_model: *deepseek_flash_free
+  recall_model_large: *minimax   # large context window for big repos
   # qualify/filter locations
-  precision_model: opencode-go/deepseek-v4-flash
+  precision_model: *deepseek_flash_free
+  recall_fallback_model: *haiku
+  agent: explore

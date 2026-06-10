@@ -44,6 +44,8 @@ class Ladder:
     localizer_recall_variant: str = "minimal"
     localizer_recall_large_variant: str = "minimal"
     localizer_precision_variant: str = "low"
+    localizer_recall_fallback_model: str = "haiku"
+    localizer_agent: str = "explore"
     # per-tier reasoning variant override, keyed by tier level (else effort_map)
     tier_variants: dict[int, str] = field(default_factory=dict)
     # per-step subprocess timeout (seconds); default filled from config in load_ladder
@@ -138,11 +140,13 @@ def load_ladder(raw: dict[str, Any] | None = None) -> Ladder:
         eval_effort=eval_cfg.get("default_effort", "high"),
         planner_model=planner_cfg.get("model", "sonnet"),
         planner_effort=planner_cfg.get("effort", "high"),
-        localizer_recall_model=loc_cfg.get("recall_model", "opencode-go/deepseek-v4-flash"),
+        localizer_recall_model=loc_cfg.get("recall_model", "opencode/deepseek-v4-flash-free"),
         localizer_recall_large_model=loc_cfg.get(
             "recall_model_large", "opencode-go/minimax-m3"
         ),
-        localizer_precision_model=loc_cfg.get("precision_model", "opencode-go/kimi-k2.6"),
+        localizer_precision_model=loc_cfg.get("precision_model", "opencode/deepseek-v4-flash-free"),
+        localizer_recall_fallback_model=loc_cfg.get("recall_fallback_model", "haiku"),
+        localizer_agent=loc_cfg.get("agent", "explore"),
     )
     # Seed every per-step timeout from the global default, then let per-step
     # config entries override individual steps in _apply_config_overrides.
@@ -188,6 +192,8 @@ def _apply_config_overrides(ladder: Ladder) -> None:
             ladder.localizer_recall_large_model = m["localizer_recall_large"]
         if m.get("localizer_precision"):
             ladder.localizer_precision_model = m["localizer_precision"]
+        if m.get("localizer_recall_fallback"):
+            ladder.localizer_recall_fallback_model = m["localizer_recall_fallback"]
         if m.get("planner"):
             ladder.planner_model = m["planner"]
         if m.get("eval"):

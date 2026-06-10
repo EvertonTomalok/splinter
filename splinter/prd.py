@@ -68,7 +68,7 @@ def run_prd(*, description: str = "", strategy: str | None = None) -> int:
     prd_text = result2.text
 
     if not prd_text.startswith("---"):
-        fm_strategy = strategy or "direct"
+        fm_strategy = strategy or "cascade"
         feature = re.sub(r"[^a-zA-Z0-9-]", "-", description[:40]).strip("-").lower()
         from datetime import datetime, timezone
         frontmatter = (

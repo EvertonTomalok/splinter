@@ -6,4 +6,6 @@ You are a senior engineer. Write a concise implementation plan for this task.
 
 {code_context_section}
 
-Output a numbered list of steps. Be specific about files and functions.
+{standards_section}
+
+Output a numbered list of steps. Be specific about files and functions. The implementation must comply with the Code Conventions above.

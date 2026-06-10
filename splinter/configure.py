@@ -16,7 +16,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         {"name": "pytest", "cmd": "uv run pytest", "when": "tests_exist"},
     ],
     "defaults": {
-        "strategy": "direct",
+        "strategy": "cascade",
         "effort": "auto",
         "max_iterations": 5,
         # Per-model-call subprocess timeout in seconds. Reasoning models on hard
@@ -114,14 +114,17 @@ TIER_STEPS: list[tuple[str, str]] = [
 
 
 def available_models() -> list[str]:
-    """All selectable model ids: opencode-go/* (live) + claude + ladder defaults."""
+    """All selectable model ids: opencode-go/* & opencode/* (live) + claude + ladder defaults."""
     from splinter.models.roster import load_ladder
 
     models: set[str] = {"sonnet", "opus"}
     try:
         from splinter.providers import opencode
 
-        models.update(m for m in opencode.list_models() if m.startswith("opencode-go/"))
+        models.update(
+            m for m in opencode.list_models()
+            if m.startswith("opencode-go/") or m.startswith("opencode/")
+        )
     except Exception:
         pass
     models.update(load_ladder().all_model_ids())
@@ -129,7 +132,7 @@ def available_models() -> list[str]:
 
 
 # Reasoning-effort levels accepted by both claude (--effort) and opencode (--variant).
-EFFORT_CHOICES = ["minimal", "low", "high", "max"]
+EFFORT_CHOICES = ["minimal", "low", "medium", "high", "xhigh", "max"]
 
 
 def current_model_selections() -> dict[str, Any]:

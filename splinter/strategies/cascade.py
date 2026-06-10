@@ -1,4 +1,4 @@
-"""Donatello — the ``cascade`` multi-task dependency-ordered strategy.
+"""Leonardo — the ``cascade`` multi-task dependency-ordered strategy.
 
 Flow: topological sort on task.deps, then run each task in order with
 per-task checkpoint persistence. A crash mid-run resumes at the first
@@ -27,7 +27,7 @@ log = logging.getLogger("splinter.loop")
 @register
 class CascadeStrategy(DirectStrategy):
     name = "cascade"
-    aliases = ["donatello"]
+    aliases = ["leonardo"]
 
     def execute(
         self,
@@ -60,6 +60,8 @@ class CascadeStrategy(DirectStrategy):
 
         if done:
             log.info("cascade resume: %d task(s) already checkpointed", len(done))
+
+        self._run_plan_phase(ordered, session, ladder, localization)
 
         for i, task in enumerate(ordered):
             if task.id and task.id in done:

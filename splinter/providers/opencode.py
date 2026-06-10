@@ -8,11 +8,8 @@ import subprocess
 from dataclasses import dataclass
 from typing import Any
 
-from splinter.enums import Variant
 from splinter.procreg import run_subprocess
 from splinter.providers.base import ModelProvider, ProviderResponse
-
-VALID_VARIANTS = {v.value for v in Variant}
 
 # Child of "splinter" so the run-pane log handler surfaces these live.
 _stream_log = logging.getLogger("splinter.live")
@@ -63,6 +60,7 @@ def run(
     fmt: str = "json",
     session: str | None = None,
     timeout: int | None = None,
+    agent: str = "build",
 ) -> OpencodeResult:
     if timeout is None:
         from splinter.configure import configured_timeout
@@ -77,7 +75,7 @@ def run(
         "-m",
         model,
         "--agent",
-        "build",  # the build agent can create/edit files; "plan" is read-only
+        agent,
         "--format",
         "json",
         "--dangerously-skip-permissions",
@@ -278,10 +276,13 @@ class OpencodeProvider(ModelProvider):
         variant: str | None = None,
         session: str | None = None,
         timeout: int | None = None,
+        agent: str = "build",
     ) -> ProviderResponse:
         from splinter.providers.base import detect_provider_gap
         try:
-            result = run(prompt, model, variant=variant, session=session, timeout=timeout)
+            result = run(
+                prompt, model, variant=variant, session=session, timeout=timeout, agent=agent
+            )
         except Exception as exc:
             gap = detect_provider_gap(exc, self.name, model)
             if gap:
