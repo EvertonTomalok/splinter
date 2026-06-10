@@ -13,15 +13,18 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Iterable
 from typing import Any
 
 from rich.markup import escape
 from rich.text import Text
 from textual import events
-from textual.app import App, ComposeResult
+from textual.app import App, ComposeResult, SystemCommand
+from textual.command import DiscoveryHit, Hit, Hits
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.reactive import reactive
 from textual.screen import ModalScreen
+from textual.system_commands import SystemCommandsProvider
 from textual.widgets import (
     Button,
     DataTable,
@@ -218,19 +221,58 @@ def _prd_phase_md(session: Session, phase: str, detail: str) -> str:
     return f"# PRD · {phase}{f' — {detail}' if detail else ''}\n\n{body}"
 
 
+_PALETTE_CSS = """
+    CommandPalette { align-horizontal: right; }
+    CommandPalette > Vertical { width: 55%; }
+"""
+
+_MAXIMIZE_CSS = """
+    App.--maximized {
+        #nav { display: none; }
+        #overview { display: none; }
+        #draftpane { display: none; }
+    }
+"""
+
+
+def _find_shortcuts_cmd(screen: Any, app: Any) -> SystemCommand:
+    if screen.query("HelpPanel"):
+        return SystemCommand("Find Shortcuts", "Hide the keys and widget help panel", app.action_hide_help_panel)
+    return SystemCommand("Find Shortcuts", "Show keys and shortcuts for the focused widget", app.action_show_help_panel)
+
+
+class _OrderedCommandsProvider(SystemCommandsProvider):
+    """Preserves get_system_commands insertion order (no alphabetical sort)."""
+
+    async def discover(self) -> Hits:
+        for cmd in self.app.get_system_commands(self.screen):
+            if cmd.discover:
+                yield DiscoveryHit(cmd.title, cmd.callback, help=cmd.help)
+
+    async def search(self, query: str) -> Hits:
+        matcher = self.matcher(query)
+        for cmd in self.app.get_system_commands(self.screen):
+            if (match := matcher.match(cmd.title)) > 0:
+                yield Hit(match, matcher.highlight(cmd.title), cmd.callback, help=cmd.help)
+
+
 class AnalyzeApp(App[None]):
     """Live session inspector."""
 
     CSS = """
     Tree { width: 38%; border-right: solid $primary; }
     #detail { padding: 0 1; }
-    """
+    """ + _PALETTE_CSS + _MAXIMIZE_CSS
+
+    COMMANDS = {_OrderedCommandsProvider}
 
     BINDINGS = [
         ("q", "quit", "Quit"),
         ("ctrl+c", "quit", "Quit"),
         ("r", "reload", "Refresh"),
     ]
+
+    _maximized: reactive[bool] = reactive(False)
 
     def __init__(self, session: Session) -> None:
         super().__init__()
@@ -341,6 +383,22 @@ class AnalyzeApp(App[None]):
             # Run finished — stop polling.
             self._timer.stop()
             self._timer = None
+
+    def get_system_commands(self, screen) -> Iterable[SystemCommand]:
+        yield _find_shortcuts_cmd(screen, self)
+        yield SystemCommand("Theme", "Change the current theme", self.action_change_theme)
+        if self._maximized:
+            yield SystemCommand("Minimize", "Restore default layout", self.action_toggle_maximize)
+        else:
+            yield SystemCommand("Maximize", "Maximize right panel", self.action_toggle_maximize)
+        yield SystemCommand("Screenshot", "Save an SVG screenshot of the current screen", lambda: self.set_timer(0.1, self.deliver_screenshot))
+        yield SystemCommand("Quit", "Quit the application", self.action_quit)
+
+    def action_toggle_maximize(self) -> None:
+        self._maximized = not self._maximized
+
+    def watch__maximized(self, val: bool) -> None:
+        self.set_class(val, "--maximized")
 
 
 def run_tui(session: Session) -> None:
@@ -767,13 +825,17 @@ class RunApp(App[int]):
     CSS = """
     #overview { width: 42%; border-right: solid $primary; padding: 0 1; }
     RichLog { padding: 0 1; }
-    """
+    """ + _PALETTE_CSS + _MAXIMIZE_CSS
+
+    COMMANDS = {_OrderedCommandsProvider}
 
     BINDINGS = [
         ("q", "quit", "Quit"),
         ("ctrl+c", "quit", "Quit"),
         ("shift+p", "pause", "Pause"),
     ]
+
+    _maximized: reactive[bool] = reactive(False)
 
     def __init__(self, session: Session, run_kwargs: dict[str, Any]) -> None:
         super().__init__()
@@ -984,6 +1046,22 @@ class RunApp(App[int]):
                 self.exit(2)
 
         self.push_screen(_GapModal(kind, provider, ra), callback=_on_choice)
+
+    def get_system_commands(self, screen) -> Iterable[SystemCommand]:
+        yield _find_shortcuts_cmd(screen, self)
+        yield SystemCommand("Theme", "Change the current theme", self.action_change_theme)
+        if self._maximized:
+            yield SystemCommand("Minimize", "Restore default layout", self.action_toggle_maximize)
+        else:
+            yield SystemCommand("Maximize", "Maximize right panel", self.action_toggle_maximize)
+        yield SystemCommand("Screenshot", "Save an SVG screenshot of the current screen", lambda: self.set_timer(0.1, self.deliver_screenshot))
+        yield SystemCommand("Quit", "Quit the application", self.action_quit)
+
+    def action_toggle_maximize(self) -> None:
+        self._maximized = not self._maximized
+
+    def watch__maximized(self, val: bool) -> None:
+        self.set_class(val, "--maximized")
 
 
 def run_with_tui(run_kwargs: dict[str, Any], session: Session | None = None) -> int:
@@ -1271,13 +1349,17 @@ class PrdSessionApp(App[dict[str, Any] | None]):
     #entry { height: 8; border: round $primary; }
     #actions { height: 4; padding: 0 1; }
     #actions Button { height: 4; margin: 0 1 0 0; }
-    """
+    """ + _PALETTE_CSS + _MAXIMIZE_CSS
+
+    COMMANDS = {_OrderedCommandsProvider}
 
     BINDINGS = [
         ("ctrl+c", "abort", "Abort"),
         ("escape", "abort", "Abort"),
         ("ctrl+s", "send", "Send"),
     ]
+
+    _maximized: reactive[bool] = reactive(False)
 
     def __init__(self, session: Session, run_kwargs: dict[str, Any]) -> None:
         super().__init__()
@@ -1758,6 +1840,22 @@ class PrdSessionApp(App[dict[str, Any] | None]):
                 self.exit(None)
 
         self.push_screen(ConfirmQuit(self.session.id), _decide)
+
+    def get_system_commands(self, screen) -> Iterable[SystemCommand]:
+        yield _find_shortcuts_cmd(screen, self)
+        yield SystemCommand("Theme", "Change the current theme", self.action_change_theme)
+        if self._maximized:
+            yield SystemCommand("Minimize", "Restore default layout", self.action_toggle_maximize)
+        else:
+            yield SystemCommand("Maximize", "Maximize right panel", self.action_toggle_maximize)
+        yield SystemCommand("Screenshot", "Save an SVG screenshot of the current screen", lambda: self.set_timer(0.1, self.deliver_screenshot))
+        yield SystemCommand("Quit", "Quit the application", self.action_quit)
+
+    def action_toggle_maximize(self) -> None:
+        self._maximized = not self._maximized
+
+    def watch__maximized(self, val: bool) -> None:
+        self.set_class(val, "--maximized")
 
 
 def run_prd_interactive(run_kwargs: dict[str, Any]) -> int:

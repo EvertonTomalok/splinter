@@ -10,7 +10,9 @@ import yaml
 
 def provider_for(model_id: str) -> str:
     """Infer the provider from a model id."""
-    return "opencode" if model_id.startswith("opencode-go/") else "claude"
+    if model_id.startswith("opencode-go/") or model_id.startswith("opencode/"):
+        return "opencode"
+    return "claude"
 
 
 @dataclass

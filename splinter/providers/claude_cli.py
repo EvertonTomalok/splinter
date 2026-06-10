@@ -29,6 +29,8 @@ _EFFORT_ALIASES = {"minimal": "low", "auto": None}
 
 # $/1M tokens — input, output
 _PRICING: dict[str, tuple[float, float]] = {
+    "haiku": (0.25, 1.25),
+    "claude-haiku-4-5": (0.25, 1.25),
     "sonnet": (3.00, 15.00),
     "claude-sonnet-4-6": (3.00, 15.00),
     "opus": (5.00, 25.00),

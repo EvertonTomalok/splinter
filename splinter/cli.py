@@ -170,6 +170,12 @@ def configure(
     no_interactive: Annotated[
         bool, typer.Option("--no-interactive", help="Skip the model-selection TUI")
     ] = False,
+    use_default: Annotated[
+        bool, typer.Option("--use-default", help="Restore config.yaml from config.opencode.yaml (opencode runners)")
+    ] = False,
+    use_cc_only: Annotated[
+        bool, typer.Option("--use-cc-only", help="Activate config.claude.yaml (Claude-only runners, for when opencode billing fails)")
+    ] = False,
 ) -> None:
     """Pick per-step models in a TUI (default), then write config.yaml."""
     from splinter.configure import run_configure
@@ -181,6 +187,8 @@ def configure(
             init_prompts=init_prompts,
             force=force,
             interactive=False if no_interactive else None,
+            use_default=use_default,
+            use_cc_only=use_cc_only,
         )
     )
 

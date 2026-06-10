@@ -217,6 +217,19 @@ def init_prompt_templates(*, overwrite: bool = False) -> list[Path]:
     return written
 
 
+def _swap_config(source: str) -> int:
+    """Copy ``.splinter/<source>`` over ``.splinter/config.yaml``."""
+    src = _config_path("project").parent / source
+    dst = _config_path("project")
+    if not src.exists():
+        print(f"error: {src} not found — run `splinter configure` to generate it first")
+        return 1
+    import shutil
+    shutil.copy2(src, dst)
+    print(f"config.yaml updated from {source}")
+    return 0
+
+
 def run_configure(
     *,
     gate_checks: str | None = None,
@@ -224,7 +237,14 @@ def run_configure(
     init_prompts: bool = False,
     force: bool = False,
     interactive: bool | None = None,
+    use_default: bool = False,
+    use_cc_only: bool = False,
 ) -> int:
+    if use_cc_only:
+        return _swap_config("config.claude.yaml")
+    if use_default:
+        return _swap_config("config.opencode.yaml")
+
     import sys
 
     if interactive is None:
