@@ -20,6 +20,7 @@ from rich.markup import escape
 from rich.text import Text
 from textual import events
 from textual.app import App, ComposeResult, SystemCommand
+from textual.binding import Binding
 from textual.command import DiscoveryHit, Hit, Hits
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.reactive import reactive
@@ -892,7 +893,7 @@ class RunApp(App[int]):
         ("q", "quit", "Quit"),
         ("ctrl+c", "quit", "Quit"),
         ("shift+p", "pause", "Pause"),
-        ("ctrl+s", "save_prd", "Save PRD"),
+        Binding("ctrl+s", "save_prd", "Save PRD", key_display="Ctrl+S"),
     ]
 
     _maximized: reactive[bool] = reactive(False)
@@ -1410,17 +1411,15 @@ class ConfirmQuit(ModalScreen[bool]):
 
 
 class ComposerTextArea(TextArea):
-    """PRD composer box: Enter submits; Shift+Enter inserts a newline."""
-
-    _NEWLINE_KEYS = ("shift+enter",)
+    """PRD composer box: Enter inserts a newline; Ctrl+S submits."""
 
     async def _on_key(self, event: events.Key) -> None:
-        if event.key in self._NEWLINE_KEYS:
+        if event.key == "enter":
             event.stop()
             event.prevent_default()
             self.insert("\n")
             return
-        if event.key == "enter":
+        if event.key == "ctrl+s":
             event.stop()
             event.prevent_default()
             assert isinstance(self.app, PrdSessionApp)
@@ -1520,14 +1519,6 @@ class PrdSessionApp(App[int | None]):
         height: 1fr;
         padding: 0 1;
     }
-    #preview {
-        height: 1fr;
-        padding: 0 1;
-        display: none;
-    }
-    #preview.-active {
-        display: block;
-    }
     #composer {
         dock: bottom;
         height: auto;
@@ -1537,12 +1528,16 @@ class PrdSessionApp(App[int | None]):
         border: round $primary;
     }
     #actions {
-        height: 4;
+        height: 3;
         padding: 0 1;
+        align: left middle;
     }
     #actions Button {
-        height: 4;
+        height: 3;
+        min-width: 10;
+        width: auto;
         margin: 0 1 0 0;
+        padding: 0 2;
     }
     """
         + _PALETTE_CSS
@@ -1554,7 +1549,7 @@ class PrdSessionApp(App[int | None]):
     BINDINGS = [
         ("ctrl+c", "abort", "Abort"),
         ("escape", "abort", "Abort"),
-        ("ctrl+s", "send", "Send"),
+        Binding("ctrl+s", "send", "Send", key_display="Ctrl+S"),
     ]
 
     _maximized: reactive[bool] = reactive(False)
@@ -1592,17 +1587,16 @@ class PrdSessionApp(App[int | None]):
             with Vertical(id="draftpane"):
                 entry = ComposerTextArea(id="instructions", soft_wrap=True)
                 entry.border_title = "Instructions"
-                entry.border_subtitle = "↵ generate · ⇧↵ newline"
+                entry.border_subtitle = "Ctrl+S generate · ↵ newline"
                 yield entry
             with Vertical(id="chatpane"):
                 yield RichLog(id="convo", markup=True, wrap=True)
-                yield Markdown(id="preview")
                 with Vertical(id="composer"):
                     entry_reply = ComposerTextArea(id="entry", soft_wrap=True)
-                    entry_reply.border_subtitle = "↵ send · ⇧↵ newline"
+                    entry_reply.border_subtitle = "Ctrl+S send · ↵ newline"
                     yield entry_reply
                     with Horizontal(id="actions"):
-                        yield Button("Send (⌃S)", id="send", variant="primary")
+                        yield Button("Send (Ctrl+S)", id="send", variant="primary")
                         yield Button("Generate PRD", id="generate", variant="success")
         yield Footer()
 
@@ -1636,18 +1630,14 @@ class PrdSessionApp(App[int | None]):
             self._say("[dim]Write instructions on the left, then click 'Generate PRD'.[/]")
             self._set_busy(False, "instructions")
             self._focus_instructions()
-        elif self._initial_prd.strip() and not self.cowabunga:
-            self.trusted = True
-            self._enter_trusted()
+        elif self.cowabunga:
+            self._set_busy(True, "cowabunga — the model is deciding everything…")
+            self._say("[magenta]🤙 cowabunga — no questions, finalizing the PRD myself.[/]")
+            self._spawn(self._finalize_worker, autodecide=True)
         else:
-            if self.cowabunga:
-                self._set_busy(True, "cowabunga — the model is deciding everything…")
-                self._say("[magenta]🤙 cowabunga — no questions, finalizing the PRD myself.[/]")
-                self._spawn(self._finalize_worker, autodecide=True)
-            else:
-                self._set_busy(True, "reading the PRD, drafting questions…")
-                self._say("[dim]reading the PRD, drafting clarifying questions…[/]")
-                self._spawn(self._questions_worker)
+            self._set_busy(True, "reading the PRD, drafting questions…")
+            self._say("[dim]reading the PRD, drafting clarifying questions…[/]")
+            self._spawn(self._questions_worker)
 
     @staticmethod
     def _first_line(text: str) -> str:
@@ -1823,7 +1813,7 @@ class PrdSessionApp(App[int | None]):
         """Swap the action buttons to match the phase (chat / strategy / review / trust)."""
         from splinter.strategies.registry import registered_strategies
 
-        btns = [Button("Send (⌃S)", id="send", variant="primary")]
+        btns = [Button("Send (Ctrl+S)", id="send", variant="primary")]
         if phase == "strategy":
             for cls in registered_strategies():
                 alias = cls.aliases[0] if cls.aliases else cls.name
@@ -1850,13 +1840,6 @@ class PrdSessionApp(App[int | None]):
         self.run_worker(_swap(), name="actions")
 
     def _set_preview(self, md: str) -> None:
-        preview = self.query_one("#preview", Markdown)
-        if md.strip():
-            preview.update(md)
-            preview.add_class("-active")
-        else:
-            preview.update("_(empty)_")
-            preview.add_class("-active")
         if md.strip():
             self.session.write("prd.md", md)
 
@@ -2006,6 +1989,19 @@ class PrdSessionApp(App[int | None]):
         self._render_actions("review")
         self._set_busy(False, "accept / edit / gate: <cmds> / changes / cowabunga")
 
+    def _mount_draft_editor(self, content: str) -> None:
+        """Replace left pane with editable PRD draft after generation."""
+
+        async def _do() -> None:
+            draftpane = self.query_one("#draftpane", Vertical)
+            await draftpane.remove_children()
+            edit = TextArea(id="draft-edit", soft_wrap=True, text=content)
+            edit.border_title = "Generated PRD"
+            edit.border_subtitle = "editable"
+            await draftpane.mount(edit)
+
+        self.run_worker(_do(), name="mount-draft")
+
     def _after_generate(self, prd: str, sid: str) -> None:
         from splinter import prd_session
 
@@ -2015,6 +2011,7 @@ class PrdSessionApp(App[int | None]):
         n_stories = len(prd_session.user_story_titles(prd))
         prd_session.log_phase(self.session, "generate", f"{n_stories} stories")
         self._set_preview(prd)
+        self._mount_draft_editor(prd)
         self._to_strategy_phase()
 
     def _show_stories(self) -> None:
@@ -2042,7 +2039,13 @@ class PrdSessionApp(App[int | None]):
         self._spawn(self._generate_worker, instructions=instructions)
 
     def action_send(self) -> None:
-        """⌃S / Send button — submit whatever is in the text box."""
+        """Ctrl+S / Send button — generate/send/accept depending on phase."""
+        if self._generating:
+            self._on_generate()
+            return
+        if self.phase == "trust":
+            self._accept_trusted()
+            return
         entry = self.query_one("#entry", TextArea)
         self._submit(entry.text)
 
