@@ -1635,6 +1635,8 @@ class PrdSessionApp(App[int | None]):
             self._say("[magenta]🤙 cowabunga — no questions, finalizing the PRD myself.[/]")
             self._spawn(self._finalize_worker, autodecide=True)
         else:
+            if self._initial_prd.strip():
+                self._mount_draft_editor(self._initial_prd)
             self._set_busy(True, "reading the PRD, drafting questions…")
             self._say("[dim]reading the PRD, drafting clarifying questions…[/]")
             self._spawn(self._questions_worker)
@@ -1840,8 +1842,13 @@ class PrdSessionApp(App[int | None]):
         self.run_worker(_swap(), name="actions")
 
     def _set_preview(self, md: str) -> None:
-        if md.strip():
-            self.session.write("prd.md", md)
+        if not md.strip():
+            return
+        self.session.write("prd.md", md)
+        try:
+            self.query_one("#draft-edit", TextArea).text = md
+        except Exception:
+            pass
 
     def _focus_instructions(self) -> None:
         self.query_one("#instructions", TextArea).focus()
