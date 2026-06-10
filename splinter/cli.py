@@ -69,10 +69,24 @@ def run(
     quiet: Annotated[
         bool, typer.Option(help="Plain log output instead of the live TUI")
     ] = False,
+    use_cc_only: Annotated[
+        bool,
+        typer.Option(
+            "--use-cc-only",
+            help="Swap to Claude-only runners (haiku/sonnet/opus) before running",
+        ),
+    ] = False,
 ) -> None:
     """Run a task or PRD through a strategy."""
     import os
     import sys
+
+    if use_cc_only:
+        from splinter.configure import _swap_config
+
+        rc = _swap_config("config.claude.yaml")
+        if rc != 0:
+            raise typer.Exit(rc)
 
     run_kwargs = {
         "strategy": strategy,
@@ -118,12 +132,26 @@ def resume(
         bool,
         typer.Option("--reset", help="Re-run a failed run from the head (fresh localize + plan)."),
     ] = False,
+    use_cc_only: Annotated[
+        bool,
+        typer.Option(
+            "--use-cc-only",
+            help="Swap to Claude-only runners (haiku/sonnet/opus) before resuming",
+        ),
+    ] = False,
 ) -> None:
     """Resume a session: PRD refinement, or a failed/interrupted run.
 
     Transient failures continue from where they stopped; critical failures roll the
     failing stage back and redo it. ``--reset`` re-runs from the head.
     """
+    if use_cc_only:
+        from splinter.configure import _swap_config
+
+        rc = _swap_config("config.claude.yaml")
+        if rc != 0:
+            raise typer.Exit(rc)
+
     from splinter.tui import resume_session
 
     raise typer.Exit(resume_session(session, reset=reset))
