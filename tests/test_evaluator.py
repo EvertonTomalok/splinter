@@ -74,6 +74,30 @@ def test_parse_exactly_one_decision() -> None:
     assert v.decision == Decision.JUMP_PREMIUM
 
 
+def test_parse_pass_with_escalate_in_body() -> None:
+    v = Evaluator._parse_verdict(
+        "VERDICT: PASS\nREASON: implementation is solid, no need to escalate\nCORRECTIONS: none"
+    )
+    assert v.decision == Decision.PASS
+
+
+def test_parse_verdict_line_with_option_list_takes_first_token() -> None:
+    # When the task IS the evaluator, the model often echoes the full option list
+    # on the verdict line. The FIRST token (PASS) is the verdict — a priority scan
+    # would wrongly latch onto JUMP_PREMIUM and escalate a passing run.
+    v = Evaluator._parse_verdict(
+        "VERDICT: PASS — one of PASS/RETRY/ESCALATE/JUMP_PREMIUM/ASK_USER\n"
+        "REASON: all 5 criteria verified independently\nCORRECTIONS: none"
+    )
+    assert v.decision == Decision.PASS
+
+
+def test_parse_no_verdict_line_does_not_escalate_from_prose() -> None:
+    # No VERDICT line → default RETRY, never infer escalation from a keyword in prose.
+    v = Evaluator._parse_verdict("I think we should JUMP_PREMIUM here, it's hard.")
+    assert v.decision == Decision.RETRY
+
+
 # --- eval_effort_for --------------------------------------------------------
 
 
@@ -156,6 +180,14 @@ def test_next_action_jump_premium_already_at_premium() -> None:
     v = EvalVerdict(decision=Decision.JUMP_PREMIUM, reason="needs premium")
     action = ev.next_action(v, tier=3, max_tier=4)
     assert action.next_tier == 3
+
+
+def test_next_action_jump_premium_clamped_to_max_tier() -> None:
+    ev = Evaluator(_ladder(), premium_tier=5)
+    v = EvalVerdict(decision=Decision.JUMP_PREMIUM, reason="needs premium")
+    action = ev.next_action(v, tier=1, max_tier=4)
+    assert action.decision == Decision.JUMP_PREMIUM
+    assert action.next_tier == 4
 
 
 def test_next_action_ask_user_surfaces() -> None:

@@ -190,3 +190,46 @@ def user_story_titles(prd_text: str) -> list[str]:
         f"{m.group(1)}: {m.group(2).strip()}"
         for m in re.finditer(r"###\s+(US-\d+):\s*(.+)", prd_text)
     ]
+
+
+#: ``### US-NNN: …`` header up to the next user story (or end of document).
+_STORY_BLOCK = re.compile(r"(###\s+(US-\d+)\b.*?)(?=###\s+US-\d+|\Z)", re.DOTALL)
+#: An unchecked acceptance-criteria checkbox.
+_OPEN_BOX = re.compile(r"-\s*\[\s*\]")
+
+
+def story_id(text: str) -> str | None:
+    """The ``US-NNN`` id leading a task description / story header, if any."""
+    m = re.match(r"\s*(US-\d+)\b", text)
+    return m.group(1) if m else None
+
+
+def mark_story_done(prd_text: str, us_id: str) -> str:
+    """Tick every ``- [ ]`` acceptance-criteria box inside ``us_id``'s block.
+
+    The PRD is the durable record of progress: a completed task's checkboxes flip
+    to ``- [x]`` so resume (and the human) can see what is finished. Blocks for
+    other stories are left untouched.
+    """
+    def _tick(match: re.Match[str]) -> str:
+        block, sid = match.group(1), match.group(2)
+        if sid != us_id:
+            return block
+        return _OPEN_BOX.sub("- [x]", block)
+
+    return _STORY_BLOCK.sub(_tick, prd_text)
+
+
+def completed_story_ids(prd_text: str) -> set[str]:
+    """Story ids whose acceptance criteria are fully checked (≥1 box, none open).
+
+    A story with no checkboxes at all is *not* considered complete — there is
+    nothing to have ticked.
+    """
+    done: set[str] = set()
+    for match in _STORY_BLOCK.finditer(prd_text):
+        block, sid = match.group(1), match.group(2)
+        has_box = "[x]" in block.lower() or _OPEN_BOX.search(block)
+        if has_box and not _OPEN_BOX.search(block):
+            done.add(sid)
+    return done

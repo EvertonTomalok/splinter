@@ -7,6 +7,7 @@ Tier-climb policy lives here so strategies share one implementation.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from splinter.agents.runner import Task
@@ -19,17 +20,14 @@ from splinter.templating import render, section
 PREMIUM_TIER = 3
 MAX_EVAL_EFFORT = Variant.HIGH
 
-_DECISION_PRIORITY: tuple[Decision, ...] = (
-    Decision.JUMP_PREMIUM,
-    Decision.ASK_USER,
-    Decision.ESCALATE,
-    Decision.PASS,
-)
+#: Matches a decision token as a whole word (``_`` counts as a word char, so
+#: ``JUMP_PREMIUM`` stays intact). Used to pull the verdict out of the VERDICT line.
+_DECISION_RE = re.compile(r"\b(JUMP_PREMIUM|ASK_USER|ESCALATE|RETRY|PASS)\b")
 
 
 @dataclass(frozen=True)
 class EvalAction:
-    decision: str
+    decision: Decision
     next_tier: int
     ask_user: bool = False
     stop: bool = False
@@ -79,12 +77,22 @@ class Evaluator:
     @staticmethod
     def _parse_verdict(text: str) -> EvalVerdict:
         text = text.strip()
-        upper = text.upper()
 
-        decision: str = Decision.RETRY
-        for candidate in _DECISION_PRIORITY:
-            if candidate.value in upper:
-                decision = candidate
+        # Read the decision from the VERDICT line ONLY, and take the *first*
+        # decision token on it — never a priority scan. The implementation output
+        # (and the reason itself) routinely names other decisions in prose — e.g.
+        # "no need to escalate", or literally the option list
+        # "(PASS/RETRY/ESCALATE/JUMP_PREMIUM/ASK_USER)" when the task is the
+        # evaluator itself — and a whole-text/priority scan would latch onto
+        # JUMP_PREMIUM and escalate a run that actually passed. Absent a VERDICT
+        # line we default to RETRY rather than inferring escalation from prose.
+        decision: Decision = Decision.RETRY
+        for line in text.splitlines():
+            if line.upper().strip().startswith("VERDICT:"):
+                value = line.split(":", 1)[1]
+                m = _DECISION_RE.search(value.upper())
+                if m is not None:
+                    decision = Decision(m.group(1))
                 break
 
         reason = text
@@ -109,6 +117,14 @@ class Evaluator:
         max_tier: int,
         cowabunga: bool = False,
     ) -> EvalAction:
+        """Map a verdict to exactly one of the 5 actions.
+
+        The five are exhaustive and mutually exclusive:
+        PASS, ASK_USER, JUMP_PREMIUM, ESCALATE, and RETRY (the default 5th,
+        returned when no other branch matches). ESCALATE advances ``tier + 1``;
+        when the ladder is exhausted (``tier >= max_tier``) and ``cowabunga`` is
+        off, the action surfaces as ASK_USER instead.
+        """
         if verdict.passed:
             return EvalAction(decision=Decision.PASS, next_tier=tier, stop=True)
 
@@ -120,7 +136,7 @@ class Evaluator:
             )
 
         if verdict.decision == Decision.JUMP_PREMIUM:
-            target = max(tier, self.premium_tier)
+            target = min(max(tier, self.premium_tier), max_tier)
             return EvalAction(decision=Decision.JUMP_PREMIUM, next_tier=target)
 
         if verdict.decision == Decision.ESCALATE:

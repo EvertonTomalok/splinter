@@ -372,3 +372,110 @@ def test_jump_premium_skips_to_premium_tier(
     # Started at tier 1 (normal), jumped straight to premium tier 3.
     assert tiers[0] == 1
     assert tiers[1] == 3
+
+
+# --- PRD as source of truth: checkbox progress + multi-task resume -----------
+
+_PRD = """---
+strategy: direct
+---
+
+### US-001: First
+**Acceptance Criteria:**
+- [ ] does A
+- [ ] does B
+
+### US-002: Second
+**Acceptance Criteria:**
+- [ ] does C
+
+### US-003: Third
+**Acceptance Criteria:**
+- [ ] does D
+"""
+
+
+def test_mark_story_done_ticks_only_its_block() -> None:
+    out = prd_session.mark_story_done(_PRD, "US-002")
+    assert "### US-002: Second\n**Acceptance Criteria:**\n- [x] does C" in out
+    # Other stories untouched.
+    assert "- [ ] does A" in out
+    assert "- [ ] does D" in out
+
+
+def test_completed_story_ids() -> None:
+    assert prd_session.completed_story_ids(_PRD) == set()
+    done = prd_session.mark_story_done(prd_session.mark_story_done(_PRD, "US-001"), "US-002")
+    assert prd_session.completed_story_ids(done) == {"US-001", "US-002"}
+
+
+def test_story_id() -> None:
+    assert prd_session.story_id("US-003: CLI overrides") == "US-003"
+    assert prd_session.story_id("no id here") is None
+
+
+def _drive_tasks(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    tasks: list[Task],
+    *,
+    resume: bool,
+    prd: str,
+) -> tuple[Session, list[str]]:
+    """Run DirectStrategy over multiple tasks (every model call mocked, PASS each)."""
+    monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
+    ran: list[str] = []
+
+    def fake_run_task(task: Task, plan: str, tier: int, ladder: object, **kw: object) -> RunResult:
+        ran.append(task.description)
+        return RunResult(
+            text="done", model="stub", tier=tier,
+            tokens={"in": 1, "out": 1}, cost=0.0, raw={}, opencode_session=None,
+        )
+
+    def boom_gate() -> object:
+        raise RuntimeError("no gate")
+
+    monkeypatch.setattr("splinter.strategies.stages.run_task", fake_run_task)
+    monkeypatch.setattr("splinter.strategies.stages.run_gate", boom_gate)
+    def fake_judge(self: object, *a: object, **k: object) -> EvalVerdict:
+        return EvalVerdict(decision=Decision.PASS, reason="ok", corrections="", raw="")
+
+    monkeypatch.setattr("splinter.strategies.stages.Evaluator.judge", fake_judge)
+    monkeypatch.setattr("splinter.strategies.direct._make_plan", lambda *a, **k: "plan")
+
+    from splinter.models.roster import load_ladder
+
+    session = Session("ses_multi")
+    session.write("prd.md", prd)
+    DirectStrategy().execute(tasks, session, load_ladder(), max_iterations=3, resume=resume)
+    return session, ran
+
+
+def test_pass_checks_off_prd_and_advances_task_index(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    tasks = [
+        Task(description="US-001: First", acceptance="a"),
+        Task(description="US-002: Second", acceptance="a"),
+        Task(description="US-003: Third", acceptance="a"),
+    ]
+    session, ran = _drive_tasks(monkeypatch, tmp_path, tasks, resume=False, prd=_PRD)
+    # Fresh run executes all three and ticks every story's boxes.
+    assert len(ran) == 3
+    assert prd_session.completed_story_ids(session.read("prd.md")) == {"US-001", "US-002", "US-003"}
+    assert session.read_status().get("task_index") == 3
+
+
+def test_resume_skips_completed_stories_via_prd(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    tasks = [
+        Task(description="US-001: First", acceptance="a"),
+        Task(description="US-002: Second", acceptance="a"),
+        Task(description="US-003: Third", acceptance="a"),
+    ]
+    # PRD already has US-001 + US-002 ticked → resume restarts at US-003 only.
+    prd = prd_session.mark_story_done(prd_session.mark_story_done(_PRD, "US-001"), "US-002")
+    session, ran = _drive_tasks(monkeypatch, tmp_path, tasks, resume=True, prd=prd)
+    assert ran == ["US-003: Third"]

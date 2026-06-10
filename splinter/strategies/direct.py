@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 
+from splinter import prd_session
 from splinter.agents.evaluator import Evaluator
 from splinter.agents.runner import RunResult, Task
 from splinter.memory.knowledge import KnowledgeStore
@@ -66,7 +67,27 @@ class DirectStrategy(Strategy):
         knowledge = KnowledgeStore(session)
         results: list[RunResult] = []
 
-        for task in tasks:
+        start_index = self._resume_start_index(session, tasks) if resume else 0
+        if start_index:
+            log.info("resume: %d task(s) already done — restarting at task %d/%d",
+                     start_index, start_index + 1, len(tasks))
+
+        for i, task in enumerate(tasks):
+            if i < start_index:
+                continue
+            # Persist progress *before* running task i so a crash here resumes here.
+            session.set_status(
+                "running", stage="run", task_index=i, task_total=len(tasks),
+                task=task.description.splitlines()[0][:80],
+            )
+            session.append(
+                "loop.md",
+                f"# Task {i + 1}/{len(tasks)}: "
+                f"{task.description.splitlines()[0][:80]}\n\n",
+            )
+            # Reuse the persisted plan only when resuming the exact single task we
+            # stopped on; a multi-task resume starts its target task from a fresh plan.
+            task_resume = resume and i == start_index and len(tasks) == 1
             result = self._run_task_loop(
                 task,
                 session,
@@ -78,13 +99,37 @@ class DirectStrategy(Strategy):
                 max_iterations=max_iterations,
                 localization=localization,
                 cowabunga=cowabunga,
-                resume=resume,
+                resume=task_resume,
             )
             if result is not None:
                 results.append(result)
 
+        # All tasks done — record it so a stray resume is a no-op, not a re-run.
+        session.set_status("running", task_index=len(tasks), task_total=len(tasks))
         session.write("trace.md", trace.summary())
         return results
+
+    @staticmethod
+    def _resume_start_index(session: Session, tasks: list[Task]) -> int:
+        """How many leading tasks are already finished.
+
+        The PRD is the source of truth: a task whose user story has all its
+        acceptance-criteria boxes ticked is done. Falls back to the positional
+        ``task_index`` in status when the PRD carries no checkboxes (e.g. a single
+        ``--task`` yaml run).
+        """
+        prd = session.read("prd.md")
+        done = prd_session.completed_story_ids(prd) if prd.strip() else set()
+        if not done:
+            return int(session.read_status().get("task_index") or 0)
+        start = 0
+        for task in tasks:
+            sid = prd_session.story_id(task.description)
+            if sid and sid in done:
+                start += 1
+            else:
+                break
+        return start
 
     def _run_task_loop(
         self,
@@ -183,6 +228,7 @@ class DirectStrategy(Strategy):
                     knowledge.write_note(f"ask-user-iter-{iteration}", verdict.reason)
                 elif verdict.passed:
                     log.info("task PASSED at T%d after %d iteration(s)", tier, iteration)
+                    _mark_story_done(session, task)
                 else:
                     log.warning("max tier T%d reached — stopping", tier)
                     session.append("loop.md", f"## Max tier reached (T{tier}), stopping.\n\n")
@@ -226,6 +272,25 @@ class DirectStrategy(Strategy):
     def _start_tier(task: Task, ladder: Ladder) -> int:
         em = ladder.effort_mapping(task.effort)
         return em.start_tier if em is not None else task.suggested_tier
+
+
+def _mark_story_done(session: Session, task: Task) -> None:
+    """Tick the task's user-story acceptance boxes in ``prd.md`` once it PASSes.
+
+    The PRD is the durable progress record: completed stories show ``- [x]`` so
+    both resume and the human can see what is finished. No-op for task-yaml runs
+    (no PRD / no ``US-NNN`` id) and when nothing changed.
+    """
+    sid = prd_session.story_id(task.description)
+    if not sid:
+        return
+    prd = session.read("prd.md")
+    if not prd.strip():
+        return
+    updated = prd_session.mark_story_done(prd, sid)
+    if updated != prd:
+        session.write("prd.md", updated)
+        log.info("PRD: %s acceptance criteria checked off (done)", sid)
 
 
 def _correction_context(knowledge: KnowledgeStore, latest: str) -> str:
