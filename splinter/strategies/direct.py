@@ -66,6 +66,7 @@ class DirectStrategy(Strategy):
         eval_skill: str | None = None,
         cowabunga: bool = False,
         resume: bool = False,
+        gap_fallback_tier: int | None = None,
     ) -> list[RunResult]:
         existing_trace = session.read("trace.md")
         if resume and existing_trace.strip():
@@ -110,6 +111,7 @@ class DirectStrategy(Strategy):
                 eval_skill=eval_skill,
                 cowabunga=cowabunga,
                 resume=task_resume,
+                gap_fallback_tier=gap_fallback_tier,
             )
             if result is not None:
                 results.append(result)
@@ -157,24 +159,28 @@ class DirectStrategy(Strategy):
         eval_skill: str | None = None,
         cowabunga: bool = False,
         resume: bool = False,
+        gap_fallback_tier: int | None = None,
     ) -> RunResult | None:
         tier = self._start_tier(task, ladder)
+        if gap_fallback_tier is not None:
+            tier = max(tier, gap_fallback_tier)
 
-        # The plan is produced once and reused for every iteration and escalation.
-        # On resume, reuse the persisted plan instead of regenerating (it's expensive
-        # and deterministic for the task).
-        existing_plan = session.read("knowledge/plan.md").strip()
-        if resume and existing_plan:
-            log.info("resume: reusing existing plan")
+        # Reuse any existing plan — opus calls are expensive and the plan is
+        # deterministic for this task. Always check the task-specific file first.
+        task_plan_file = f"knowledge/plan-{task_index + 1}.md"
+        existing_plan = (session.read(task_plan_file).strip()
+                         or session.read("knowledge/plan.md").strip())
+        if existing_plan:
+            log.info("plan exists for task %d — reusing (skipping planner)", task_index + 1)
             plan = existing_plan[len("# Plan"):].lstrip("\n") \
                 if existing_plan.startswith("# Plan") else existing_plan
-            if not session.read(f"knowledge/plan-{task_index + 1}.md").strip():
-                session.write(f"knowledge/plan-{task_index + 1}.md", f"# Plan\n\n{plan}\n")
+            if not session.read(task_plan_file).strip():
+                session.write(task_plan_file, f"# Plan\n\n{plan}\n")
         else:
             log.info("planning with %s (once)", ladder.planner_model)
             plan = _make_plan(task, ladder, localization)
             session.write("knowledge/plan.md", f"# Plan\n\n{plan}\n")
-            session.write(f"knowledge/plan-{task_index + 1}.md", f"# Plan\n\n{plan}\n")
+            session.write(task_plan_file, f"# Plan\n\n{plan}\n")
 
         resolved = resolve_eval_skill(eval_skill or task.eval_skill)
         chain = build_chain(RunStage(), GateStage(), EvalStage(resolved_skill=resolved))
@@ -322,13 +328,27 @@ def _correction_context(knowledge: KnowledgeStore, latest: str) -> str:
 
 
 def _make_plan(task: Task, ladder: Ladder, localization: str) -> str:
+    from splinter.agents.localizer import filter_task_context
+    # filter_task_context: reads task.target_files + task description → focused code context.
+    # Falls back to raw file read, then to the localization file list.
+    code_ctx = (
+        filter_task_context(task, ladder)
+        or _read_task_files_raw(task)
+        or localization
+    )
     prompt = render(
         "plan",
         task_section=section("Task", task.description),
         acceptance_section=section("Acceptance Criteria", task.acceptance),
-        code_context_section=section("Code Context", localization),
+        code_context_section=section("Code Context", code_ctx),
     )
     return run_text(
         prompt, ladder.planner_model, variant=ladder.planner_effort,
         timeout=ladder.planner_timeout,
     )
+
+
+def _read_task_files_raw(task: Task) -> str:
+    """Plain file read fallback (no LLM) when target_files is set but filter fails."""
+    from splinter.agents.runner import read_task_files
+    return read_task_files(task)

@@ -1,8 +1,8 @@
-You are a code analysis agent. Given a feature description and a list of candidate code locations found by a search agent, filter and rank the results.
+You are a code filter agent. A search agent identified candidate files for a feature implementation. You have their actual source code below.
 
-{feature_section}
+{file_contents_section}
 
 {candidates_section}
 
-Return ONLY a JSON array of objects with keys: file, symbol, reason, confidence (0.0-1.0). Include only truly relevant results. Example:
-[{{"file": "src/foo.py", "symbol": "Foo.bar", "reason": "handles X", "confidence": 0.9}}]
+Read the code carefully. Return ONLY a JSON array of the truly relevant locations with keys: file, symbol (function/class name or empty string), reason (why it is relevant to the feature), confidence (0.0-1.0). Omit low-confidence noise.
+Example: [{"file": "src/foo.py", "symbol": "Foo.bar", "reason": "handles X", "confidence": 0.9}]

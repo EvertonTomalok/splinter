@@ -47,5 +47,6 @@ class Strategy(ABC):
         eval_skill: str | None = None,
         cowabunga: bool = False,
         resume: bool = False,
+        gap_fallback_tier: int | None = None,
     ) -> list[RunResult]:
         ...

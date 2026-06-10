@@ -42,6 +42,7 @@ class CascadeStrategy(DirectStrategy):
         eval_skill: str | None = None,
         cowabunga: bool = False,
         resume: bool = False,
+        gap_fallback_tier: int | None = None,
     ) -> list[RunResult]:
         ordered = self._topo_sort(tasks)
 
@@ -90,6 +91,7 @@ class CascadeStrategy(DirectStrategy):
                 eval_skill=eval_skill,
                 cowabunga=cowabunga,
                 resume=False,
+                gap_fallback_tier=gap_fallback_tier,
             )
 
             if result is not None:

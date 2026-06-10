@@ -20,6 +20,7 @@ from rich.text import Text
 from textual import events
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.reactive import reactive
 from textual.screen import ModalScreen
 from textual.widgets import (
     Button,
@@ -30,6 +31,7 @@ from textual.widgets import (
     Label,
     Markdown,
     RichLog,
+    Rule,
     Select,
     Static,
     TextArea,
@@ -430,6 +432,232 @@ class _TextualLogHandler(logging.Handler):
             pass  # app shutting down
 
 
+class _GapModal(ModalScreen[str]):
+    """Shown when the pipeline pauses due to a provider gap (rc=2).
+
+    Countdown sleeps then retries; or the user can switch to Claude or exit.
+    """
+
+    DEFAULT_CSS = """
+    _GapModal {
+        align: center middle;
+        background: $background 60%;
+    }
+    _GapModal > Vertical#gap-dialog {
+        width: 70;
+        height: auto;
+        border: round $warning;
+        background: $surface;
+        padding: 1 3;
+    }
+    _GapModal #gap-header {
+        height: auto;
+        margin-bottom: 1;
+    }
+    _GapModal #gap-title {
+        text-style: bold;
+        color: $warning;
+        width: 1fr;
+    }
+    _GapModal #gap-provider-label {
+        color: $text-muted;
+        text-align: right;
+        width: auto;
+    }
+    _GapModal #gap-body {
+        color: $text;
+        margin-bottom: 1;
+    }
+    _GapModal #gap-countdown {
+        text-align: center;
+        text-style: bold;
+        color: $warning;
+        background: $warning 15%;
+        height: 1;
+        margin-bottom: 1;
+        display: none;
+    }
+    _GapModal.counting #gap-countdown {
+        display: block;
+    }
+    _GapModal #gap-picker {
+        height: 3;
+        align: center middle;
+        margin-bottom: 1;
+        display: none;
+    }
+    _GapModal.picking #gap-picker {
+        display: block;
+    }
+    _GapModal.picking #gap-actions {
+        display: none;
+    }
+    _GapModal #gap-picker-label {
+        height: 3;
+        content-align: center middle;
+        margin-right: 1;
+        color: $text-muted;
+    }
+    _GapModal #gap-picker-unit {
+        height: 3;
+        content-align: center middle;
+        margin: 0 1;
+        color: $text-muted;
+    }
+    _GapModal #gap-duration {
+        width: 12;
+    }
+    _GapModal #start {
+        width: auto;
+        min-width: 12;
+        margin-left: 1;
+    }
+    _GapModal #gap-actions {
+        height: 3;
+        align-horizontal: center;
+    }
+    _GapModal Button {
+        width: 1fr;
+        height: 3;
+        margin: 0 1;
+        border: none;
+        text-style: bold;
+    }
+    _GapModal Button:focus {
+        text-style: bold underline;
+    }
+    _GapModal Button.-active {
+        border: none;
+    }
+    """
+
+    BINDINGS = [
+        ("s", "press('sleep')", "Sleep & retry"),
+        ("c", "press('claude')", "Use Claude"),
+        ("e", "press('exit')", "Exit"),
+        ("escape", "exit_modal", "Cancel"),
+    ]
+
+    countdown: reactive[int] = reactive(0)
+
+    def __init__(
+        self,
+        kind: str = "",
+        provider: str = "",
+        retry_after: int | None = None,
+    ) -> None:
+        super().__init__()
+        self._kind = kind
+        self._provider = provider
+        self._sleep_secs = retry_after or 60
+        self._tick_timer: Any = None
+
+    def compose(self) -> ComposeResult:
+        kind_label = self._kind.replace("_", " ").title() if self._kind else "Provider Gap"
+        is_billing = self._kind == "insufficient_balance"
+        body = (
+            "Provider is out of balance. Top up, then retry — or switch this run to "
+            "Claude to keep going."
+            if is_billing
+            else "Provider is unavailable after repeated retries. Wait and retry, "
+            "switch to Claude, or stop the run."
+        )
+        with Vertical(id="gap-dialog"):
+            with Horizontal(id="gap-header"):
+                yield Static(f"⏸  Run Paused · {kind_label}", id="gap-title")
+                if self._provider:
+                    yield Static(f"via {self._provider}", id="gap-provider-label")
+            yield Rule()
+            yield Static(body, id="gap-body")
+            yield Label("", id="gap-countdown")
+            with Horizontal(id="gap-picker"):
+                yield Label("Sleep for", id="gap-picker-label")
+                yield Input(
+                    value=str(self._sleep_secs),
+                    type="integer",
+                    id="gap-duration",
+                )
+                yield Label("seconds", id="gap-picker-unit")
+                yield Button("Start", id="start", variant="success")
+            with Horizontal(id="gap-actions"):
+                yield Button("  Sleep & Retry  (s)", id="sleep", variant="warning")
+                yield Button("  Use Claude  (c)", id="claude", variant="primary")
+                yield Button("  Exit  (e)", id="exit", variant="error")
+
+    def on_mount(self) -> None:
+        self.query_one("#claude", Button).focus()
+
+    def watch_countdown(self, value: int) -> None:
+        label = self.query_one("#gap-countdown", Label)
+        label.update(f"⏳  Retrying in {value}s — press Esc to cancel" if value > 0 else "")
+
+    def action_press(self, button_id: str) -> None:
+        try:
+            self.query_one(f"#{button_id}", Button).press()
+        except Exception:
+            if button_id == "exit":
+                self.action_exit_modal()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        bid = event.button.id
+        if bid == "sleep":
+            self._open_picker()
+        elif bid == "start":
+            self._start_countdown()
+        else:
+            self._cancel_timer()
+            self.dismiss(bid or "exit")
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "gap-duration":
+            self._start_countdown()
+
+    def _open_picker(self) -> None:
+        self.add_class("picking")
+        inp = self.query_one("#gap-duration", Input)
+        inp.value = str(self._sleep_secs)
+        inp.focus()
+
+    def _start_countdown(self) -> None:
+        raw = self.query_one("#gap-duration", Input).value.strip()
+        try:
+            secs = int(raw)
+        except ValueError:
+            secs = self._sleep_secs
+        secs = max(1, secs)
+        self._sleep_secs = secs
+        self.remove_class("picking")
+        self.add_class("counting")
+        self.countdown = secs
+        self._tick_timer = self.set_interval(1.0, self._tick)
+
+    def _tick(self) -> None:
+        self.countdown -= 1
+        if self.countdown <= 0:
+            self._cancel_timer()
+            self.dismiss("retry")
+
+    def _cancel_timer(self) -> None:
+        if self._tick_timer is not None:
+            self._tick_timer.stop()
+            self._tick_timer = None
+
+    def action_exit_modal(self) -> None:
+        # Esc cancels the active countdown or duration picker before exiting.
+        if self.has_class("counting"):
+            self._cancel_timer()
+            self.remove_class("counting")
+            self.countdown = 0
+            self.query_one("#sleep", Button).focus()
+            return
+        if self.has_class("picking"):
+            self.remove_class("picking")
+            self.query_one("#sleep", Button).focus()
+            return
+        self._cancel_timer()
+        self.dismiss("exit")
+
+
 class RunApp(App[int]):
     """Live dashboard for ``splinter run``: overview + streaming activity log."""
 
@@ -441,6 +669,7 @@ class RunApp(App[int]):
     BINDINGS = [
         ("q", "quit", "Quit"),
         ("ctrl+c", "quit", "Quit"),
+        ("shift+p", "pause", "Pause"),
     ]
 
     def __init__(self, session: Session, run_kwargs: dict[str, Any]) -> None:
@@ -482,12 +711,37 @@ class RunApp(App[int]):
         procreg.terminate_all()
         self.exit(self.rc)
 
+    async def action_pause(self) -> None:
+        """Shift+P — kill current subprocess and pause the run."""
+        from splinter import procreg
+
+        procreg.terminate_all()
+        self.session.set_status("paused", reason="user_pause")
+        self.write_log("— paused by user (Shift+P) — resume with: splinter resume —",
+                       logging.WARNING)
+        self.rc = 2
+        self.exit(2)
+
     def _work(self) -> None:
         from splinter.pipeline import run_pipeline
 
         try:
             self.rc = run_pipeline(**self.run_kwargs)
         except BaseException as exc:  # noqa: BLE001 — surface any failure in the log
+            self.rc = 1
+            self.error = str(exc)
+            try:
+                self.call_from_thread(self.write_log, f"ERROR: {exc}", logging.ERROR)
+            except Exception:
+                pass
+
+    def _work_with_claude_fallback(self) -> None:
+        from splinter.pipeline import run_pipeline
+
+        kwargs = {**self.run_kwargs, "gap_fallback_tier": 4, "resume": True}
+        try:
+            self.rc = run_pipeline(**kwargs)
+        except BaseException as exc:  # noqa: BLE001
             self.rc = 1
             self.error = str(exc)
             try:
@@ -521,6 +775,13 @@ class RunApp(App[int]):
 
         if self.rc == 0:
             self.write_log("— finished — press q to quit —")
+        elif self.rc == 2:
+            self.write_log("— run PAUSED (provider gap) —", logging.WARNING)
+            st = self.session.read_status()
+            kind = str(st.get("kind", ""))
+            provider = str(st.get("provider", ""))
+            retry_after = st.get("retry_after")
+            self.call_after_refresh(self._show_gap_modal, kind, provider, retry_after)
         else:
             # On failure, finish the TUI automatically (after a brief glimpse).
             self.write_log(f"— run failed (rc={self.rc}) — closing —", logging.ERROR)
@@ -528,6 +789,47 @@ class RunApp(App[int]):
 
             procreg.terminate_all()
             self.set_timer(1.5, lambda: self.exit(self.rc))
+
+    def _show_gap_modal(
+        self, kind: str, provider: str = "", retry_after: object = None
+    ) -> None:
+        try:
+            ra: int | None = int(retry_after) if retry_after is not None else None  # type: ignore[arg-type, call-overload]
+        except (TypeError, ValueError):
+            ra = None
+
+        def _on_choice(choice: str | None) -> None:
+            if self._timer is None:
+                self._timer = self.set_interval(0.5, self._refresh)
+            if choice == "claude":
+                self.write_log("— switching to Claude (tier 4) —", logging.WARNING)
+                self.run_worker(
+                    self._work_with_claude_fallback,
+                    thread=True,
+                    name="pipeline",
+                    exclusive=True,
+                )
+            elif choice == "retry":
+                self.write_log("— sleep done, retrying… —", logging.WARNING)
+                self.run_worker(self._work_retry, thread=True, name="pipeline", exclusive=True)
+            else:
+                self.exit(2)
+
+        self.push_screen(_GapModal(kind, provider, ra), callback=_on_choice)
+
+    def _work_retry(self) -> None:
+        from splinter.pipeline import run_pipeline
+
+        kwargs = {**self.run_kwargs, "resume": True}
+        try:
+            self.rc = run_pipeline(**kwargs)
+        except BaseException as exc:  # noqa: BLE001
+            self.rc = 1
+            self.error = str(exc)
+            try:
+                self.call_from_thread(self.write_log, f"ERROR: {exc}", logging.ERROR)
+            except Exception:
+                pass
 
 
 def run_with_tui(run_kwargs: dict[str, Any], session: Session | None = None) -> int:
@@ -559,14 +861,16 @@ class ConfigureApp(App[bool]):
     CSS = """
     #rows { padding: 0 1; }
     .step {
-        height: 3;
+        height: auto;
+        min-height: 3;
         border-left: thick $primary;
         padding-left: 1;
+        margin-bottom: 1;
     }
     .step.run { border-left: thick $success; }
-    .step-info { width: 40; height: 3; }
+    .step-info { width: 44; height: auto; }
     .step-name { text-style: bold; height: 1; }
-    .step-desc { color: $text-muted; height: 1; }
+    .step-desc { color: $text-muted; height: auto; }
     .model-sel { width: 1fr; height: 3; }
     .effort-sel { width: 14; height: 3; margin-left: 1; }
     .timeout-inp { width: 14; height: 3; margin-left: 1; }
@@ -1400,7 +1704,7 @@ def resume_session(session_id: str | None, *, reset: bool = False) -> int:
     from splinter.analyze import _run_state
     from splinter.memory.session import list_sessions
 
-    resumable_run = {"FAILED", "INTERRUPTED"}
+    resumable_run = {"FAILED", "INTERRUPTED", "PAUSED"}
     sessions = list_sessions()
 
     sid = session_id

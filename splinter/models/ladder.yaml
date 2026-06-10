@@ -1,48 +1,45 @@
 # Execution ladder. Each tier is a fixed model + reasoning variant; the loop climbs
-# the tiers on escalation. deepseek-v4-pro is the workhorse (3 tiers, climbing its
-# reasoning: medium → high → max) before switching models, so most usage stays on
-# it. qwen3.7-max (xhigh) sits above it; sonnet is the LAST RESORT — avoid running
-# it unless everything below was exhausted.
+# the tiers on escalation. T0 floor → T5 last-resort. Most usage lives on the lower
+# tiers; the Claude rung (last-resort) is reached only by escalation.
 tiers:
   - name: easy
     level: 0
-    # real-easy tasks: deepseek-pro at medium reasoning
+    # real-easy tasks: cheapest rung
     models:
       - opencode-go/deepseek-v4-pro
-    variant: medium
+    variant: low
 
   - name: moderate
     level: 1
-    # the workhorse — most runs live here (deepseek-pro, high reasoning)
+    # the workhorse — most runs live here
     models:
-      - opencode-go/deepseek-v4-pro
+      - opencode-go/minimax-m3
     variant: high
 
   - name: moderate-hard
     level: 2
-    # still deepseek-pro, maxed reasoning, before paying for a different model
+    # maxed reasoning before paying for a different model
+    models:
+      - opencode-go/deepseek-v4-pro
+    variant: high
+
+  - name: hard
+    level: 3
+    # stronger open runner, maxed reasoning
     models:
       - opencode-go/deepseek-v4-pro
     variant: max
 
-  - name: hard
-    level: 3
-    # switch model: qwen3.7-max at xhigh
-    models:
-      - opencode-go/qwen3.7-max
-    variant: xhigh
-
   - name: critical
     level: 4
-    # Frontier claude at high. Avoid running unless the cheaper ladder is exhausted.
-    provider: claude
+    # reached by escalation — avoid unless cheaper rungs failed
     models:
-      - sonnet
+      - opencode-go/qwen3.7-plus
     variant: high
 
   - name: last-resort
     level: 5
-    # The very last rung: sonnet maxed out. Only reached if `critical` still failed.
+    # the very last rung: Claude maxed out. Only if `critical` still failed.
     provider: claude
     models:
       - sonnet
@@ -53,28 +50,28 @@ tiers:
 effort_map:
   trivial:
     start_tier: 0
-    variant: medium
+    variant: low
   normal:
-    start_tier: 1   # workhorse: deepseek-v4-pro @ high
+    start_tier: 1
     variant: high
   hard:
-    start_tier: 3   # qwen3.7-max @ xhigh
-    variant: xhigh
+    start_tier: 3
+    variant: max
   critical:
-    start_tier: 4   # sonnet — last resort
+    start_tier: 4
     variant: high
 
 eval:
-  default_model: sonnet
+  default_model: opus
   default_effort: high
 
 planner:
-  model: sonnet
+  model: opus
   effort: high
 
 localizer:
-  # recall/search: cheap, big-context capable
+  # recall/search: cheap context grab for the planner
   recall_model: opencode-go/deepseek-v4-flash
-  recall_model_large: opencode-go/minimax-m3   # huge context window for large repos
+  recall_model_large: opencode-go/minimax-m3   # large context window for big repos
   # qualify/filter locations
-  precision_model: opencode-go/kimi-k2.6
+  precision_model: opencode-go/deepseek-v4-flash

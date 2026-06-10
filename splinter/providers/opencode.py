@@ -287,6 +287,10 @@ class OpencodeProvider(ModelProvider):
             if gap:
                 raise gap from exc
             raise
+        # opencode exits 0 even for billing/rate-limit errors — text-check too
+        gap = detect_provider_gap(RuntimeError(result.text), self.name, model)
+        if gap:
+            raise gap from RuntimeError(result.text)
         session_id = session or result.raw.get("session_id") or result.raw.get("session")
         return ProviderResponse(
             text=result.text,

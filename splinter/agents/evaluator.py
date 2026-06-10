@@ -58,6 +58,7 @@ class Evaluator:
         *,
         eval_model: str | None = None,
         eval_effort: str | None = None,
+        plan: str = "",
         previous_evals: str = "",
         eval_skill: ResolvedSkill | None = None,
         gate_passed: bool = True,
@@ -79,10 +80,12 @@ class Evaluator:
         if eval_skill is not None:
             skill_section_text = section("Eval Skill", eval_skill.body)
         gate_text = "PASS" if gate_passed else f"FAIL — {gate_detail or 'mechanical checks failed'}"
+        plan_section_text = section("Implementation Plan", plan) if plan else ""
         prompt = render(
             "eval",
             task_section=section("Task", task.description),
             acceptance_section=section("Acceptance Criteria", task.acceptance),
+            plan_section=plan_section_text,
             output_section=section("Implementation Output", run_output),
             gate_section=section("Mechanical Gate Result", gate_text),
             previous_evals_section=section("Previous Eval Feedback", previous_evals),

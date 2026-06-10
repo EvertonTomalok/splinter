@@ -87,13 +87,17 @@ MODEL_STEPS: list[tuple[str, str, str]] = [
     ),
 ]
 
-# Runner ladder tiers: (label, description). Index = tier level.
+# Runner ladder tiers: (label, description). Index = tier level. Must stay in sync
+# with the `tiers` list in models/ladder.yaml (one entry per tier, ordered by level).
 TIER_STEPS: list[tuple[str, str]] = [
-    ("Run · T0 easy", "Floor runner — easy → moderate-easy tasks. Where most work starts."),
-    ("Run · T1 moderate", "Default runner for normal work."),
-    ("Run · T2 hard", "Runner for moderate+ work."),
-    ("Run · T3 premium", "Premium runner reached by escalation."),
-    ("Run · T4 top", "Ceiling runner — the last rung before giving up."),
+    ("Run · T0 easy", "Floor runner — real-easy tasks. Cheapest rung."),
+    ("Run · T1 moderate", "The workhorse — default runner where most runs live."),
+    ("Run · T2 moderate-hard", "Same workhorse model, maxed reasoning, before switching models."),
+    ("Run · T3 hard", "Switches model: the stronger open runner at high reasoning."),
+    ("Run · T4 critical",
+     "Frontier Claude. Reached by escalation — avoid unless cheaper rungs failed."),
+    ("Run · T5 last-resort",
+     "The very last rung: Claude maxed out. Only if `critical` still failed."),
 ]
 
 

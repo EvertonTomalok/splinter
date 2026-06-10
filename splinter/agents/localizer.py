@@ -133,29 +133,104 @@ def _recall_phase(
         "tool results, identify all relevant files, functions, classes, and symbols.\n\n"
         f"## Feature Description\n{text}\n\n"
         f"## Raw Search Results\n{search_results}\n\n"
-        "Return a concise list of candidate locations. For each, note: file, symbol, "
-        "and why it is relevant. Be thorough — coverage over precision."
+        "Return a JSON array of candidate locations. Each item MUST have keys: "
+        '"file" (path), "symbol" (function/class/symbol name, or "" if file-level), '
+        '"reason" (why it is relevant — include the feature keywords it relates to), '
+        'and "confidence" (0.0–1.0). Be thorough — coverage over precision. '
+        "Output ONLY the JSON array, no prose."
     )
     return run_text(prompt, model, variant=variant, output_format="text", timeout=timeout)
 
 
-def _precision_phase(
-    recall_output: str, prd_text: str, model: str, variant: str = "low",
-    timeout: int | None = None,
-) -> list[CodeAnchor]:
-    """Mid-tier model filters recall results to structured CodeAnchors."""
-    text = _strip_frontmatter(prd_text)
+_FILTER_MAX_FILE_CHARS = 4_000   # per file in the filter context
+_FILTER_MAX_TOTAL_CHARS = 40_000  # total across all candidate files
+
+
+_CANDIDATE_FILE_RE = re.compile(
+    r"[\w./\-]+\.(?:py|ts|tsx|js|jsx|go|rs|java|rb|sh|yaml|yml|toml|json|md)"
+)
+
+
+def _extract_candidate_files(recall_output: str) -> list[str]:
+    """Pull unique file paths mentioned in the recall output (order-preserved)."""
+    seen: set[str] = set()
+    result: list[str] = []
+    # Match bare paths: word chars / dots / hyphens ending in a known extension
+    for m in _CANDIDATE_FILE_RE.finditer(recall_output):
+        p = m.group(0).lstrip("./")
+        if p not in seen:
+            seen.add(p)
+            result.append(p)
+    return result
+
+
+def _read_candidate_files(paths: list[str]) -> str:
+    """Read file contents for each candidate path; return formatted block."""
+    from pathlib import Path as _Path
+    parts: list[str] = []
+    total = 0
+    for path_str in paths:
+        if total >= _FILTER_MAX_TOTAL_CHARS:
+            remaining = len(paths) - len(parts)
+            if remaining:
+                parts.append(f"*({remaining} more file(s) omitted — context cap)*")
+            break
+        try:
+            raw = _Path(path_str).read_text()
+        except OSError:
+            continue
+        snippet = raw[:_FILTER_MAX_FILE_CHARS]
+        note = " ← truncated" if len(raw) > _FILTER_MAX_FILE_CHARS else ""
+        parts.append(f"### {path_str}{note}\n```\n{snippet}\n```")
+        total += len(snippet)
+    return "\n\n".join(parts)
+
+
+def _anchors_from_recall(recall_output: str) -> list[CodeAnchor]:
+    """Parse file paths from recall plain-text output into minimal CodeAnchors."""
+    files = _extract_candidate_files(recall_output)
+    return [CodeAnchor(file=f, symbol="", reason="", confidence=1.0) for f in files]
+
+
+def filter_task_context(
+    task: object,
+    ladder: Ladder,
+) -> str:
+    """Per-task filter that runs at plan time, not pipeline time.
+
+    Receives:
+      - task.target_files  — paths the locator found for this task
+      - task.description   — this task only (not the full PRD)
+
+    Reads those files, passes actual source to the precision model, and returns
+    a focused context string ready for the planner.
+    """
+    target_files = getattr(task, "target_files", None)
+    description = getattr(task, "description", "")
+
+    if not target_files:
+        return ""
+
+    file_contents = _read_candidate_files(target_files)
+    if not file_contents:
+        return ""
+
     prompt = (
-        "You are a code analysis agent. Given a feature description and a list of "
-        "candidate code locations, filter and rank the results.\n\n"
-        f"## Feature Description\n{text}\n\n"
-        f"## Candidates\n{recall_output}\n\n"
-        "Return ONLY a JSON array of objects with keys: file, symbol, reason, confidence "
-        "(0.0-1.0). Include only truly relevant results. Example:\n"
-        '[{"file": "src/foo.py", "symbol": "Foo.bar", "reason": "handles X", "confidence": 0.9}]'
+        "You are a code context agent. Below is a task description and the source files "
+        "the locator identified as relevant. Read the code and extract the sections that "
+        "matter for implementing this task — function signatures, class definitions, key "
+        "logic, and data structures. Be specific and complete; the output will be the sole "
+        "code context given to a planner.\n\n"
+        f"## Task\n{description}\n\n"
+        f"## Source Files\n{file_contents}\n\n"
+        "Return the relevant code sections with brief notes on why each matters."
     )
-    text = run_text(prompt, model, variant=variant, output_format="json", timeout=timeout)
-    return _parse_anchors(text)
+    return run_text(
+        prompt,
+        ladder.localizer_precision_model,
+        variant=ladder.localizer_precision_variant,
+        timeout=ladder.localizer_precision_timeout,
+    )
 
 
 def localize(
@@ -166,13 +241,16 @@ def localize(
     repo_path: str = ".",
     force: bool = False,
 ) -> list[CodeAnchor]:
+    """Recall-only localization: grep → cheap LLM → candidate file list.
+
+    Returns CodeAnchors (file paths). The per-task filter that reads and
+    expands those files runs later, at plan time, via ``filter_task_context``.
+    """
     if not force and session.has("knowledge/localization.md"):
         existing = session.read("knowledge/localization.md")
         anchors = _parse_anchors(existing)
         if anchors:
             return anchors
-
-    precision_model = ladder.localizer_precision_model
 
     # Run deterministic search tools FIRST, then feed results to LLM
     log.info("localize: running search tools")
@@ -192,16 +270,23 @@ def localize(
     recall_output = _recall_phase(
         prd_text, search_results, recall_model, recall_variant, recall_timeout
     )
-    log.info("localize: precision via %s", precision_model)
-    anchors = _precision_phase(
-        recall_output, prd_text, precision_model, ladder.localizer_precision_variant,
-        ladder.localizer_precision_timeout,
-    )
-    log.info("localize: %d anchor(s)", len(anchors))
 
+    # Prefer structured anchors (file + symbol + reason) so per-task targeting in
+    # assign_target_files can actually match; fall back to bare file paths if the
+    # cheap model didn't emit parseable JSON.
+    anchors = _parse_anchors(recall_output) or _anchors_from_recall(recall_output)
+    log.info("localize: %d candidate anchor(s) from recall", len(anchors))
+
+    # Write in the file:/symbol:/reason:/confidence: block format _parse_anchors
+    # reads, so a resumed run reparses anchors WITH their symbol/reason intact.
     lines: list[str] = ["# Localization\n"]
     for a in anchors:
-        lines.append(f"- **{a.file}** :: `{a.symbol}` — {a.reason} (conf: {a.confidence})")
+        lines.append(
+            f"file: {a.file}\n"
+            f"symbol: {a.symbol}\n"
+            f"reason: {a.reason}\n"
+            f"confidence: {a.confidence}\n"
+        )
 
     # Localization lives in the run's knowledge store (knowledge/localization.md) —
     # the single home for run-valuable memory — not loose at the session root.

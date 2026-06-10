@@ -35,25 +35,41 @@ def test_new_session_id_format() -> None:
     assert len(sid) > 10
 
 
-def test_ladder_loads() -> None:
-    ladder = load_ladder()
+@pytest.fixture
+def isolated_ladder(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
+) -> "object":
+    """load_ladder() with NO project config override — pins ladder.yaml defaults.
+
+    Runs from an empty cwd so the developer's untracked ./.splinter/config.yaml
+    can't bleed its personal picks into these default-asserting tests.
+    """
+    monkeypatch.chdir(tmp_path)
+    return load_ladder()
+
+
+def test_ladder_loads(isolated_ladder: "object") -> None:
+    ladder = isolated_ladder
     assert len(ladder.tiers) == 6
     assert ladder.tiers[0].name == "easy"
     assert ladder.tiers[4].name == "critical"
     assert ladder.tiers[5].name == "last-resort"
     assert len(ladder.all_model_ids()) > 0
-    # workhorse floor is deepseek-v4-pro (no weak models)
+    # floor is deepseek-v4-pro; workhorse rung (T1) switches to minimax-m3
     assert ladder.tiers[0].models[0] == "opencode-go/deepseek-v4-pro"
-    # per-tier reasoning variants climb deepseek, then qwen, then sonnet high→max
-    assert ladder.tier_variant(0) == "medium"
+    assert ladder.tiers[1].models[0] == "opencode-go/minimax-m3"
+    # per-tier reasoning variants: cheap floor, then climb to max on the open rungs
+    assert ladder.tier_variant(0) == "low"
     assert ladder.tier_variant(1) == "high"
-    assert ladder.tier_variant(2) == "max"
-    assert ladder.tier_variant(3) == "xhigh"
+    assert ladder.tier_variant(2) == "high"
+    assert ladder.tier_variant(3) == "max"
     assert ladder.tier_variant(4) == "high"
     assert ladder.tier_variant(5) == "max"
-    # last two rungs are both sonnet (claude), high then max
-    assert ladder.tier_by_level(4).models[0] == "sonnet"
+    # T4 critical is the strong open runner (qwen); T5 last-resort is Claude
+    assert ladder.tier_by_level(4).models[0] == "opencode-go/qwen3.7-plus"
+    assert ladder.tier_by_level(4).provider == "opencode"
     assert ladder.tier_by_level(5).models[0] == "sonnet"
+    assert ladder.tier_by_level(5).provider == "claude"
 
 
 def test_ladder_tier_by_level() -> None:
@@ -73,11 +89,11 @@ def test_normal_effort_defaults_to_deepseek_v4_pro() -> None:
     assert model_id == "opencode-go/deepseek-v4-pro"
 
 
-def test_localizer_roster() -> None:
-    ladder = load_ladder()
+def test_localizer_roster(isolated_ladder: "object") -> None:
+    ladder = isolated_ladder
     assert ladder.localizer_recall_model == "opencode-go/deepseek-v4-flash"
     assert ladder.localizer_recall_large_model == "opencode-go/minimax-m3"
-    assert ladder.localizer_precision_model == "opencode-go/kimi-k2.6"
+    assert ladder.localizer_precision_model == "opencode-go/deepseek-v4-flash"
 
 
 def test_config_model_overrides_apply_to_ladder(
@@ -99,7 +115,7 @@ def test_config_model_overrides_apply_to_ladder(
     t0 = ladder.tier_by_level(0)
     assert t0.models[0] == "opencode-go/kimi-k2.6"
     assert t0.provider == "opencode"
-    assert ladder.eval_model == "sonnet"  # untouched step keeps its default
+    assert ladder.eval_model == "opus"  # untouched step keeps its ladder.yaml default
 
 
 def test_config_effort_overrides_apply_to_ladder(
@@ -154,21 +170,21 @@ def test_configure_tui_saves_models_and_efforts(
     assert ladder.planner_effort == "max"
 
 
-def test_ladder_effort_mapping() -> None:
-    ladder = load_ladder()
+def test_ladder_effort_mapping(isolated_ladder: "object") -> None:
+    ladder = isolated_ladder
     em = ladder.effort_mapping("trivial")
     assert em is not None
     assert em.start_tier == 0
-    # Agentic floor: real-easy tasks run at `medium`, never minimal/low.
-    assert em.variant == "medium"
+    # trivial tasks start on the cheapest rung at low reasoning.
+    assert em.variant == "low"
 
 
-def test_resolve_variant_auto() -> None:
-    ladder = load_ladder()
+def test_resolve_variant_auto(isolated_ladder: "object") -> None:
+    ladder = isolated_ladder
     task = Task(description="test", acceptance="test", effort="hard", reasoning_effort="auto")
     v = resolve_variant(task, None, ladder)
-    # hard → xhigh ("high+") for complex agentic work.
-    assert v == "xhigh"
+    # hard → starts at T3, max reasoning.
+    assert v == "max"
 
 
 def test_resolve_variant_override() -> None:
@@ -185,12 +201,13 @@ def test_resolve_model() -> None:
     assert model_id.startswith("opencode-go/")
 
 
-def test_resolve_model_claude() -> None:
-    ladder = load_ladder()
-    # sonnet is the last-resort top tier (level 4); tier 3 is qwen (opencode).
-    model_id, provider = resolve_model(4, ladder)
+def test_resolve_model_claude(isolated_ladder: "object") -> None:
+    ladder = isolated_ladder
+    # sonnet (claude) is the last-resort top rung (level 5); T4 is qwen (opencode).
+    model_id, provider = resolve_model(5, ladder)
     assert provider == "claude"
     assert model_id == "sonnet"
+    assert resolve_model(4, ladder)[1] == "opencode"
 
 
 def test_session_write_read(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:

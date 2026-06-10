@@ -6,6 +6,8 @@ satisfies this task's acceptance criteria — nothing else.
 
 {acceptance_section}
 
+{plan_section}
+
 {output_section}
 
 {gate_section}
@@ -26,6 +28,10 @@ How to decide:
   clearly met, the verdict is PASS — even if you can imagine further polish.
 - Base the verdict on what the output actually demonstrates (code, test results,
   gate output), not on how hard the task sounds.
+- The Implementation Plan (if present) is the approach the runner was told to
+  follow — use it to spot work the output skipped or contradicted. It is CONTEXT,
+  not the bar: the Acceptance Criteria decide PASS, not plan adherence. Output
+  that meets the criteria a different way still PASSes.
 - ESCALATE / JUMP_PREMIUM mean the *runner model was not capable* of completing
   the task — repeated wrong or incomplete attempts at the same problem. Do NOT
   escalate a run whose output meets the criteria.

@@ -199,6 +199,7 @@ class EvalStage(Stage):
             ctx.run_result.text,
             eval_model=ctx.ladder.eval_model,
             eval_effort=eval_effort,
+            plan=ctx.plan,
             previous_evals="\n".join(ctx.eval_history[-2:]),
             eval_skill=self._resolved_skill,
             gate_passed=ctx.gate_passed,

@@ -121,6 +121,7 @@ def run_pipeline(
     cowabunga: bool = False,
     resume: bool = False,
     session: Session | None = None,
+    gap_fallback_tier: int | None = None,
 ) -> int:
     ladder = load_ladder()
     if eval_model:
@@ -226,6 +227,7 @@ def run_pipeline(
             eval_skill=eval_skill,
             cowabunga=cowabunga,
             resume=resume,
+            gap_fallback_tier=gap_fallback_tier,
         )
 
         session.set_status("completed", stage="done")
@@ -239,7 +241,13 @@ def run_pipeline(
         from splinter.providers.base import ProviderGapError
         if not isinstance(gap_exc, ProviderGapError):
             raise
-        session.set_status("paused", kind=gap_exc.kind, resumable=gap_exc.resumable)
+        session.set_status(
+            "paused",
+            kind=gap_exc.kind,
+            resumable=gap_exc.resumable,
+            provider=gap_exc.provider,
+            retry_after=gap_exc.retry_after,
+        )
         log.warning("run paused — %s", gap_exc)
         print(gap_exc.guidance)
         return 2
