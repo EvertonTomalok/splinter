@@ -268,21 +268,22 @@ Splinter never starts at the top. It earns its way there.
 
 No weak models on the bench — the floor is already capable.
 
-```
-T0  easy       glm-5.1 · kimi-k2.6              (easy → moderate-easy)
-T1  moderate   deepseek-v4-pro                  (default for normal work)
-T2  hard       qwen3.7-max                      (moderate+)
-T3  premium    sonnet  ->  sonnet (effort max)
-T4  top        opus-4.8
-```
+| Tier | Name | Effort flag | Model | Runner | Reasoning | Recommended for |
+|------|------|------------|-------|--------|-----------|-----------------|
+| T0 | easy | `trivial` | deepseek-v4-pro | opencode | low | Boilerplate, scaffolding, trivial edits |
+| T1 | moderate | `normal` ⭐ | minimax-m3 | opencode | high | Most tasks — features, bug fixes, refactors |
+| T2 | moderate-hard | *(escalation only)* | deepseek-v4-pro | opencode | high | T1 stalled; max reasoning before model swap |
+| T3 | hard | `hard` | deepseek-v4-pro | opencode | max | Complex logic, multi-file changes |
+| T4 | critical | `critical` | qwen3.7-plus | opencode | high | Architecture changes, gnarly migrations |
+| T5 | last-resort | *(escalation only)* | sonnet | claude -p | max | Open models failed; Claude as final fallback |
 
-The plan tags each task with an effort hint, so trivial work starts at T0, normal
-work defaults to T1 (deepseek-v4-pro), and a gnarly refactor can start higher. The
-judge owns the climb from there.
+⭐ default — `normal` effort starts here.
+
+The plan tags each task with an effort hint that sets the starting tier. T2 and T5 are escalation-only — they are never a starting point. The judge owns the climb from there.
 
 **Localizer roster** (separate from execution): recall/search runs on
 deepseek-v4-flash, escalating to **minimax-m3** for its huge context window on
-large repos; **kimi-k2.6** qualifies and filters the candidate locations.
+large repos; **deepseek-v4-flash** qualifies and filters the candidate locations.
 
 ---
 
