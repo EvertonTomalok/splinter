@@ -103,11 +103,19 @@ def resume(
         str | None,
         typer.Argument(help="Session id to resume (default: latest refining session)"),
     ] = None,
+    reset: Annotated[
+        bool,
+        typer.Option("--reset", help="Re-run a failed run from the head (fresh localize + plan)."),
+    ] = False,
 ) -> None:
-    """Resume an interrupted PRD refinement session."""
+    """Resume a session: PRD refinement, or a failed/interrupted run.
+
+    Transient failures continue from where they stopped; critical failures roll the
+    failing stage back and redo it. ``--reset`` re-runs from the head.
+    """
     from splinter.tui import resume_session
 
-    raise typer.Exit(resume_session(session))
+    raise typer.Exit(resume_session(session, reset=reset))
 
 
 @app.command()

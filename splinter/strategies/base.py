@@ -41,5 +41,6 @@ class Strategy(ABC):
         max_iterations: int = 5,
         localization: str = "",
         cowabunga: bool = False,
+        resume: bool = False,
     ) -> list[RunResult]:
         ...

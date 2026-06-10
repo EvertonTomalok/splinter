@@ -1208,31 +1208,8 @@ def run_prd_interactive(run_kwargs: dict[str, Any]) -> int:
     return run_with_tui(result, session=session)
 
 
-def resume_session(session_id: str | None) -> int:
-    """Resume an interrupted PRD refinement; on finalize, run it like a fresh session."""
-    from splinter.memory.session import list_sessions
-
-    sid = session_id
-    if sid is None:
-        for cand in list_sessions():
-            if Session(cand).read_status().get("state") == "refining":
-                sid = cand
-                break
-        if sid is None:
-            print("no resumable PRD session found (none in state 'refining').")
-            return 1
-
-    if sid not in list_sessions():
-        print(f"no such session: {sid}")
-        return 1
-
-    session = Session(sid)
-    status = session.read_status()
-    if status.get("state") != "refining":
-        print(f"session {sid} is not resumable (state: {status.get('state', 'unknown')}). "
-              "Only PRD refinement sessions can be resumed.")
-        return 1
-
+def _resume_prd(session: Session, status: dict[str, Any]) -> int:
+    """Re-enter a PRD refinement; on finalize, run it in the same session."""
     saved_strategy = status.get("strategy")
     run_kwargs: dict[str, Any] = {
         "strategy": saved_strategy if saved_strategy and saved_strategy != "?" else None,
@@ -1249,3 +1226,110 @@ def resume_session(session_id: str | None) -> int:
         print(f"PRD session aborted — resume later: uv run splinter resume {session.id}")
         return 0
     return run_with_tui(result, session=session)
+
+
+#: Which artifact a given stage produces — dropped to redo that stage on rollback.
+_STAGE_ARTIFACT = {"localize": "localization.md", "run": "plan.md"}
+
+
+def _resume_run(session: Session, status: dict[str, Any], *, reset: bool = False) -> int:
+    """Re-enter a failed/interrupted pipeline run.
+
+    - ``reset``: ignore all artifacts, re-run from the head (fresh localize + plan).
+    - critical failure: roll the failing stage back (drop its artifact, redo it).
+    - transient failure (provider/network blip): keep everything, continue.
+    """
+    saved_strategy = status.get("strategy")
+    source = str(status.get("source") or "")
+    prd_path: str | None = None
+    task_path: str | None = None
+    if source.endswith((".yaml", ".yml")):
+        task_path = source
+    elif session.read("prd.md").strip():
+        prd_path = str(session.dir / "prd.md")
+    elif source:
+        prd_path = source
+    else:
+        print(f"session {session.id}: no PRD or task input recorded — cannot resume run.")
+        return 1
+
+    def _num(key: str) -> Any:
+        val = status.get(key)
+        return val if val not in (None, "") else None
+
+    fail_class = str(status.get("fail_class") or "")
+    stage = str(status.get("stage") or "")
+    if reset:
+        print(f"resetting run {session.id} — re-running from the head.")
+    elif fail_class == "critical":
+        artifact = _STAGE_ARTIFACT.get(stage)
+        if artifact:
+            path = session.dir / artifact
+            path.unlink(missing_ok=True)
+            print(f"critical failure at stage '{stage}' — rolling back, redoing it.")
+        else:
+            print(f"critical failure at stage '{stage}' — redoing run.")
+    else:
+        print(f"resuming run {session.id} (reusing localization + plan)…")
+
+    run_kwargs: dict[str, Any] = {
+        "strategy": saved_strategy if saved_strategy and saved_strategy != "?" else None,
+        "prd_path": prd_path,
+        "task_path": task_path,
+        "effort": _num("effort"),
+        "budget": _num("budget"),
+        "max_iterations": int(status.get("max_iterations") or 5),
+        "cowabunga": False,
+        "resume": not reset,
+    }
+    return run_with_tui(run_kwargs, session=session)
+
+
+def resume_session(session_id: str | None, *, reset: bool = False) -> int:
+    """Resume any session: PRD refinement, or a failed/interrupted pipeline run.
+
+    ``reset`` forces a run to re-run from the head (fresh localize + plan).
+    """
+    from splinter.analyze import _run_state
+    from splinter.memory.session import list_sessions
+
+    resumable_run = {"FAILED", "INTERRUPTED"}
+    sessions = list_sessions()
+
+    sid = session_id
+    if sid is None:
+        for cand in sessions:
+            if Session(cand).read_status().get("state") == "refining":
+                sid = cand
+                break
+        if sid is None:
+            for cand in sessions:
+                if _run_state(Session(cand)) in resumable_run:
+                    sid = cand
+                    break
+        if sid is None:
+            print("no resumable session found (none refining, failed, or interrupted).")
+            return 1
+
+    if sid not in sessions:
+        print(f"no such session: {sid}")
+        return 1
+
+    session = Session(sid)
+    status = session.read_status()
+    if status.get("state") == "refining":
+        return _resume_prd(session, status)
+
+    state = _run_state(session)
+    if state == "RUNNING":
+        print(f"session {sid} is still running — not resumable while its process is alive.")
+        return 1
+    if state in ("COMPLETED", "DONE"):
+        print(f"session {sid} already completed — opening analyze.")
+        AnalyzeApp(session).run()
+        return 0
+    if state in resumable_run:
+        return _resume_run(session, status, reset=reset)
+
+    print(f"session {sid} is not resumable (state: {state}).")
+    return 1

@@ -61,6 +61,7 @@ class DirectStrategy(Strategy):
         max_iterations: int = 5,
         localization: str = "",
         cowabunga: bool = False,
+        resume: bool = False,
     ) -> list[RunResult]:
         trace = Trace()
         knowledge = KnowledgeStore(session)
@@ -78,6 +79,7 @@ class DirectStrategy(Strategy):
                 max_iterations=max_iterations,
                 localization=localization,
                 cowabunga=cowabunga,
+                resume=resume,
             )
             if result is not None:
                 results.append(result)
@@ -98,13 +100,23 @@ class DirectStrategy(Strategy):
         max_iterations: int,
         localization: str,
         cowabunga: bool = False,
+        resume: bool = False,
     ) -> RunResult | None:
         tier = self._start_tier(task, ladder)
 
         # The plan is produced once and reused for every iteration and escalation.
-        log.info("planning with %s (once)", ladder.planner_model)
-        plan = _make_plan(task, ladder, localization)
-        session.write("plan.md", f"# Plan\n\n{plan}\n")
+        # On resume, reuse the persisted plan instead of regenerating (it's expensive
+        # and deterministic for the task).
+        existing_plan = session.read("plan.md").strip()
+        if resume and existing_plan:
+            log.info("resume: reusing existing plan")
+            # plan.md is stored as "# Plan\n\n<plan>"; drop the header to match a fresh plan.
+            plan = existing_plan[len("# Plan"):].lstrip("\n") \
+                if existing_plan.startswith("# Plan") else existing_plan
+        else:
+            log.info("planning with %s (once)", ladder.planner_model)
+            plan = _make_plan(task, ladder, localization)
+            session.write("plan.md", f"# Plan\n\n{plan}\n")
 
         chain = build_chain(RunStage(), GateStage(), EvalStage())
         eval_history: list[str] = []

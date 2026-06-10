@@ -35,6 +35,9 @@ def run(
         from splinter.configure import configured_timeout
 
         timeout = configured_timeout()
+    # opencode's `--format` only accepts "default" or "json"; anything else (e.g.
+    # the caller's "text") makes yargs print usage and exit 1. Always run the CLI in
+    # json (machine-parseable) and let `fmt` drive how we parse the output below.
     cmd: list[str] = [
         "opencode",
         "run",
@@ -43,7 +46,7 @@ def run(
         "--agent",
         "build",  # the build agent can create/edit files; "plan" is read-only
         "--format",
-        fmt,
+        "json",
         "--dangerously-skip-permissions",
     ]
     if variant is not None and variant != "auto":
@@ -60,7 +63,8 @@ def run(
     if proc.returncode != 0:
         raise RuntimeError(f"opencode exited {proc.returncode}: {proc.stderr.strip()}")
 
-    raw = _parse_output(proc.stdout, fmt)
+    # CLI output is always json now; extract text from it regardless of requested fmt.
+    raw = _parse_output(proc.stdout, "json")
     text = _extract_text(raw)
     tokens = _extract_tokens(raw)
     cost = _extract_cost(raw)
@@ -117,8 +121,13 @@ def _parse_output(stdout: str, fmt: str) -> dict[str, Any]:
         if not any(k for k in obj if k not in ("type", "timestamp", "sessionID")):
             continue
 
-        # Extract message text
-        if "text" in obj:
+        # Extract message text. opencode streams text in a nested `part`:
+        #   {"type":"text", "part":{"type":"text","text":"…"}}
+        part = obj.get("part")
+        if isinstance(part, dict) and obj.get("type") in ("text", "message") \
+                and isinstance(part.get("text"), str):
+            text_parts.append(part["text"])
+        elif "text" in obj:
             text_parts.append(str(obj["text"]))
         elif "content" in obj:
             text_parts.append(_extract_text(obj))

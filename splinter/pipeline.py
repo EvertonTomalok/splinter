@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -19,6 +20,24 @@ from splinter.strategies.registry import available_strategies, get_strategy
 DEFAULT_STRATEGY = "direct"
 
 log = logging.getLogger("splinter.pipeline")
+
+#: Substrings in an error that mark it transient (retry/continue, don't roll back).
+_TRANSIENT_MARKERS = (
+    "429", "500", "502", "503", "504", "529", "overloaded", "rate limit", "ratelimit",
+    "timeout", "timed out", "temporarily", "try again", "connection", "econnreset",
+    "unavailable", "reset by peer", "network", "socket",
+)
+
+
+def _classify_failure(exc: BaseException) -> str:
+    """Transient (provider/network blip → resume continues) vs critical (bad command,
+    bug → resume rolls the failing stage back and redoes it)."""
+    if isinstance(exc, (TimeoutError, subprocess.TimeoutExpired)):
+        return "transient"
+    msg = str(exc).lower()
+    if any(m in msg for m in _TRANSIENT_MARKERS):
+        return "transient"
+    return "critical"
 
 
 def _load_task_from_yaml(path: str) -> Task:
@@ -98,6 +117,7 @@ def run_pipeline(
     budget: float | None = None,
     max_iterations: int = 5,
     cowabunga: bool = False,
+    resume: bool = False,
     session: Session | None = None,
 ) -> int:
     ladder = load_ladder()
@@ -133,6 +153,8 @@ def run_pipeline(
         strategy=strategy_name,
         tasks=len(tasks),
         max_iterations=max_iterations,
+        effort=effort or "",
+        budget=budget if budget is not None else "",
         source=prd_path or task_path or "",
         started=datetime.now(timezone.utc).isoformat(),
         stage="localize",
@@ -159,9 +181,14 @@ def run_pipeline(
 
         localization = ""
         if prd_text:
-            log.info("localizing against the codebase…")
-            localize(prd_text, session, ladder)
-            localization = session.read("localization.md")
+            existing_loc = session.read("localization.md")
+            if resume and existing_loc.strip():
+                log.info("resume: reusing existing localization")
+                localization = existing_loc
+            else:
+                log.info("localizing against the codebase…")
+                localize(prd_text, session, ladder)
+                localization = session.read("localization.md")
 
         session.set_status("running", stage="run")
         results = strat.execute(
@@ -173,10 +200,12 @@ def run_pipeline(
             max_iterations=max_iterations,
             localization=localization,
             cowabunga=cowabunga,
+            resume=resume,
         )
-    except BaseException:
-        session.set_status("failed")
-        log.error("pipeline failed")
+    except BaseException as exc:
+        fail_class = _classify_failure(exc)
+        session.set_status("failed", fail_class=fail_class)
+        log.error("pipeline failed (%s): %s", fail_class, exc)
         raise
 
     session.set_status("completed", stage="done")
