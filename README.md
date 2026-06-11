@@ -88,6 +88,8 @@ Splinter is the conductor, not the models. You bring the two CLIs it drives:
   `claude` CLI, authenticated, with access to `sonnet` and `opus-4.8`
 - **[opencode](https://opencode.ai)** the `opencode` CLI, authenticated on the
   `opencode-go` provider _(not needed if you use `--use-cc-only`, see below)_
+- **[Codex](https://chatgpt.com/codex)** the `codex` CLI, authenticated with
+  your OpenAI account _(optional — only needed for Codex-based runners)_
 
 No extra language toolchains required. The validation tasks are all Python, which
 uv already gives you.
@@ -128,6 +130,13 @@ With a local install, prefix every command with `uv run` (e.g. `uv run splinter 
 ```bash
 claude            # sign in to Claude Code
 opencode auth login
+```
+
+**If you also want Codex runners**, install and sign in:
+
+```bash
+curl -fsSL https://chatgpt.com/codex/install.sh | sh
+codex            # opens browser — sign in with your OpenAI account
 ```
 
 ### Let opencode edit files non-interactively (one time)
@@ -265,6 +274,52 @@ efforts:
 
 A user-level config at `~/.splinter/config.yaml` is also supported — project
 config takes precedence when both exist.
+
+---
+
+## Supported Models
+
+Splinter routes work through three provider families. You pick which to use (or all
+three) in your ladder configuration.
+
+### Claude (via `claude -p`)
+
+Frontier models with optional reasoning. Used for planning, evaluation, and as a
+fallback escalation tier.
+
+| Model | Effort levels | Reasoning | Context |
+|-------|---------------|-----------|---------|
+| `opus-4.8` | `low`, `high`, `max` | Extended thinking | 200K tokens |
+| `sonnet` | `low`, `high`, `max` | Extended thinking | 200K tokens |
+| `haiku` | `low`, `high` | Fast reasoning | 200K tokens |
+
+### Opencode (open models via `opencode-go`)
+
+A rotating roster of open models. Effort level support varies by model (check
+`opencode models` for current availability). Most common: `high` (standard) and
+`max` (extended reasoning).
+
+| Tier | Model | Common efforts |
+|------|-------|----------------|
+| T0 | `deepseek-v4-pro` | `low`, `high` |
+| T1 | `minimax-m3` | `low`, `high`, `max` |
+| T3 | `deepseek-v4-pro` | `low`, `high`, `max` |
+| T4 | `qwen3.7-plus` | `low`, `high`, `max` |
+
+See `splinter configure` to swap models or `opencode models` to list available
+models and their current capabilities.
+
+### Codex (via `codex` CLI)
+
+Specialized coding model from OpenAI, optimized for multi-file code tasks.
+
+| Model | Effort levels | Pricing | Notes |
+|-------|---------------|---------|-------|
+| `gpt-5-codex` | `low`, `medium`, `high` | $10 input / $40 output (per 1M tokens) | Requires OpenAI account; install with `curl -fsSL https://chatgpt.com/codex/install.sh \| sh` |
+
+Model IDs use the `codex/` prefix: e.g. `codex/gpt-5-codex` in config or CLI.
+
+Effort aliases: `minimal` → `low`, `xhigh` / `max` → `high`, `auto` → agent decides.
 
 ---
 

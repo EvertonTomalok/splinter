@@ -44,8 +44,10 @@ class AskUserPause(Exception):
 class ManualValidationPause(Exception):
     """Pipeline complete but requires manual user validation before closing."""
 
-    summary: str
-    all_passed: bool = True
+    def __init__(self, *, summary: str, all_passed: bool = True) -> None:
+        super().__init__(summary)
+        self.summary = summary
+        self.all_passed = all_passed
 
 
 class Strategy(ABC):

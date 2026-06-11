@@ -74,8 +74,10 @@ class CursorProvider(ModelProvider):
         model: str,
         *,
         variant: str | None = None,
+        output_format: str = "json",
         session: str | None = None,
         timeout: int | None = None,
+        agent: str = "build",
     ) -> ProviderResponse:
         result = run(prompt, timeout=timeout)
         return ProviderResponse(text=result.text, raw=result.raw)

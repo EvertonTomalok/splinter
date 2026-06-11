@@ -282,6 +282,7 @@ class OpencodeProvider(ModelProvider):
         model: str,
         *,
         variant: str | None = None,
+        output_format: str = "json",
         session: str | None = None,
         timeout: int | None = None,
         agent: str = "build",
@@ -290,7 +291,9 @@ class OpencodeProvider(ModelProvider):
 
         try:
             result = run(
-                prompt, model, variant=variant, session=session, timeout=timeout, agent=agent
+                prompt, model,
+                variant=variant, fmt=output_format,
+                session=session, timeout=timeout, agent=agent,
             )
         except Exception as exc:
             gap = detect_provider_gap(exc, self.name, model)

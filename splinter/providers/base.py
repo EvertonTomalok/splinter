@@ -38,8 +38,10 @@ class ModelProvider(ABC):
         model: str,
         *,
         variant: str | None = None,
+        output_format: str = "json",
         session: str | None = None,
         timeout: int | None = None,
+        agent: str = "build",
     ) -> ProviderResponse:
         """Execute ``prompt`` against ``model`` and return a normalised response."""
         ...
