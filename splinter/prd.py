@@ -6,8 +6,16 @@ from pathlib import Path
 import yaml
 
 from splinter.memory.knowledge import KnowledgeStore
-from splinter.memory.session import Session
+from splinter.memory.session import Session, delete_session, new_session_id
 from splinter.providers import claude_cli
+
+
+def _abort(session: Session, message: str) -> int:
+    """Print error, garbage-collect the session if nothing real was written."""
+    print(message)
+    if session.is_empty():
+        delete_session(session.id)
+    return 1
 
 
 def _load_prd_skill() -> str:
@@ -22,15 +30,28 @@ def _load_prd_skill() -> str:
 
 
 def run_prd(*, description: str = "", strategy: str | None = None, no_ground: bool = False) -> int:
-    session = Session()
+    # Fresh session every run. Never reuse latest — that silently appended to
+    # (or resurrected) a prior session and left empties on abort.
+    session = Session(new_session_id())
+    try:
+        return _run_prd(session, description=description, strategy=strategy, no_ground=no_ground)
+    except BaseException:
+        # Ctrl+C at a prompt or a provider crash must not litter an empty session.
+        if session.is_empty():
+            delete_session(session.id)
+        raise
+
+
+def _run_prd(
+    session: Session, *, description: str = "", strategy: str | None = None, no_ground: bool = False
+) -> int:
     skill_text = _load_prd_skill()
 
     if not description:
         print("describe the feature or bug:")
         description = input("> ").strip()
         if not description:
-            print("error: no description provided")
-            return 1
+            return _abort(session, "error: no description provided")
 
     strategy_hint = ""
     if strategy:
@@ -66,8 +87,7 @@ def run_prd(*, description: str = "", strategy: str | None = None, no_ground: bo
     print("answer with e.g. 1A,2C,3B (or type full answers):")
     answers = input("> ").strip()
     if not answers:
-        print("error: no answers provided")
-        return 1
+        return _abort(session, "error: no answers provided")
 
     turn2_prompt = (
         f"{ground_section}"

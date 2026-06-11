@@ -1106,3 +1106,57 @@ def test_no_ground_flag_skips_ground_localization(
 
     run_prd(description="add auth", no_ground=True)
     assert not ground_called, "ground_localization must not be called with --no-ground"
+
+
+def _fake_cc_result(text: str) -> object:
+    return type(
+        "R",
+        (),
+        {"text": text, "raw": {"_session_id": "sid"}, "usage": {"input_tokens": 1, "output_tokens": 1}},
+    )()
+
+
+def test_run_prd_abort_no_answers_leaves_no_empty_session(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
+) -> None:
+    """Aborting at the answers prompt must garbage-collect the half-built session."""
+    from splinter.memory.session import list_sessions
+    from splinter.prd import run_prd
+
+    monkeypatch.chdir(tmp_path)
+
+    import splinter.providers.claude_cli as cc
+
+    monkeypatch.setattr(cc, "run", lambda *a, **kw: _fake_cc_result("Q1?"))
+    monkeypatch.setattr(cc, "_calc_cost", lambda *a, **kw: 0.0)
+    monkeypatch.setattr("builtins.input", lambda *a: "")  # user gives no answers
+
+    rc = run_prd(description="add auth", no_ground=True)
+    assert rc == 1
+    assert list_sessions() == [], "aborted PRD run must not litter an empty session"
+
+
+def test_run_prd_keyboardinterrupt_cleans_up_empty_session(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
+) -> None:
+    """Ctrl+C mid-run must clean up the empty session and re-raise."""
+    import pytest
+
+    from splinter.memory.session import list_sessions
+    from splinter.prd import run_prd
+
+    monkeypatch.chdir(tmp_path)
+
+    import splinter.providers.claude_cli as cc
+
+    monkeypatch.setattr(cc, "run", lambda *a, **kw: _fake_cc_result("Q1?"))
+    monkeypatch.setattr(cc, "_calc_cost", lambda *a, **kw: 0.0)
+
+    def _interrupt(*a: object) -> str:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("builtins.input", _interrupt)
+
+    with pytest.raises(KeyboardInterrupt):
+        run_prd(description="add auth", no_ground=True)
+    assert list_sessions() == [], "interrupted PRD run must not litter an empty session"
