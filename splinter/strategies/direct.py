@@ -404,6 +404,24 @@ class DirectStrategy(Strategy):
             verdict = ctx.verdict
             assert verdict is not None and ctx.run_result is not None
 
+            # Graceful stop: user pressed 'p' — finish this iteration, then pause.
+            from splinter import procreg as _procreg
+            if _procreg.stop_requested():
+                log.info("graceful stop requested — pausing after iter %d", iteration)
+                _pause_for_user(
+                    session=session,
+                    knowledge=knowledge,
+                    task_index=task_index,
+                    iteration=iteration,
+                    tier=tier,
+                    reason="Paused by user (graceful stop). Resume to continue.",
+                    corrections=verdict.corrections,
+                    gate_output=ctx.gate_output,
+                    oc_session=oc_session,
+                    eval_session=eval_session,
+                    eval_history=eval_history,
+                )
+
             # The evaluator owns the verdict. A gate failure never short-circuits
             # it and never escalates on its own — it is fed back to the runner as
             # corrections. The runner changes ONLY when the eval says so.

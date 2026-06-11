@@ -160,6 +160,9 @@ def run_pipeline(
     jump_premium: bool = False,
     no_ground: bool = False,
 ) -> int:
+    from splinter import procreg as _procreg
+    _procreg.clear_stop()
+
     ladder = load_ladder()
     if eval_model:
         ladder.eval_model = eval_model
@@ -334,6 +337,39 @@ def run_pipeline(
             jump_premium=jump_premium,
         )
 
+        from splinter.agents.final_eval import run_all_final_evals
+        from splinter.configure import load_config, load_final_eval
+        from splinter.strategies.base import ManualValidationPause
+
+        final_eval_entries = load_final_eval(load_config())
+        if final_eval_entries:
+            session.set_status("running", stage="final_eval")
+            log.info("running %d final eval(s)…", len(final_eval_entries))
+            task_for_eval = tasks[0] if tasks else None
+            fe_results = run_all_final_evals(
+                final_eval_entries,
+                task=task_for_eval,
+                project_dir=str(Path.cwd()),
+                ladder=ladder,
+            )
+            fe_summary = "\n".join(
+                f"- {r.name}: {'PASS' if r.passed else 'FAIL'} — {r.output[:200]}"
+                for r in fe_results
+            )
+            session.write("final_eval.md", f"# Final Eval\n\n{fe_summary}\n")
+            log.info("final eval results:\n%s", fe_summary)
+            all_passed = all(r.passed for r in fe_results)
+            if not all_passed:
+                failed = [r.name for r in fe_results if not r.passed]
+                log.warning("final eval FAILED: %s", ", ".join(failed))
+            session.set_status(
+                "awaiting_validation",
+                stage="final_eval",
+                final_eval_summary=fe_summary,
+                final_eval_passed=all_passed,
+            )
+            raise ManualValidationPause(summary=fe_summary, all_passed=all_passed)
+
         session.set_status("completed", stage="done")
         total = sum(r.cost for r in results)
         log.info("pipeline complete · %d run(s) · $%.4f", len(results), total)
@@ -341,6 +377,15 @@ def run_pipeline(
         print(f"  runs: {len(results)}")
         print(f"  cost: ${total:.4f}")
         return 0
+    except Exception as val_exc:
+        from splinter.strategies.base import ManualValidationPause
+
+        if not isinstance(val_exc, ManualValidationPause):
+            raise val_exc from val_exc
+        log.info("run paused — awaiting manual validation")
+        print(f"run complete — awaiting manual validation.\n{val_exc.summary}")
+        print(f"  validate: splinter resume {session.id}")
+        return 4
     except Exception as ask_exc:
         from splinter.strategies.base import AskUserPause
 
