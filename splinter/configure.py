@@ -2,12 +2,27 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import yaml
 
+from splinter.enums import FinalEvalKind, Variant
 from splinter.templating import TEMPLATE_NAMES, packaged_template
+
+
+@dataclass(frozen=True)
+class FinalEvalEntry:
+    """A single final eval gate in the ordered list."""
+
+    name: str
+    kind: FinalEvalKind
+    skill: str | None = None
+    cmd: str | None = None
+    model: str | None = None
+    variant: Variant | None = None
+
 
 LANGUAGE_GATE_DEFAULTS: dict[str, list[dict[str, str]]] = {
     "python": [
@@ -383,6 +398,55 @@ def _normalize_gate_checks(checks: list[dict[str, str]]) -> list[dict[str, str]]
     return [
         {**c, "language": c.get("language", "all")}
         for c in checks
+    ]
+
+
+def load_final_eval(config: dict[str, Any]) -> list[FinalEvalEntry]:
+    """Load final eval list from config dict. Returns empty list if absent.
+
+    Validates `kind` and `variant` at boundary; raises ValueError on invalid values.
+    Preserves order. When `final_eval` key is absent, returns empty list (disabled).
+    """
+    raw = config.get("final_eval")
+    if raw is None:
+        return []
+
+    entries: list[FinalEvalEntry] = []
+    for item in raw:
+        kind_str = item.get("kind")
+        variant_str = item.get("variant")
+        kind = FinalEvalKind(kind_str)
+        variant = Variant(variant_str) if variant_str else None
+
+        entries.append(
+            FinalEvalEntry(
+                name=item.get("name", ""),
+                kind=kind,
+                skill=item.get("skill"),
+                cmd=item.get("cmd"),
+                model=item.get("model"),
+                variant=variant,
+            )
+        )
+
+    return entries
+
+
+def dump_final_eval(entries: list[FinalEvalEntry]) -> list[dict[str, str | None]]:
+    """Convert final eval list to config dict format for serialization.
+
+    Preserves order. Converts enums to plain strings for YAML output.
+    """
+    return [
+        {
+            "name": e.name,
+            "kind": str(e.kind),
+            "skill": e.skill,
+            "cmd": e.cmd,
+            "model": e.model,
+            "variant": str(e.variant) if e.variant else None,
+        }
+        for e in entries
     ]
 
 

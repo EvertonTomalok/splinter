@@ -40,3 +40,11 @@ class Variant(StrEnum):
     XHIGH = "xhigh"  # "high+": between high and max
     MAX = "max"
     AUTO = "auto"
+
+
+class FinalEvalKind(StrEnum):
+    """Final eval gate execution modes."""
+
+    ASK_USER = "ask_user"
+    SKILL = "skill"
+    COMMAND = "command"
