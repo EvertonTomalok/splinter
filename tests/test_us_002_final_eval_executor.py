@@ -165,36 +165,39 @@ class TestSkillDispatch:
         assert calls[0][1] == "opus"
 
 
-# ── cursor kind ───────────────────────────────────────────────────────────────
+# ── review kind ───────────────────────────────────────────────────────────────
 
-class TestCursorDispatch:
-    def _mock_cursor_result(self, text: str):
-        from splinter.providers.cursor import CursorResult
-        return CursorResult(text=text, raw={"returncode": 0})
+class TestReviewDispatch:
+    """review kind always returns passed=False + ASK_USER — human decides in TUI."""
 
-    def test_pass_verdict(self) -> None:
-        entry = _entry(FinalEvalKind.CURSOR)
-        with patch("splinter.providers.cursor.run",
-                   return_value=self._mock_cursor_result("VERDICT: PASS\nAll criteria met.")):
-            result = run_final_eval(entry, task=_task())
-        assert result.passed is True
-        assert result.verdict.decision == Decision.PASS
+    def _mock_response(self, text: str):
+        from splinter.providers.base import ProviderResponse
+        return ProviderResponse(text=text, tokens={}, cost=0.0, raw={}, session_id=None), None
 
-    def test_retry_verdict(self) -> None:
-        entry = _entry(FinalEvalKind.CURSOR)
-        with patch("splinter.providers.cursor.run",
-                   return_value=self._mock_cursor_result("VERDICT: RETRY\nTests missing.")):
+    def test_always_asks_user_even_when_verdict_pass(self) -> None:
+        entry = _entry(FinalEvalKind.REVIEW)
+        with patch("splinter.providers.dispatch.run_provider_session",
+                   return_value=self._mock_response("VERDICT: PASS\nAll criteria met.")):
             result = run_final_eval(entry, task=_task())
         assert result.passed is False
-        assert result.verdict.decision == Decision.RETRY
+        assert result.verdict.decision == Decision.ASK_USER
 
-    def test_cursor_exception_returns_fail(self) -> None:
-        entry = _entry(FinalEvalKind.CURSOR)
-        with patch("splinter.providers.cursor.run",
-                   side_effect=RuntimeError("cursor exited 1: not found")):
+    def test_always_asks_user_when_retry(self) -> None:
+        entry = _entry(FinalEvalKind.REVIEW)
+        with patch("splinter.providers.dispatch.run_provider_session",
+                   return_value=self._mock_response("Tests missing.")):
             result = run_final_eval(entry, task=_task())
         assert result.passed is False
-        assert "cursor exited 1" in result.output
+        assert result.verdict.decision == Decision.ASK_USER
+
+    def test_exception_returns_ask_user(self) -> None:
+        entry = _entry(FinalEvalKind.REVIEW)
+        with patch("splinter.providers.dispatch.run_provider_session",
+                   side_effect=RuntimeError("provider error")):
+            result = run_final_eval(entry, task=_task())
+        assert result.passed is False
+        assert result.verdict.decision == Decision.ASK_USER
+        assert "provider error" in result.output
 
 
 # ── cursor provider unit tests ────────────────────────────────────────────────

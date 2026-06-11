@@ -46,5 +46,6 @@ class FinalEvalKind(StrEnum):
     """Final eval gate execution modes."""
 
     ASK_USER = "ask_user"
+    REVIEW = "review"
     SKILL = "skill"
     COMMAND = "command"

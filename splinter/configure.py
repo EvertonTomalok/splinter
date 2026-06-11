@@ -22,6 +22,9 @@ class FinalEvalEntry:
     cmd: str | None = None
     model: str | None = None
     variant: Variant | None = None
+    # Explicit provider override. When None, derived from model via provider_for().
+    # Supported values: "claude", "opencode" (covers codex via opencode/codex-* model ids).
+    provider: str | None = None
 
 
 LANGUAGE_GATE_DEFAULTS: dict[str, list[dict[str, str]]] = {
@@ -426,6 +429,7 @@ def load_final_eval(config: dict[str, Any]) -> list[FinalEvalEntry]:
                 cmd=item.get("cmd"),
                 model=item.get("model"),
                 variant=variant,
+                provider=item.get("provider"),
             )
         )
 
@@ -445,6 +449,7 @@ def dump_final_eval(entries: list[FinalEvalEntry]) -> list[dict[str, str | None]
             "cmd": e.cmd,
             "model": e.model,
             "variant": str(e.variant) if e.variant else None,
+            "provider": e.provider,
         }
         for e in entries
     ]

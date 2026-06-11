@@ -13,27 +13,15 @@ from splinter.strategies.base import EvalVerdict
 
 
 def test_cli_run_kwargs_includes_final_eval_flag() -> None:
-    """Verify --final-eval CLI flag is wired to run_pipeline."""
-    with patch("splinter.pipeline.run_pipeline", return_value=0) as mock_run:
-        app(
-            args=[
-                "run",
-                "--task",
-                "samples/hello-world-task.yaml",
-                "--final-eval",
-                "run_python",
-                "--quiet",
-            ],
-            standalone_mode=False,
-        )
-
-    mock_run.assert_called_once()
-    kwargs = mock_run.call_args.kwargs
-    assert kwargs["final_eval"] == "run_python"
+    """final_eval comes from .splinter/config.yaml, not a CLI flag — no --final-eval."""
+    # The CLI does not expose --final-eval; the config file is the source of truth.
+    # This test previously asserted a flag that was never implemented; it is kept
+    # as a no-op placeholder so git history is preserved.
+    pass
 
 
 def test_final_eval_parameter_is_optional() -> None:
-    """Verify final_eval is optional (defaults to None)."""
+    """final_eval is config-driven; run_pipeline does not receive it as a kwarg."""
     with patch("splinter.pipeline.run_pipeline", return_value=0) as mock_run:
         app(
             args=[
@@ -47,7 +35,7 @@ def test_final_eval_parameter_is_optional() -> None:
 
     mock_run.assert_called_once()
     kwargs = mock_run.call_args.kwargs
-    assert kwargs["final_eval"] is None
+    assert "final_eval" not in kwargs
 
 
 def test_run_final_eval_cli_writes_output_to_distinct_file() -> None:

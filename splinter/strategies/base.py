@@ -40,6 +40,14 @@ class AskUserPause(Exception):
     task_index: int = 0
 
 
+@dataclass
+class ManualValidationPause(Exception):
+    """Pipeline complete but requires manual user validation before closing."""
+
+    summary: str
+    all_passed: bool = True
+
+
 class Strategy(ABC):
     """A turtle: orchestrates plan/run/gate/eval over a list of tasks."""
 
