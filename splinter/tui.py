@@ -1510,7 +1510,7 @@ class RunApp(App[int]):
         self.push_screen(_ConfirmStopModal("kill"), callback=_on_choice)
 
     def _work(self) -> None:
-        self._run_pipeline_worker()
+        self._run_pipeline_worker(resume=bool(self.run_kwargs.get("resume", False)))
 
     def write_log(self, msg: str, level: int = logging.INFO) -> None:
         # Streamed model text/tool args are arbitrary — escape so stray `[` markup
