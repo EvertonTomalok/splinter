@@ -117,6 +117,7 @@ def test_adaptive_uses_config_budget_when_no_cli_budget(
         return rr
 
     strategy._run_task_loop = mock_loop  # type: ignore[method-assign]
+    strategy._run_plan_phase = lambda *a, **kw: None  # type: ignore[method-assign]
 
     task = Task(description="Test task", acceptance="AC", effort="trivial", id="T1")
     session = MagicMock()

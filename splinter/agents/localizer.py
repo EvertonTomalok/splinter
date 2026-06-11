@@ -173,13 +173,68 @@ def _parse_anchors(text: str, *, hot: float = 0.8, medium: float = 0.4) -> list[
     return anchors
 
 
+_META_FILE_NAMES = ("AGENTS.md", "CLAUDE.md")
+_META_SKILL_GLOBS = ("skills/*/SKILL.md", "splinter/skills/*/SKILL.md")
+_META_FILE_MAX_CHARS = 800  # per meta file snippet shown to recall LLM
+
+
+def _find_meta_files(repo_path: str = ".") -> list[str]:
+    """Return paths to AGENTS.md, CLAUDE.md, and skill SKILL.md files under repo_path."""
+    from pathlib import Path as _Path
+
+    root = _Path(repo_path)
+    found: list[str] = []
+    seen: set[str] = set()
+
+    def _add(p: "_Path") -> None:
+        try:
+            rel = str(p.relative_to(root))
+        except ValueError:
+            rel = str(p)
+        if rel not in seen:
+            seen.add(rel)
+            found.append(rel)
+
+    for name in _META_FILE_NAMES:
+        for p in sorted(root.rglob(name)):
+            if p.is_file():
+                _add(p)
+
+    for pattern in _META_SKILL_GLOBS:
+        for p in sorted(root.glob(pattern)):
+            if p.is_file():
+                _add(p)
+
+    return found
+
+
 def _run_search_tools(prd_text: str, repo_path: str = ".") -> str:
     """Run deterministic search tools and return a structured report."""
+    from pathlib import Path as _Path
+
     text = _strip_frontmatter(prd_text)
     terms = _extract_search_terms(text)
 
     lines: list[str] = []
     lines.append("# Search Tool Results\n")
+
+    # Always include meta/agent files — AGENTS.md, CLAUDE.md, skill SKILL.md
+    meta_files = _find_meta_files(repo_path)
+    if meta_files:
+        lines.append("## Meta / Agent / Skill Files")
+        lines.append("These describe project conventions, agent behaviour, and available skills.")
+        for mf in meta_files:
+            try:
+                content = (_Path(repo_path) / mf).read_text()
+            except OSError:
+                try:
+                    content = _Path(mf).read_text()
+                except OSError:
+                    continue
+            snippet = content[:_META_FILE_MAX_CHARS]
+            note = " ← truncated" if len(content) > _META_FILE_MAX_CHARS else ""
+            lines.append(f"### {mf}{note}\n```\n{snippet}\n```")
+        lines.append("")
 
     # List all Python files
     fl_result = search_tools.file_list(repo_path, "*.py")
@@ -222,7 +277,11 @@ def _recall_phase(
         '"line_start" (integer line number where the symbol starts, or null if unknown), '
         '"line_end" (integer line number where the symbol ends, or null if unknown). '
         "Use grep output lines (format: file:line:content) to populate line_start/line_end. "
-        "Be thorough — coverage over precision. Output ONLY the JSON array, no prose."
+        "Be thorough — coverage over precision. "
+        "IMPORTANT: always include any AGENTS.md, CLAUDE.md, or skills/*/SKILL.md files "
+        "listed in the search results — they describe project conventions, agent behaviour, "
+        "and available skills that the runner MUST follow. "
+        "Output ONLY the JSON array, no prose."
     )
     text = run_text(
         prompt, model, variant=variant, output_format="text", timeout=timeout, agent=agent,
@@ -281,6 +340,31 @@ def _anchors_from_recall(recall_output: str) -> list[CodeAnchor]:
     """Parse file paths from recall plain-text output into minimal CodeAnchors."""
     files = _extract_candidate_files(recall_output)
     return [CodeAnchor(file=f, symbol="", reason="", confidence=1.0) for f in files]
+
+
+_META_ANCHOR_REASONS: dict[str, str] = {
+    "AGENTS.md": "project agent conventions and runner instructions",
+    "CLAUDE.md": "project-level Claude Code instructions and conventions",
+}
+
+
+def _meta_anchors(repo_path: str, existing_files: set[str]) -> list[CodeAnchor]:
+    """Build hot CodeAnchors for meta files not already captured by recall."""
+    from pathlib import Path as _Path
+
+    result: list[CodeAnchor] = []
+    for mf in _find_meta_files(repo_path):
+        if mf in existing_files:
+            continue
+        p = (_Path(repo_path) / mf) if not _Path(mf).is_absolute() else _Path(mf)
+        if not p.exists():
+            continue
+        name = _Path(mf).name
+        reason = _META_ANCHOR_REASONS.get(name, f"skill definition: {_Path(mf).parent.name}")
+        result.append(
+            CodeAnchor(file=mf, symbol="", reason=reason, confidence=0.95, relevance="hot")
+        )
+    return result
 
 
 def filter_task_context(
@@ -415,7 +499,15 @@ def localize(
         )
         or _anchors_from_recall(recall_output)
     )
-    log.info("localize: %d candidate anchor(s) from recall", len(anchors))
+
+    # Deterministically inject AGENTS.md / CLAUDE.md / skill files the LLM missed.
+    existing_files = {a.file for a in anchors}
+    injected = _meta_anchors(repo_path, existing_files)
+    if injected:
+        anchors = anchors + injected
+        log.info("localize: injected %d meta anchor(s) (AGENTS.md/CLAUDE.md/skills)", len(injected))
+
+    log.info("localize: %d candidate anchor(s) total", len(anchors))
 
     if not anchors:
         # Recall returned nothing — leave any existing localization.md intact rather

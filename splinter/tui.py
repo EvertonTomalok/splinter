@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import copy
 import logging
 import re
 from collections.abc import Iterable
@@ -35,6 +36,7 @@ from textual.widgets import (
     Input,
     Label,
     Markdown,
+    OptionList,
     RichLog,
     Rule,
     Select,
@@ -890,6 +892,92 @@ class _GapModal(ModalScreen[str]):
         self.dismiss("exit")
 
 
+class _GateLangModal(ModalScreen[str | None]):
+    """Picker for language presets to append to gate checks."""
+
+    DEFAULT_CSS = """
+    _GateLangModal {
+        align: center middle;
+        background: $background 60%;
+    }
+    _GateLangModal > Vertical#lang-dialog {
+        width: 50;
+        height: auto;
+        border: round $primary;
+        background: $surface;
+        padding: 1 2;
+    }
+    _GateLangModal #lang-title {
+        text-style: bold;
+        color: $primary;
+        margin-bottom: 1;
+    }
+    _GateLangModal #lang-list {
+        height: 10;
+        margin-bottom: 1;
+    }
+    _GateLangModal #lang-actions {
+        height: 3;
+        align-horizontal: center;
+    }
+    _GateLangModal Button {
+        width: 1fr;
+        height: 3;
+        margin: 0 1;
+        border: none;
+        text-style: bold;
+    }
+    """
+
+    BINDINGS = [
+        ("enter", "confirm", "Confirm"),
+        ("escape", "exit_modal", "Cancel"),
+        ("q", "exit_modal", "Cancel"),
+    ]
+
+    def __init__(self) -> None:
+        super().__init__()
+        from splinter.configure import gate_default_languages
+
+        self._languages = gate_default_languages()
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="lang-dialog"):
+            yield Static("Choose language preset to append", id="lang-title")
+            yield Rule()
+            lang_list = OptionList(*self._languages, id="lang-list")
+            yield lang_list
+            with Horizontal(id="lang-actions"):
+                yield Button("  Select  (enter)", id="confirm", variant="success")
+                yield Button("  Cancel  (esc)", id="cancel", variant="error")
+
+    def on_mount(self) -> None:
+        self.query_one("#lang-list", OptionList).focus()
+
+    def action_confirm(self) -> None:
+        self.query_one("#confirm", Button).press()
+
+    def action_exit_modal(self) -> None:
+        self.query_one("#cancel", Button).press()
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        idx = event.option_index
+        if idx is not None and 0 <= idx < len(self._languages):
+            self.dismiss(self._languages[idx])
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        bid = event.button.id or "cancel"
+        if bid == "confirm":
+            opt_list = self.query_one("#lang-list", OptionList)
+            highlighted = opt_list.highlighted
+            if highlighted is not None and 0 <= highlighted < len(self._languages):
+                self.dismiss(self._languages[highlighted])
+            else:
+                self.dismiss(None)
+        else:
+            self.dismiss(None)
+
+
 class _AskUserModal(ModalScreen[tuple[str, str] | None]):
     """Shown when the eval loop needs human judgment (ASK_USER / max-tier escalate)."""
 
@@ -1281,7 +1369,7 @@ class ConfigureApp(App[bool]):
     """Pick a model per pipeline step, then write config.yaml on save."""
 
     CSS = """
-    #rows { padding: 0 1; }
+    #rows { padding: 0 1; height: 1fr; }
     .step {
         height: auto;
         min-height: 3;
@@ -1297,6 +1385,24 @@ class ConfigureApp(App[bool]):
     .effort-sel { width: 14; height: 3; margin-left: 1; }
     .timeout-inp { width: 14; height: 3; margin-left: 1; }
     Select > SelectCurrent { height: 3; }
+    #gates { padding: 0 1; margin-top: 1; height: auto; }
+    #gate-rows { height: auto; }
+    .section-title { text-style: bold; margin-bottom: 1; }
+    .gate-actions { height: 3; margin-bottom: 1; }
+    .gate-actions Button { margin-right: 1; }
+    .gate-row {
+      height: auto;
+      min-height: 3;
+      border-left: thick $warning;
+      padding-left: 1;
+      margin-bottom: 1;
+      align: left middle;
+    }
+    .gate-name { width: 14; text-style: bold; height: 3; content-align: left middle; }
+    .gate-cmd { width: 1fr; height: 3; }
+    .gate-when { width: 22; height: 3; margin-left: 1; }
+    .gate-del { width: 10; height: 3; margin-left: 1; }
+    .gate-add-input { width: 1fr; height: 3; margin-right: 1; }
     """
 
     BINDINGS = [
@@ -1307,7 +1413,12 @@ class ConfigureApp(App[bool]):
 
     def __init__(self) -> None:
         super().__init__()
-        from splinter.configure import available_models, current_model_selections
+        from splinter.configure import (
+            DEFAULT_CONFIG,
+            available_models,
+            current_model_selections,
+            load_config,
+        )
 
         self.saved = False
         self.saved_path = ""
@@ -1316,6 +1427,9 @@ class ConfigureApp(App[bool]):
         self._cur_models = current["models"]
         self._cur_efforts = current["efforts"]
         self._cur_timeouts = current["timeouts"]
+        self._gate_checks: list[dict[str, str]] = copy.deepcopy(
+            load_config().get("gate_checks") or DEFAULT_CONFIG["gate_checks"]
+        )
 
     @staticmethod
     def _select(
@@ -1373,6 +1487,100 @@ class ConfigureApp(App[bool]):
             classes="step run" if run else "step",
         )
 
+    _WHEN_CHOICES: list[str] = ["always", "tests_exist", "proto_changed"]
+
+    def _gate_row(self, index: int, check: dict[str, str]) -> Horizontal:
+        when_opts = [(w, w) for w in self._WHEN_CHOICES]
+        return Horizontal(
+            Label(check["name"], classes="gate-name"),
+            Input(value=check["cmd"], id=f"gate_cmd_{index}", classes="gate-cmd"),
+            self._select(
+                when_opts,
+                check.get("when", "always"),
+                self._WHEN_CHOICES,
+                id=f"gate_when_{index}",
+                classes="gate-when",
+            ),
+            Button("Delete", id=f"gate_del_{index}", classes="gate-del", variant="error"),
+            classes="gate-row",
+        )
+
+    def _gates_section(self) -> Vertical:
+        rows = [self._gate_row(i, c) for i, c in enumerate(self._gate_checks)]
+        return Vertical(
+            Label("Gates", classes="section-title"),
+            Horizontal(
+                Input(
+                    id="gate_add_input",
+                    placeholder="cmd1; cmd2",
+                    classes="gate-add-input",
+                ),
+                Button("Add custom", id="gate_add"),
+                Button("Append language preset", id="gate_preset"),
+                classes="gate-actions",
+            ),
+            Vertical(*rows, id="gate-rows"),
+            id="gates",
+        )
+
+    def _rebuild_gates(self) -> None:
+        gate_rows = self.query_one("#gate-rows", Vertical)
+        gate_rows.remove_children()
+        for i, check in enumerate(self._gate_checks):
+            gate_rows.mount(self._gate_row(i, check))
+
+    def _capture_gates(self) -> None:
+        """Read all live gate Input/Select widgets into self._gate_checks (new list)."""
+        checks: list[dict[str, str]] = []
+        for i, original in enumerate(self._gate_checks):
+            try:
+                cmd = self.query_one(f"#gate_cmd_{i}", Input).value.strip()
+                raw_when: Any = self.query_one(f"#gate_when_{i}", Select).value
+                when = (
+                    raw_when
+                    if isinstance(raw_when, str) and raw_when in self._WHEN_CHOICES
+                    else "always"
+                )
+            except Exception:
+                checks.append(dict(original))
+                continue
+            if cmd:
+                name = original["name"] if cmd == original["cmd"] else cmd.split()[0]
+                checks.append({"name": name, "cmd": cmd, "when": when})
+        self._gate_checks = checks
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        bid = event.button.id or ""
+        if bid == "gate_preset":
+            self.push_screen(_GateLangModal(), self._on_lang_picked)
+        elif bid == "gate_add":
+            self._capture_gates()
+            raw = self.query_one("#gate_add_input", Input).value.strip()
+            if raw:
+                from splinter.agents.gate import parse_gate_spec
+
+                self._gate_checks = self._gate_checks + parse_gate_spec(raw)
+            try:
+                self.query_one("#gate_add_input", Input).value = ""
+            except Exception:
+                pass
+            self._rebuild_gates()
+        elif bid.startswith("gate_del_"):
+            self._capture_gates()
+            index = int(bid[len("gate_del_"):])
+            self._gate_checks = [c for j, c in enumerate(self._gate_checks) if j != index]
+            self._rebuild_gates()
+
+    def _on_lang_picked(self, language: str | None) -> None:
+        if language is None:
+            return
+        self._capture_gates()
+        from splinter.configure import gate_default_for
+
+        new_checks = gate_default_for(language)
+        self._gate_checks = self._gate_checks + [dict(c) for c in new_checks]
+        self._rebuild_gates()
+
     def compose(self) -> ComposeResult:
         from splinter.configure import MODEL_STEPS, TIER_STEPS
 
@@ -1404,7 +1612,7 @@ class ConfigureApp(App[bool]):
             )
 
         yield Header()
-        yield VerticalScroll(*rows, id="rows")
+        yield VerticalScroll(*rows, self._gates_section(), id="rows")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -1412,7 +1620,13 @@ class ConfigureApp(App[bool]):
         self.sub_title = "model · effort · timeout per step — s: save · q: cancel"
 
     def action_save(self) -> None:
-        from splinter.configure import MODEL_STEPS, TIER_STEPS, write_model_config
+        from splinter.configure import (
+            MODEL_STEPS,
+            TIER_STEPS,
+            write_model_config,
+        )
+
+        self._capture_gates()
 
         def sel_value(sid: str) -> str:
             value = self.query_one(f"#{sid}", Select).value
@@ -1444,7 +1658,11 @@ class ConfigureApp(App[bool]):
         efforts["tiers"] = tier_efforts
         timeouts["tiers"] = tier_timeouts
 
-        self.saved_path = str(write_model_config(models, efforts, timeouts=timeouts))
+        self.saved_path = str(
+            write_model_config(
+                models, efforts, timeouts=timeouts, gate_checks=self._gate_checks
+            )
+        )
         self.saved = True
         self.exit(True)
 

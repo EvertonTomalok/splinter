@@ -27,9 +27,11 @@ def test_resolve_eval_skill_empty_string_returns_none() -> None:
     assert resolve_eval_skill("") is None
 
 
-def test_resolve_eval_skill_unknown_raises() -> None:
-    with pytest.raises(ValueError, match="unknown eval skill"):
-        resolve_eval_skill("nonexistent_skill_name_xyz")
+def test_resolve_eval_skill_unknown_returns_missing() -> None:
+    result = resolve_eval_skill("nonexistent_skill_name_xyz")
+    assert result is not None
+    assert result.missing is True
+    assert result.name == "nonexistent_skill_name_xyz"
 
 
 def test_resolve_eval_skill_from_cwd(

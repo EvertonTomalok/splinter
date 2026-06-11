@@ -256,7 +256,7 @@ def test_resume_preamble_only_when_conversation_lost() -> None:
 def test_refine_reseeds_draft_without_resume_id(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, str] = {}
 
-    def fake_ask(prompt: str, *, resume: str | None) -> prd_session.Turn:
+    def fake_ask(prompt: str, *, resume: str | None, session: object = None) -> prd_session.Turn:
         captured["prompt"] = prompt
         captured["resume"] = resume or ""
         return prd_session.Turn(text="ok", session_id="new")

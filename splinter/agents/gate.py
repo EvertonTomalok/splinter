@@ -111,6 +111,47 @@ def _should_run(check: dict[str, str], project_dir: str) -> bool:
     if when == "tests_exist":
         tests_dir = Path(project_dir) / "tests"
         return tests_dir.exists() and any(tests_dir.rglob("test_*.py"))
+    if when == "proto_changed":
+        proto_files = list(Path(project_dir).rglob("*.proto"))
+        if not proto_files:
+            return False
+        gen_patterns = [
+            # Go
+            "*.pb.go", "*_grpc.pb.go", "*.twirp.go", "wire_gen.go",
+            # Python
+            "*_pb2.py", "*_pb2_grpc.py", "*.pb.py",
+            # JS/TS
+            "*.pb.js", "*.pb.ts", "*.grpc.pb.js", "*.grpc.pb.ts",
+            # Ruby
+            "*_pb.rb", "*_services_pb.rb",
+            # C++
+            "*.pb.cc", "*.pb.h", "*.grpc.pb.cc", "*.grpc.pb.h",
+            # Swift
+            "*.pb.swift", "*.grpc.swift",
+            # C#
+            "*.g.cs",
+            # PHP
+            "*_grpc.php",
+            # Java/Kotlin (generated sources land in build/generated)
+            "*.java",
+        ]
+        # Rust: tonic/prost output has no distinctive extension — scan known gen dirs
+        _GEN_DIRS = {"gen", "generated", "proto_gen", "src/gen", "src/proto"}
+        root = Path(project_dir)
+        gen_files = [f for pat in gen_patterns for f in root.rglob(pat)
+                     if "target" not in f.parts]
+        # Rust .rs files inside known gen directories
+        for f in root.rglob("*.rs"):
+            if "target" not in f.parts and any(
+                part in _GEN_DIRS or part in {"gen", "generated", "proto_gen"}
+                for part in f.parts
+            ):
+                gen_files.append(f)
+        if not gen_files:
+            return True  # protos exist but nothing generated yet
+        newest_proto = max(f.stat().st_mtime for f in proto_files)
+        oldest_gen = min(f.stat().st_mtime for f in gen_files)
+        return newest_proto > oldest_gen
     return True
 
 
@@ -160,10 +201,11 @@ def detect_gate_checks(ladder: Any, project_dir: str = ".") -> list[dict[str, st
         "typecheck, build, and tests as applicable to this project's stack.\n\n"
         "Output ONLY a JSON array, no prose. Each item: "
         '{"name": "<short>", "cmd": "<exact shell command>", '
-        '"when": "always" | "tests_exist"}.\n'
+        '"when": "always" | "tests_exist" | "proto_changed"}.\n'
         "Use the project's real tooling (e.g. npm/pnpm/yarn scripts, make targets, "
         'cargo, go, gradle, pytest, etc.). Use "when":"tests_exist" for the test '
-        "command. If you cannot determine any, output []."
+        'command. Use "when":"proto_changed" for proto codegen commands (e.g. wire gen, protoc). '
+        "If you cannot determine any, output []."
     )
     try:
         raw = run_text(

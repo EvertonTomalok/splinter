@@ -16,7 +16,12 @@ from splinter.analyze import (
     render_overview,
     render_trajectory,
 )
-from splinter.configure import DEFAULT_CONFIG, init_prompt_templates
+from splinter.configure import (
+    DEFAULT_CONFIG,
+    gate_default_for,
+    gate_default_languages,
+    init_prompt_templates,
+)
 from splinter.enums import Decision
 from splinter.memory.knowledge import KnowledgeStore
 from splinter.memory.session import Session, list_sessions, new_session_id
@@ -140,6 +145,79 @@ def test_config_effort_overrides_apply_to_ladder(
     assert ladder.localizer_recall_variant == "high"
     assert ladder.tier_variant(0) == "high"  # config override wins
     assert ladder.tier_variant(1) == "high"  # blank → ladder.yaml default (high)
+
+
+def test_write_gate_checks_roundtrip(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
+    from splinter.agents.gate import _config_gate_checks
+    from splinter.configure import write_gate_checks
+
+    monkeypatch.chdir(tmp_path)
+    checks = [
+        {"name": "ruff", "cmd": "ruff check", "when": "always"},
+        {"name": "mypy", "cmd": "mypy", "when": "always"},
+    ]
+    write_gate_checks(checks)
+    result = _config_gate_checks(str(tmp_path))
+    assert result == checks
+
+
+def test_write_gate_checks_empty_list(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
+    from splinter.configure import load_config, write_gate_checks
+
+    monkeypatch.chdir(tmp_path)
+    write_gate_checks([])
+    config = load_config()
+    assert config["gate_checks"] == []
+
+
+def test_write_gate_checks_preserves_model_blocks(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
+) -> None:
+    from splinter.configure import load_config, write_gate_checks, write_model_config
+
+    monkeypatch.chdir(tmp_path)
+    models = {"planner": "opus", "tiers": ["haiku", "sonnet"]}
+    efforts = {"planner": "high", "tiers": ["low", "high"]}
+    timeouts = {"planner": 3600, "tiers": [1800, 3600]}
+    write_model_config(models, efforts, timeouts=timeouts)
+
+    checks = [{"name": "test", "cmd": "pytest", "when": "always"}]
+    write_gate_checks(checks)
+
+    config = load_config()
+    assert config["models"] == models
+    assert config["efforts"] == efforts
+    assert config["timeouts"] == timeouts
+    assert config["gate_checks"] == checks
+
+
+def test_write_model_then_gate_save_order(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
+) -> None:
+    from splinter.configure import load_config, write_gate_checks, write_model_config
+
+    monkeypatch.chdir(tmp_path)
+    models = {"planner": "sonnet", "tiers": ["haiku"]}
+    write_model_config(models)
+
+    checks = [{"name": "lint", "cmd": "ruff", "when": "always"}]
+    write_gate_checks(checks)
+
+    config = load_config()
+    assert "models" in config
+    assert "gate_checks" in config
+    assert config["models"]["planner"] == "sonnet"
+    assert config["gate_checks"] == checks
+
+
+def test_write_gate_checks_go_preset(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
+    from splinter.configure import load_config, write_gate_checks
+
+    monkeypatch.chdir(tmp_path)
+    go_checks = gate_default_for("go")
+    write_gate_checks(go_checks)
+    config = load_config()
+    assert config["gate_checks"] == go_checks
 
 
 def test_configure_tui_saves_models_and_efforts(
@@ -317,6 +395,165 @@ def test_eval_verdict_dataclass() -> None:
 def test_default_config() -> None:
     assert "gate_checks" in DEFAULT_CONFIG
     assert "defaults" in DEFAULT_CONFIG
+
+
+def test_gate_default_for_python() -> None:
+    checks = gate_default_for("python")
+    assert len(checks) == 3
+    names = [c["name"] for c in checks]
+    assert "ruff" in names
+    assert "mypy" in names
+    assert "pytest" in names
+    # Verify commands and when conditions
+    ruff_check = next(c for c in checks if c["name"] == "ruff")
+    assert ruff_check["cmd"] == "ruff check ."
+    assert ruff_check["when"] == "always"
+    mypy_check = next(c for c in checks if c["name"] == "mypy")
+    assert mypy_check["cmd"] == "mypy ."
+    assert mypy_check["when"] == "always"
+    pytest_check = next(c for c in checks if c["name"] == "pytest")
+    assert pytest_check["cmd"] == "pytest"
+    assert pytest_check["when"] == "tests_exist"
+
+
+def test_gate_default_for_go() -> None:
+    checks = gate_default_for("go")
+    assert len(checks) == 3
+    names = [c["name"] for c in checks]
+    assert "gofmt" in names
+    assert "go-vet" in names
+    assert "go-test" in names
+    # All should be "always"
+    for check in checks:
+        assert check["when"] == "always"
+
+
+def test_gate_default_for_rust() -> None:
+    checks = gate_default_for("rust")
+    assert len(checks) == 3
+    names = [c["name"] for c in checks]
+    assert "fmt" in names
+    assert "clippy" in names
+    assert "test" in names
+    # All should be "always"
+    for check in checks:
+        assert check["when"] == "always"
+
+
+def test_gate_default_for_typescript() -> None:
+    checks = gate_default_for("typescript")
+    assert len(checks) == 2
+    names = [c["name"] for c in checks]
+    assert "tsc" in names
+    assert "eslint" in names
+    # All should be "always"
+    for check in checks:
+        assert check["when"] == "always"
+
+
+def test_gate_default_for_javascript_npm() -> None:
+    checks = gate_default_for("javascript-npm")
+    assert len(checks) == 2
+    names = [c["name"] for c in checks]
+    assert "lint" in names
+    assert "test" in names
+
+
+def test_gate_default_for_javascript_pnpm() -> None:
+    checks = gate_default_for("javascript-pnpm")
+    assert len(checks) == 2
+    names = [c["name"] for c in checks]
+    assert "biome" in names
+    assert "test" in names
+    biome_check = next(c for c in checks if c["name"] == "biome")
+    assert biome_check["cmd"] == "biome check ."
+
+
+def test_gate_default_for_javascript_yarn() -> None:
+    checks = gate_default_for("javascript-yarn")
+    assert len(checks) == 2
+    names = [c["name"] for c in checks]
+    assert "lint" in names
+    assert "test" in names
+
+
+def test_gate_default_for_node() -> None:
+    checks = gate_default_for("node")
+    assert len(checks) == 1
+    assert checks[0]["name"] == "test"
+    assert checks[0]["cmd"] == "npm test"
+
+
+def test_gate_default_for_unknown_language() -> None:
+    checks = gate_default_for("unknown")
+    assert checks == []
+    checks = gate_default_for("cobol")
+    assert checks == []
+
+
+def test_gate_default_for_copy_semantics() -> None:
+    """Mutating the returned list/dict does not affect subsequent calls."""
+    first = gate_default_for("python")
+    first.append({"name": "extra", "cmd": "extra cmd", "when": "always"})
+    first[0]["cmd"] = "modified"
+    second = gate_default_for("python")
+    assert len(second) == 3
+    assert second[0]["cmd"] == "ruff check ."
+    assert all(c.get("name") != "extra" for c in second)
+
+
+def test_gate_default_languages() -> None:
+    langs = gate_default_languages()
+    assert isinstance(langs, list)
+    assert len(langs) == 8
+    expected = [
+        "go",
+        "javascript-npm",
+        "javascript-pnpm",
+        "javascript-yarn",
+        "node",
+        "python",
+        "rust",
+        "typescript",
+    ]
+    assert langs == expected
+
+
+def test_gate_defaults_no_multicommand_cmds() -> None:
+    """Every cmd must be a single bare command (no && ; |)."""
+    from splinter.configure import LANGUAGE_GATE_DEFAULTS
+
+    for lang, checks in LANGUAGE_GATE_DEFAULTS.items():
+        for check in checks:
+            cmd = check.get("cmd", "")
+            assert "&&" not in cmd, f"{lang} check '{check.get('name')}' contains &&"
+            assert ";" not in cmd, f"{lang} check '{check.get('name')}' contains ;"
+            assert "|" not in cmd, f"{lang} check '{check.get('name')}' contains |"
+
+
+def test_gate_defaults_required_fields() -> None:
+    """Every entry has name, cmd, when fields with valid when values."""
+    from splinter.configure import LANGUAGE_GATE_DEFAULTS
+
+    for lang, checks in LANGUAGE_GATE_DEFAULTS.items():
+        for check in checks:
+            assert "name" in check, f"{lang} check missing 'name'"
+            assert "cmd" in check, f"{lang} check missing 'cmd'"
+            assert "when" in check, f"{lang} check missing 'when'"
+            assert check["when"] in (
+                "always",
+                "tests_exist",
+            ), f"{lang} check has invalid 'when': {check['when']}"
+
+
+def test_gate_defaults_tests_exist_only_in_python() -> None:
+    """Only python language may use when: tests_exist."""
+    from splinter.configure import LANGUAGE_GATE_DEFAULTS
+
+    for lang, checks in LANGUAGE_GATE_DEFAULTS.items():
+        for check in checks:
+            if check.get("when") == "tests_exist":
+                assert lang == "python", f"Non-python language '{lang}' has tests_exist check"
 
 
 # --- design-pattern wiring -------------------------------------------------
@@ -908,7 +1145,7 @@ def test_open_questions_embeds_grounding(monkeypatch: "pytest.MonkeyPatch") -> N
 
     captured: list[str] = []
 
-    def _fake_ask(prompt: str, *, resume: str | None) -> prd_session.Turn:
+    def _fake_ask(prompt: str, *, resume: str | None, session: object = None) -> prd_session.Turn:
         captured.append(prompt)
         return prd_session.Turn(text="Q1?", session_id="sid")
 
@@ -924,7 +1161,7 @@ def test_open_questions_omits_grounding_when_empty(monkeypatch: "pytest.MonkeyPa
 
     captured: list[str] = []
 
-    def _fake_ask(prompt: str, *, resume: str | None) -> prd_session.Turn:
+    def _fake_ask(prompt: str, *, resume: str | None, session: object = None) -> prd_session.Turn:
         captured.append(prompt)
         return prd_session.Turn(text="Q1?", session_id="sid")
 
@@ -939,7 +1176,7 @@ def test_generate_prd_embeds_grounding(monkeypatch: "pytest.MonkeyPatch") -> Non
 
     captured: list[str] = []
 
-    def _fake_ask(prompt: str, *, resume: str | None) -> prd_session.Turn:
+    def _fake_ask(prompt: str, *, resume: str | None, session: object = None) -> prd_session.Turn:
         captured.append(prompt)
         return prd_session.Turn(text="---\nfeature: x\n---\n", session_id="sid")
 
@@ -955,7 +1192,7 @@ def test_generate_prd_omits_grounding_when_empty(monkeypatch: "pytest.MonkeyPatc
 
     captured: list[str] = []
 
-    def _fake_ask(prompt: str, *, resume: str | None) -> prd_session.Turn:
+    def _fake_ask(prompt: str, *, resume: str | None, session: object = None) -> prd_session.Turn:
         captured.append(prompt)
         return prd_session.Turn(text="---\nfeature: x\n---\n", session_id="sid")
 
@@ -970,7 +1207,7 @@ def test_finalize_embeds_grounding(monkeypatch: "pytest.MonkeyPatch") -> None:
 
     captured: list[str] = []
 
-    def _fake_ask(prompt: str, *, resume: str | None) -> prd_session.Turn:
+    def _fake_ask(prompt: str, *, resume: str | None, session: object = None) -> prd_session.Turn:
         captured.append(prompt)
         return prd_session.Turn(text="---\nfeature: x\n---\n", session_id="sid")
 
@@ -988,7 +1225,7 @@ def test_finalize_omits_grounding_when_empty(monkeypatch: "pytest.MonkeyPatch") 
 
     captured: list[str] = []
 
-    def _fake_ask(prompt: str, *, resume: str | None) -> prd_session.Turn:
+    def _fake_ask(prompt: str, *, resume: str | None, session: object = None) -> prd_session.Turn:
         captured.append(prompt)
         return prd_session.Turn(text="---\nfeature: x\n---\n", session_id="sid")
 
@@ -1003,7 +1240,7 @@ def test_refine_embeds_grounding(monkeypatch: "pytest.MonkeyPatch") -> None:
 
     captured: list[str] = []
 
-    def _fake_ask(prompt: str, *, resume: str | None) -> prd_session.Turn:
+    def _fake_ask(prompt: str, *, resume: str | None, session: object = None) -> prd_session.Turn:
         captured.append(prompt)
         return prd_session.Turn(
             text="## Working Draft\n```\n---\nfeature: x\n---\n```\n## Open Questions\nNone",
@@ -1022,7 +1259,7 @@ def test_refine_omits_grounding_when_empty(monkeypatch: "pytest.MonkeyPatch") ->
 
     captured: list[str] = []
 
-    def _fake_ask(prompt: str, *, resume: str | None) -> prd_session.Turn:
+    def _fake_ask(prompt: str, *, resume: str | None, session: object = None) -> prd_session.Turn:
         captured.append(prompt)
         return prd_session.Turn(
             text="## Working Draft\n```\n---\nfeature: x\n---\n```\n## Open Questions\nNone",
@@ -1034,9 +1271,7 @@ def test_refine_omits_grounding_when_empty(monkeypatch: "pytest.MonkeyPatch") ->
     assert "## Codebase Localization" not in captured[0]
 
 
-def test_localize_cache_skips_search(
-    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
-) -> None:
+def test_localize_cache_skips_search(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
     """localize short-circuits without calling _run_search_tools when cache exists."""
     from splinter.agents import localizer
     from splinter.memory.knowledge import KnowledgeStore
@@ -1089,12 +1324,12 @@ def test_no_ground_flag_skips_ground_localization(
 
     monkeypatch.setattr(prd_session, "ground_localization", _spy_ground)
 
-    fake_result = type("R", (), {"text": "Q1?", "raw": {"_session_id": "sid"}})()
+    fake_result = type("R", (), {"text": "Q1?", "raw": {"_session_id": "sid"}, "usage": {"input_tokens": 0, "output_tokens": 0}})()
     _prd_body = (
         "---\nfeature: x\nstrategy: direct\nkind: feature\ncreated: 2026-06-10\n---\n"
         "### US-001: X\n**Description:** d\n**Acceptance Criteria:**\n- [ ] c\n"
     )
-    fake_result2 = type("R", (), {"text": _prd_body, "raw": {"_session_id": "sid"}})()
+    fake_result2 = type("R", (), {"text": _prd_body, "raw": {"_session_id": "sid"}, "usage": {"input_tokens": 0, "output_tokens": 0}})()
 
     import splinter.providers.claude_cli as cc
 
@@ -1112,7 +1347,11 @@ def _fake_cc_result(text: str) -> object:
     return type(
         "R",
         (),
-        {"text": text, "raw": {"_session_id": "sid"}, "usage": {"input_tokens": 1, "output_tokens": 1}},
+        {
+            "text": text,
+            "raw": {"_session_id": "sid"},
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        },
     )()
 
 
@@ -1215,3 +1454,433 @@ def test_prune_dead_prd_sessions_removes_only_old_stub_refinements(
     assert pruned == ["ses_old_stub"]
     remaining = set(list_sessions())
     assert remaining == {"ses_real", "ses_fresh_stub", "ses_done"}
+
+
+# --- US-003: ConfigureApp gates section -------------------------------------
+
+
+def test_configure_tui_lists_gate_checks(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
+    import asyncio
+
+    from splinter.tui import ConfigureApp
+
+    monkeypatch.chdir(tmp_path)
+
+    async def drive() -> None:
+        app = ConfigureApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._gate_checks == DEFAULT_CONFIG["gate_checks"]
+            gate_rows = app.query("#gate-rows .gate-row")
+            assert len(gate_rows) == len(DEFAULT_CONFIG["gate_checks"])
+
+    asyncio.run(drive())
+
+
+def test_configure_save_preserves_gate_checks(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
+) -> None:
+    import asyncio
+
+    from splinter.configure import load_config
+    from splinter.tui import ConfigureApp
+
+    monkeypatch.chdir(tmp_path)
+
+    async def drive() -> None:
+        app = ConfigureApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("s")
+            await pilot.pause()
+        assert app.saved
+
+    asyncio.run(drive())
+    config = load_config()
+    assert config["gate_checks"] == DEFAULT_CONFIG["gate_checks"]
+
+
+def test_configure_save_with_seeded_config(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
+) -> None:
+    import asyncio
+
+    import yaml
+
+    from splinter.configure import load_config
+    from splinter.tui import ConfigureApp
+
+    monkeypatch.chdir(tmp_path)
+    custom_checks = [
+        {"name": "lint", "cmd": "ruff check .", "when": "always"},
+        {"name": "types", "cmd": "mypy src", "when": "always"},
+    ]
+    splinter_dir = tmp_path / ".splinter"
+    splinter_dir.mkdir()
+    (splinter_dir / "config.yaml").write_text(
+        yaml.dump({"gate_checks": custom_checks}, default_flow_style=False)
+    )
+
+    async def drive() -> None:
+        app = ConfigureApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._gate_checks == custom_checks
+            gate_rows = app.query("#gate-rows .gate-row")
+            assert len(gate_rows) == len(custom_checks)
+            await pilot.press("s")
+            await pilot.pause()
+        assert app.saved
+
+    asyncio.run(drive())
+    config = load_config()
+    assert config["gate_checks"] == custom_checks
+
+
+def test_configure_tui_gate_delete(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
+    import asyncio
+
+    from textual.widgets import Button
+
+    from splinter.configure import load_config
+    from splinter.tui import ConfigureApp
+
+    monkeypatch.chdir(tmp_path)
+
+    async def drive() -> None:
+        app = ConfigureApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            initial_count = len(app._gate_checks)
+            btn = app.query_one("#gate_del_0", Button)
+            btn.press()
+            await pilot.pause()
+            assert len(app._gate_checks) == initial_count - 1
+            gate_rows = app.query("#gate-rows .gate-row")
+            assert len(gate_rows) == initial_count - 1
+            await pilot.press("s")
+            await pilot.pause()
+        assert app.saved
+
+    asyncio.run(drive())
+    config = load_config()
+    assert len(config["gate_checks"]) == len(DEFAULT_CONFIG["gate_checks"]) - 1
+
+
+def test_write_gate_checks_preserves_models(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
+) -> None:
+    from splinter.configure import load_config, write_gate_checks, write_model_config
+
+    monkeypatch.chdir(tmp_path)
+    write_model_config({"planner": "opus", "tiers": ["haiku"]})
+    write_gate_checks([{"name": "ruff", "cmd": "ruff check", "when": "always"}])
+    config = load_config()
+    assert "models" in config
+    assert "gate_checks" in config
+    assert config["models"]["planner"] == "opus"
+    assert config["gate_checks"][0]["name"] == "ruff"
+
+
+def test_append_language_preset_rust(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
+    import asyncio
+
+    from textual.widgets import Button
+
+    from splinter.configure import load_config
+    from splinter.tui import ConfigureApp
+
+    monkeypatch.chdir(tmp_path)
+
+    async def drive() -> None:
+        app = ConfigureApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            original_count = len(app._gate_checks)
+            rust_preset = gate_default_for("rust")
+            btn = app.query_one("#gate_preset", Button)
+            btn.press()
+            await pilot.pause()
+            languages = gate_default_languages()
+            rust_idx = languages.index("rust")
+            for _ in range(rust_idx):
+                await pilot.press("down")
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+            assert len(app._gate_checks) == original_count + len(rust_preset)
+            rust_in_checks = any(
+                c["name"] == "clippy" and "cargo clippy" in c["cmd"]
+                for c in app._gate_checks
+            )
+            assert rust_in_checks
+            await pilot.press("s")
+            await pilot.pause()
+        assert app.saved
+
+    asyncio.run(drive())
+    config = load_config()
+    rust_checks = gate_default_for("rust")
+    assert len(config["gate_checks"]) == len(DEFAULT_CONFIG["gate_checks"]) + len(
+        rust_checks
+    )
+
+
+def test_append_two_languages_rust_then_go(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
+) -> None:
+    import asyncio
+
+    from textual.widgets import Button
+
+    from splinter.tui import ConfigureApp
+
+    monkeypatch.chdir(tmp_path)
+
+    async def drive() -> None:
+        app = ConfigureApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            base_count = len(app._gate_checks)
+            rust_preset = gate_default_for("rust")
+            go_preset = gate_default_for("go")
+            btn = app.query_one("#gate_preset", Button)
+            languages = gate_default_languages()
+            rust_idx = languages.index("rust")
+            go_idx = languages.index("go")
+            btn.press()
+            await pilot.pause()
+            for _ in range(rust_idx):
+                await pilot.press("down")
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+            count_after_rust = len(app._gate_checks)
+            assert count_after_rust == base_count + len(rust_preset)
+            btn.press()
+            await pilot.pause()
+            for _ in range(go_idx):
+                await pilot.press("down")
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+            final_count = len(app._gate_checks)
+            expected = base_count + len(rust_preset) + len(go_preset)
+            assert final_count == expected
+            go_in_checks = any(
+                c["name"] == "go-test" and "go test" in c["cmd"] for c in app._gate_checks
+            )
+            assert go_in_checks
+
+    asyncio.run(drive())
+
+
+def test_append_duplicate_languages(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
+    import asyncio
+
+    from textual.widgets import Button
+
+    from splinter.tui import ConfigureApp
+
+    monkeypatch.chdir(tmp_path)
+
+    async def drive() -> None:
+        app = ConfigureApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            base_count = len(app._gate_checks)
+            python_preset = gate_default_for("python")
+            btn = app.query_one("#gate_preset", Button)
+            languages = gate_default_languages()
+            python_idx = languages.index("python")
+            for append_num in range(2):
+                btn.press()
+                await pilot.pause()
+                for _ in range(python_idx):
+                    await pilot.press("down")
+                await pilot.pause()
+                await pilot.press("enter")
+                await pilot.pause()
+                expected_count = base_count + (append_num + 1) * len(python_preset)
+                assert len(app._gate_checks) == expected_count
+
+    asyncio.run(drive())
+
+
+def test_append_cancel_leaves_unchanged(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
+    import asyncio
+
+    from textual.widgets import Button
+
+    from splinter.tui import ConfigureApp
+
+    monkeypatch.chdir(tmp_path)
+
+    async def drive() -> None:
+        app = ConfigureApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            original_count = len(app._gate_checks)
+            original_checks = [dict(c) for c in app._gate_checks]
+            btn = app.query_one("#gate_preset", Button)
+            btn.press()
+            await pilot.pause()
+            await pilot.press("escape")
+            await pilot.pause()
+            assert len(app._gate_checks) == original_count
+            assert app._gate_checks == original_checks
+
+    asyncio.run(drive())
+
+
+def test_append_preset_persists_on_save(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
+    import asyncio
+
+    from textual.widgets import Button
+
+    from splinter.configure import load_config
+    from splinter.tui import ConfigureApp
+
+    monkeypatch.chdir(tmp_path)
+
+    async def drive() -> None:
+        app = ConfigureApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            btn = app.query_one("#gate_preset", Button)
+            btn.press()
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+            saved_count = len(app._gate_checks)
+            await pilot.press("s")
+            await pilot.pause()
+        assert app.saved
+        assert saved_count > len(DEFAULT_CONFIG["gate_checks"])
+
+    asyncio.run(drive())
+    config = load_config()
+    assert len(config["gate_checks"]) == len(DEFAULT_CONFIG["gate_checks"]) + len(
+        gate_default_for("python")
+    )
+
+
+# --- US-005: inline gate edit / add / delete ----------------------------------
+
+
+def test_parse_gate_spec_single_cmd() -> None:
+    from splinter.agents.gate import parse_gate_spec
+
+    checks = parse_gate_spec("npm run build")
+    assert checks == [{"name": "npm", "cmd": "npm run build", "when": "always"}]
+
+
+def test_parse_gate_spec_multi_cmd() -> None:
+    from splinter.agents.gate import parse_gate_spec
+
+    checks = parse_gate_spec("npm run lint; npm test")
+    assert len(checks) == 2
+    assert checks[0] == {"name": "npm", "cmd": "npm run lint", "when": "always"}
+    assert checks[1] == {"name": "npm", "cmd": "npm test", "when": "always"}
+
+
+def test_write_model_config_gate_checks_empty(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
+) -> None:
+    from splinter.configure import load_config, write_model_config
+
+    monkeypatch.chdir(tmp_path)
+    write_model_config({"planner": "opus", "tiers": ["haiku"]}, gate_checks=[])
+    config = load_config()
+    assert config["gate_checks"] == []
+
+
+def test_configure_tui_add_custom_gate(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
+) -> None:
+    import asyncio
+
+    from textual.widgets import Button, Input
+
+    from splinter.configure import load_config
+    from splinter.tui import ConfigureApp
+
+    monkeypatch.chdir(tmp_path)
+
+    async def drive() -> None:
+        app = ConfigureApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one("#gate_add_input", Input).value = "npm run build"
+            await pilot.pause()
+            app.query_one("#gate_add", Button).press()
+            await pilot.pause()
+            await pilot.press("s")
+            await pilot.pause()
+        assert app.saved
+
+    asyncio.run(drive())
+    config = load_config()
+    assert any(
+        c["name"] == "npm" and c["cmd"] == "npm run build" and c["when"] == "always"
+        for c in config["gate_checks"]
+    )
+
+
+def test_configure_tui_edit_gate_cmd(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
+) -> None:
+    import asyncio
+
+    from textual.widgets import Input
+
+    from splinter.configure import load_config
+    from splinter.tui import ConfigureApp
+
+    monkeypatch.chdir(tmp_path)
+
+    async def drive() -> None:
+        app = ConfigureApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one("#gate_cmd_0", Input).value = "uv run ruff check --strict"
+            await pilot.pause()
+            await pilot.press("s")
+            await pilot.pause()
+        assert app.saved
+
+    asyncio.run(drive())
+    config = load_config()
+    assert config["gate_checks"][0]["cmd"] == "uv run ruff check --strict"
+    assert config["gate_checks"][1] == DEFAULT_CONFIG["gate_checks"][1]
+    assert config["gate_checks"][2] == DEFAULT_CONFIG["gate_checks"][2]
+
+
+def test_configure_tui_delete_all_gates(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
+) -> None:
+    import asyncio
+
+    from textual.widgets import Button
+
+    from splinter.configure import load_config
+    from splinter.tui import ConfigureApp
+
+    monkeypatch.chdir(tmp_path)
+
+    async def drive() -> None:
+        app = ConfigureApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            total = len(app._gate_checks)
+            for _ in range(total):
+                app.query_one("#gate_del_0", Button).press()
+                await pilot.pause()
+            assert app._gate_checks == []
+            await pilot.press("s")
+            await pilot.pause()
+        assert app.saved
+
+    asyncio.run(drive())
+    config = load_config()
+    assert config["gate_checks"] == []

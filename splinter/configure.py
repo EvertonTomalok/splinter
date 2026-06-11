@@ -9,6 +9,84 @@ import yaml
 
 from splinter.templating import TEMPLATE_NAMES, packaged_template
 
+LANGUAGE_GATE_DEFAULTS: dict[str, list[dict[str, str]]] = {
+    "python": [
+        {"name": "ruff", "cmd": "ruff check .", "when": "always"},
+        {"name": "mypy", "cmd": "mypy .", "when": "always"},
+        {"name": "pytest", "cmd": "pytest", "when": "tests_exist"},
+    ],
+    "go": [
+        {"name": "gofmt", "cmd": "gofmt -l .", "when": "always"},
+        {"name": "go-vet", "cmd": "go vet ./...", "when": "always"},
+        {"name": "go-test", "cmd": "go test ./...", "when": "always"},
+    ],
+    "rust": [
+        {"name": "fmt", "cmd": "cargo fmt -- --check", "when": "always"},
+        {"name": "clippy", "cmd": "cargo clippy", "when": "always"},
+        {"name": "test", "cmd": "cargo test", "when": "always"},
+    ],
+    "typescript": [
+        {"name": "tsc", "cmd": "tsc --noEmit", "when": "always"},
+        {"name": "eslint", "cmd": "eslint .", "when": "always"},
+    ],
+    "javascript-npm": [
+        {"name": "lint", "cmd": "npm run lint", "when": "always"},
+        {"name": "test", "cmd": "npm test", "when": "always"},
+    ],
+    "javascript-pnpm": [
+        {"name": "biome", "cmd": "biome check .", "when": "always"},
+        {"name": "test", "cmd": "pnpm test", "when": "always"},
+    ],
+    "javascript-yarn": [
+        {"name": "lint", "cmd": "yarn lint", "when": "always"},
+        {"name": "test", "cmd": "yarn test", "when": "always"},
+    ],
+    "node": [
+        {"name": "test", "cmd": "npm test", "when": "always"},
+    ],
+    "ruby": [
+        {"name": "rubocop", "cmd": "bundle exec rubocop", "when": "always"},
+        {"name": "rspec", "cmd": "bundle exec rspec", "when": "tests_exist"},
+        {"name": "proto-gen", "cmd": "grpc_tools_ruby_protoc --ruby_out=. --grpc_out=. proto/*.proto", "when": "proto_changed"},
+    ],
+    "cpp": [
+        {"name": "cmake-build", "cmd": "cmake --build build", "when": "always"},
+        {"name": "ctest", "cmd": "ctest --test-dir build", "when": "tests_exist"},
+        {"name": "proto-gen", "cmd": "protoc --cpp_out=. --grpc_out=. --plugin=protoc-gen-grpc=`which grpc_cpp_plugin` proto/*.proto", "when": "proto_changed"},
+    ],
+    "swift": [
+        {"name": "build", "cmd": "swift build", "when": "always"},
+        {"name": "test", "cmd": "swift test", "when": "tests_exist"},
+        {"name": "proto-gen", "cmd": "protoc --swift_out=. --grpc-swift_out=. proto/*.proto", "when": "proto_changed"},
+    ],
+    "csharp": [
+        {"name": "build", "cmd": "dotnet build", "when": "always"},
+        {"name": "test", "cmd": "dotnet test", "when": "tests_exist"},
+        {"name": "proto-gen", "cmd": "dotnet build", "when": "proto_changed"},
+    ],
+    "php": [
+        {"name": "phpstan", "cmd": "vendor/bin/phpstan analyse", "when": "always"},
+        {"name": "phpunit", "cmd": "vendor/bin/phpunit", "when": "tests_exist"},
+        {"name": "proto-gen", "cmd": "protoc --php_out=. --grpc_out=. --plugin=protoc-gen-grpc=`which grpc_php_plugin` proto/*.proto", "when": "proto_changed"},
+    ],
+    "java": [
+        {"name": "build", "cmd": "./gradlew build -x test", "when": "always"},
+        {"name": "test", "cmd": "./gradlew test", "when": "tests_exist"},
+        {"name": "proto-gen", "cmd": "./gradlew generateProto", "when": "proto_changed"},
+    ],
+    "kotlin": [
+        {"name": "build", "cmd": "./gradlew build -x test", "when": "always"},
+        {"name": "test", "cmd": "./gradlew test", "when": "tests_exist"},
+        {"name": "proto-gen", "cmd": "./gradlew generateProto", "when": "proto_changed"},
+    ],
+    "rust-proto": [
+        {"name": "fmt", "cmd": "cargo fmt -- --check", "when": "always"},
+        {"name": "clippy", "cmd": "cargo clippy", "when": "always"},
+        {"name": "test", "cmd": "cargo test", "when": "always"},
+        {"name": "proto-gen", "cmd": "cargo build", "when": "proto_changed"},
+    ],
+}
+
 DEFAULT_CONFIG: dict[str, Any] = {
     "gate_checks": [
         {"name": "ruff", "cmd": "uv run ruff check", "when": "always"},
@@ -117,6 +195,22 @@ TIER_STEPS: list[tuple[str, str]] = [
 ]
 
 
+def gate_default_for(language: str) -> list[dict[str, str]]:
+    """Return a copy of the gate-check preset for a language.
+
+    Returns an empty list for unknown languages. The returned list and each dict
+    are independent copies, so mutations don't affect the shared preset.
+    """
+    if language not in LANGUAGE_GATE_DEFAULTS:
+        return []
+    return [dict(entry) for entry in LANGUAGE_GATE_DEFAULTS[language]]
+
+
+def gate_default_languages() -> list[str]:
+    """Sorted list of language keys available for gate-check presets."""
+    return sorted(LANGUAGE_GATE_DEFAULTS)
+
+
 def available_models() -> list[str]:
     """All selectable model ids: opencode-go/* & opencode/* (live) + claude + ladder defaults."""
     from splinter.models.roster import load_ladder
@@ -179,14 +273,18 @@ def write_model_config(
     efforts: dict[str, Any] | None = None,
     timeout: int | None = None,
     timeouts: dict[str, Any] | None = None,
+    gate_checks: list[dict[str, str]] | None = None,
 ) -> Path:
-    """Merge ``models`` (and optional ``efforts``/``timeouts``) into config.yaml.
+    """Merge ``models`` (and optional ``efforts``/``timeouts``/``gate_checks``) into config.yaml.
 
     ``timeout`` sets the global ``defaults.timeout`` fallback; ``timeouts`` holds
-    the per-step overrides. Gate checks and the rest of ``defaults`` are preserved.
+    the per-step overrides. Pass ``gate_checks`` to overwrite gate checks atomically
+    in the same write; ``None`` (default) preserves existing or sets the default.
     """
     config = load_config()
     config.setdefault("gate_checks", DEFAULT_CONFIG["gate_checks"])
+    if gate_checks is not None:
+        config["gate_checks"] = gate_checks
     config.setdefault("defaults", DEFAULT_CONFIG["defaults"].copy())
     config["models"] = models
     if efforts is not None:
@@ -195,6 +293,19 @@ def write_model_config(
         config["timeouts"] = timeouts
     if timeout is not None:
         config["defaults"]["timeout"] = timeout
+
+    p = _config_path("project")
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with open(p, "w") as f:
+        yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+    return p
+
+
+def write_gate_checks(checks: list[dict[str, str]]) -> Path:
+    """Persist gate checks into config.yaml. Preserves models, efforts, timeouts, defaults."""
+    config = load_config()
+    config.setdefault("defaults", DEFAULT_CONFIG["defaults"].copy())
+    config["gate_checks"] = checks
 
     p = _config_path("project")
     p.parent.mkdir(parents=True, exist_ok=True)
