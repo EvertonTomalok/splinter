@@ -48,6 +48,9 @@ from textual.widgets.tree import TreeNode
 from textual.worker import Worker, WorkerState
 
 from splinter.analyze import (
+    _VERDICT_GLYPH,
+    _collapse_phases,
+    _escalations,
     _eval_segments,
     _iterations,
     _knowledge_notes,
@@ -55,6 +58,7 @@ from splinter.analyze import (
     _plan_files,
     _prd_phases,
     _run_state,
+    _task_iters,
     _tasks,
     _trace_metrics,
     _verdict_glyph,
@@ -94,7 +98,8 @@ def _cap_payload(text: str, limit: int = 20_000) -> str:
 def _overview_md(session: Session, state: str) -> str:
     status = session.read_status()
     metrics = _trace_metrics(session.read("trace.md"))
-    iters = _iterations(session.read("loop.md"))
+    loop = session.read("loop.md")
+    iters = _iterations(loop)
     from splinter.agents.localizer import _count_anchors
 
     anchors_count = _count_anchors(session.read("knowledge/localization.md"))
@@ -136,9 +141,31 @@ def _overview_md(session: Session, state: str) -> str:
     if phases or iters:
         lines.append("")
         lines.append("## Trajectory")
-        steps = [f"`{phase}`" for phase, _ in phases]
-        steps += [f"`{tier}·{verdict}`" for _, tier, verdict in iters]
-        lines.append(" → ".join(steps))
+        if phases:
+            collapsed = _collapse_phases(phases)
+            prd_parts = [f"{name} x{count}" if count > 1 else name for name, count in collapsed]
+            lines.append("**PRD** " + " -> ".join(prd_parts))
+        if iters:
+            tally: dict[str, int] = {}
+            for _, _, v in iters:
+                tally[v] = tally.get(v, 0) + 1
+            order = list(_VERDICT_GLYPH)
+            ranked = [v for v in order if v in tally] + [v for v in tally if v not in order]
+            tally_parts = []
+            for v in ranked:
+                glyph, _ = _verdict_glyph(v)
+                tally_parts.append(f"{glyph} {tally[v]}")
+            lines.append(f"**Run** · {len(iters)} iters · " + " · ".join(tally_parts))
+        for task_no, _title, task_iters in _task_iters(loop):
+            if not task_iters:
+                continue
+            esc = _escalations(task_iters)
+            cells = []
+            for idx, tier, verdict in task_iters:
+                glyph, _ = _verdict_glyph(verdict)
+                prefix = "⤴ " if (idx - 1) in esc else ""
+                cells.append(f"{prefix}{idx} `{tier}` {glyph}")
+            lines.append(f"- **Task {task_no}** " + "   ".join(cells))
     return "\n".join(lines)
 
 

@@ -200,6 +200,31 @@ def _knowledge_notes(session: Session) -> list[tuple[str, str]]:
     return [(f"knowledge/{p.name}", p.stem) for p in notes]
 
 
+def _collapse_phases(phases: list[tuple[str, str]]) -> list[tuple[str, int]]:
+    out: list[tuple[str, int]] = []
+    for name, _ in phases:
+        if out and out[-1][0] == name:
+            out[-1] = (name, out[-1][1] + 1)
+        else:
+            out.append((name, 1))
+    return out
+
+
+def _task_iters(loop_md: str) -> list[tuple[int, str, list[tuple[int, str, str]]]]:
+    result: list[tuple[int, str, list[tuple[int, str, str]]]] = []
+    for task_no, title, body in _tasks(loop_md):
+        raw = _iterations(body)
+        reindexed: list[tuple[int, str, str]] = [
+            (idx, tier, verdict) for idx, (_, tier, verdict) in enumerate(raw, 1)
+        ]
+        result.append((task_no, title, reindexed))
+    return result
+
+
+def _escalations(iters: list[tuple[int, str, str]]) -> set[int]:
+    return {i for i in range(1, len(iters)) if iters[i][1] != iters[i - 1][1]}
+
+
 # --- renderers (return strings; pure, testable) ----------------------------
 
 
@@ -284,43 +309,53 @@ def _fmt_elapsed(raw: str) -> str:
 
 
 def _trajectory_lines(session: Session, iters: list[tuple[int, str, str]]) -> list[str]:
-    """The TRAJECTORY block: PRD phase chain, a verdict tally, and a per-tier
-    strip of colored verdict glyphs (wrapped so it never overflows the pane)."""
     phases = _prd_phases(session.read("prd_phases.md"))
     if not (phases or iters):
         return []
 
     lines = ["", "[bold]TRAJECTORY[/]"]
+
     if phases:
-        lines.append("  " + " [dim]→[/] ".join(f"[dim]{phase}[/]" for phase, _ in phases))
+        collapsed = _collapse_phases(phases)
+        cells = [
+            f"[dim]{name} x{count}[/]" if count > 1 else f"[dim]{name}[/]"
+            for name, count in collapsed
+        ]
+        lines.append("  [dim]prd[/]  " + " [dim]→[/] ".join(cells))
+
     if not iters:
         return lines
 
-    # Tally — doubles as a legend (glyph · count · name).
     tally: dict[str, int] = {}
     for _, _, verdict in iters:
         tally[verdict] = tally.get(verdict, 0) + 1
     order = list(_VERDICT_GLYPH)
     ranked = [v for v in order if v in tally] + [v for v in tally if v not in order]
-    parts = []
+    tally_parts = []
     for verdict in ranked:
         glyph, color = _verdict_glyph(verdict)
-        parts.append(f"[{color}]{glyph}[/] {tally[verdict]} [dim]{verdict.lower()}[/]")
-    lines.append(f"  [dim]{len(iters)} iters[/]   " + "   ".join(parts))
+        tally_parts.append(f"[{color}]{glyph}[/] {tally[verdict]}")
+    lines.append(f"  [dim]run[/]  [dim]{len(iters)} iters[/] · " + "  ".join(tally_parts))
 
-    # Per-tier strip, grouped in first-seen order, wrapped at a fixed width.
-    tiers: dict[str, list[str]] = {}
-    for _, tier, verdict in iters:
-        tiers.setdefault(tier, []).append(verdict)
-    wrap = 24
-    for tier, verdicts in tiers.items():
-        for i in range(0, len(verdicts), wrap):
-            chunk = verdicts[i : i + wrap]
-            glyphs = "".join(
-                f"[{_verdict_glyph(v)[1]}]{_verdict_glyph(v)[0]}[/]" for v in chunk
-            )
-            label = tier if i == 0 else ""
-            lines.append(f"  [dim]{label:<3}[/] {glyphs}")
+    loop_md = session.read("loop.md")
+    task_groups = _task_iters(loop_md)
+    multi_task = len(task_groups) > 1
+
+    for task_no, _title, task_iters in task_groups:
+        if not task_iters:
+            continue
+        if multi_task:
+            lines.append(f"  [dim]task {task_no}[/]")
+        esc = _escalations(task_iters)
+        iter_cells = []
+        for idx, tier, verdict in task_iters:
+            glyph, color = _verdict_glyph(verdict)
+            prefix = "⤴ " if (idx - 1) in esc else ""
+            iter_cells.append(f"{prefix}{idx} {tier} [{color}]{glyph}[/]")
+        indent = "    " if multi_task else "  "
+        for i in range(0, len(iter_cells), 3):
+            lines.append(indent + "  ".join(iter_cells[i : i + 3]))
+
     return lines
 
 
@@ -517,14 +552,20 @@ def render_overview(session: Session, state: str) -> str:
 
 def render_trajectory(session: Session) -> str:
     phases = _prd_phases(session.read("prd_phases.md"))
-    iters = _iterations(session.read("loop.md"))
+    loop = session.read("loop.md")
+    iters = _iterations(loop)
     if not phases and not iters:
         return "no iterations yet."
     lines = ["Trajectory:"]
     for i, (phase, detail) in enumerate(phases, 1):
         lines.append(f"  P{i}. {phase}" + (f" · {detail}" if detail else ""))
-    for n, tier, verdict in iters:
-        lines.append(f"  {n}. {tier} · {verdict}")
+    task_groups = _task_iters(loop)
+    multi_task = len(task_groups) > 1
+    for task_no, _title, task_iters in task_groups:
+        if multi_task:
+            lines.append(f"  Task {task_no}:")
+        for idx, tier, verdict in task_iters:
+            lines.append(f"  {idx}. {tier} · {verdict}")
     if iters:
         lines.append("\nexpand one with: iter <n>")
     return "\n".join(lines)

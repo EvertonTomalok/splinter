@@ -8,10 +8,14 @@ import pytest
 from splinter.agents.gate import GateResult
 from splinter.agents.runner import Task, resolve_model, resolve_variant
 from splinter.analyze import (
+    _collapse_phases,
+    _escalations,
     _iterations,
     _prd_phases,
     _run_state,
+    _task_iters,
     _trace_metrics,
+    _trajectory_lines,
     render_iteration,
     render_overview,
     render_trajectory,
@@ -505,15 +509,23 @@ def test_gate_default_for_copy_semantics() -> None:
 def test_gate_default_languages() -> None:
     langs = gate_default_languages()
     assert isinstance(langs, list)
-    assert len(langs) == 8
+    assert len(langs) == 16
     expected = [
+        "cpp",
+        "csharp",
         "go",
+        "java",
         "javascript-npm",
         "javascript-pnpm",
         "javascript-yarn",
+        "kotlin",
         "node",
+        "php",
         "python",
+        "ruby",
         "rust",
+        "rust-proto",
+        "swift",
         "typescript",
     ]
     assert langs == expected
@@ -543,6 +555,7 @@ def test_gate_defaults_required_fields() -> None:
             assert check["when"] in (
                 "always",
                 "tests_exist",
+                "proto_changed",
             ), f"{lang} check has invalid 'when': {check['when']}"
 
 
@@ -550,10 +563,22 @@ def test_gate_defaults_tests_exist_only_in_python() -> None:
     """Only python language may use when: tests_exist."""
     from splinter.configure import LANGUAGE_GATE_DEFAULTS
 
+    _MULTI_LANG_TESTS_EXIST = {
+        "python",
+        "ruby",
+        "cpp",
+        "swift",
+        "csharp",
+        "php",
+        "java",
+        "kotlin",
+    }
     for lang, checks in LANGUAGE_GATE_DEFAULTS.items():
         for check in checks:
             if check.get("when") == "tests_exist":
-                assert lang == "python", f"Non-python language '{lang}' has tests_exist check"
+                assert lang in _MULTI_LANG_TESTS_EXIST, (
+                    f"Language '{lang}' uses tests_exist but is not in the allowed set"
+                )
 
 
 # --- design-pattern wiring -------------------------------------------------
@@ -775,6 +800,173 @@ def test_render_overview_trajectory_shows_prd_phases_without_iterations(
     assert "TRAJECTORY" in out
     assert "clarify" in out and "finalize" in out
     assert "→" in out
+
+
+# --- _collapse_phases, _task_iters, _escalations, new trajectory layout ----
+
+
+def test_collapse_phases_consecutive() -> None:
+    phases = [("refine", ""), ("refine", ""), ("refine", "")]
+    assert _collapse_phases(phases) == [("refine", 3)]
+
+
+def test_collapse_phases_non_consecutive() -> None:
+    phases = [("a", ""), ("b", ""), ("a", "")]
+    assert _collapse_phases(phases) == [("a", 1), ("b", 1), ("a", 1)]
+
+
+def test_collapse_phases_single() -> None:
+    assert _collapse_phases([("clarify", "detail")]) == [("clarify", 1)]
+
+
+def test_collapse_phases_empty() -> None:
+    assert _collapse_phases([]) == []
+
+
+def test_task_iters_single_task() -> None:
+    loop = (
+        "## Iteration 1\n- model: flash (tier 0)\n- verdict: RETRY\n\n"
+        "## Iteration 2\n- model: qwen (tier 1)\n- verdict: PASS\n\n"
+    )
+    result = _task_iters(loop)
+    assert len(result) == 1
+    task_no, _title, iters = result[0]
+    assert task_no == 1
+    assert iters == [(1, "T0", "RETRY"), (2, "T1", "PASS")]
+
+
+def test_task_iters_multi_task() -> None:
+    loop = (
+        "# Task 1/2: first\n"
+        "## Iteration 1\n- model: flash (tier 0)\n- verdict: PASS\n\n"
+        "# Task 2/2: second\n"
+        "## Iteration 1\n- model: qwen (tier 1)\n- verdict: RETRY\n\n"
+        "## Iteration 2\n- model: qwen (tier 1)\n- verdict: PASS\n\n"
+    )
+    result = _task_iters(loop)
+    assert len(result) == 2
+    assert result[0][0] == 1
+    assert result[0][2] == [(1, "T0", "PASS")]
+    assert result[1][0] == 2
+    assert result[1][2] == [(1, "T1", "RETRY"), (2, "T1", "PASS")]
+
+
+def test_task_iters_reindexes_from_one() -> None:
+    loop = (
+        "# Task 1/2: a\n"
+        "## Iteration 5\n- model: flash (tier 0)\n- verdict: PASS\n\n"
+        "# Task 2/2: b\n"
+        "## Iteration 6\n- model: qwen (tier 1)\n- verdict: PASS\n\n"
+    )
+    result = _task_iters(loop)
+    assert result[0][2][0][0] == 1
+    assert result[1][2][0][0] == 1
+
+
+def test_escalations_detects_tier_change() -> None:
+    iters = [(1, "T1", "PASS"), (2, "T1", "PASS"), (3, "T3", "PASS")]
+    assert _escalations(iters) == {2}
+
+
+def test_escalations_no_false_positive() -> None:
+    iters = [(1, "T1", "PASS"), (2, "T1", "RETRY"), (3, "T1", "PASS")]
+    assert _escalations(iters) == set()
+
+
+def test_escalations_empty() -> None:
+    assert _escalations([]) == set()
+    assert _escalations([(1, "T1", "PASS")]) == set()
+
+
+def test_trajectory_lines_multi_task_headers(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
+) -> None:
+    monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
+    session = Session("ses_test")
+    loop = (
+        "# Task 1/2: first\n"
+        "## Iteration 1\n- model: flash (tier 0)\n- verdict: PASS\n\n"
+        "# Task 2/2: second\n"
+        "## Iteration 1\n- model: qwen (tier 1)\n- verdict: PASS\n\n"
+    )
+    session.write("loop.md", loop)
+    iters = _iterations(loop)
+    out = "\n".join(_trajectory_lines(session, iters))
+    assert "task 1" in out
+    assert "task 2" in out
+
+
+def test_trajectory_lines_single_task_no_header(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
+) -> None:
+    monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
+    session = Session("ses_test")
+    loop = "## Iteration 1\n- model: flash (tier 0)\n- verdict: PASS\n\n"
+    session.write("loop.md", loop)
+    iters = _iterations(loop)
+    out = "\n".join(_trajectory_lines(session, iters))
+    assert "task 1" not in out
+
+
+def test_trajectory_lines_escalation_marker(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
+) -> None:
+    monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
+    session = Session("ses_test")
+    loop = (
+        "## Iteration 1\n- model: flash (tier 0)\n- verdict: RETRY\n\n"
+        "## Iteration 2\n- model: qwen (tier 2)\n- verdict: PASS\n\n"
+    )
+    session.write("loop.md", loop)
+    iters = _iterations(loop)
+    out = "\n".join(_trajectory_lines(session, iters))
+    assert "⤴" in out
+
+
+def test_trajectory_lines_collapse_phases(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
+) -> None:
+    monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
+    session = Session("ses_test")
+    session.write("prd_phases.md", "- refine\n- refine\n- refine\n")
+    out = "\n".join(_trajectory_lines(session, []))
+    assert "x3" in out
+
+
+def test_overview_md_trajectory_task_bullets(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
+) -> None:
+    from splinter.tui import _overview_md
+
+    monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
+    session = Session("ses_test")
+    loop = (
+        "# Task 1/2: first\n"
+        "## Iteration 1\n- model: flash (tier 0)\n- verdict: PASS\n\n"
+        "# Task 2/2: second\n"
+        "## Iteration 1\n- model: qwen (tier 1)\n- verdict: RETRY\n\n"
+    )
+    session.write("loop.md", loop)
+    out = _overview_md(session, "RUNNING")
+    assert "**Task 1**" in out
+    assert "**Task 2**" in out
+    assert "**Run**" in out
+    assert "T0·PASS" not in out
+
+
+def test_overview_md_trajectory_prd_line(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
+) -> None:
+    from splinter.tui import _overview_md
+
+    monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
+    session = Session("ses_test")
+    session.write("prd_phases.md", "- clarify\n- refine\n- refine\n- finalize\n")
+    out = _overview_md(session, "RUNNING")
+    assert "**PRD**" in out
+    assert "refine x2" in out
+    assert "clarify" in out
+    assert "finalize" in out
 
 
 def test_render_iteration_includes_runner_and_eval(
