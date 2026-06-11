@@ -1105,6 +1105,188 @@ class _AskUserModal(ModalScreen[tuple[str, str] | None]):
             self.dismiss(None)
 
 
+class _ConfirmStopModal(ModalScreen[str | None]):
+    """Confirm before pausing or killing the run.
+
+    Dismiss values:
+      "pause"  → graceful stop (finish current iteration, then pause)
+      "kill"   → terminate all subprocesses immediately
+      None     → cancel
+    """
+
+    DEFAULT_CSS = """
+    _ConfirmStopModal {
+        align: center middle;
+        background: $background 60%;
+    }
+    _ConfirmStopModal > Vertical#stop-dialog {
+        width: 60;
+        height: auto;
+        border: round $warning;
+        background: $surface;
+        padding: 1 2;
+    }
+    _ConfirmStopModal #stop-title {
+        text-style: bold;
+        color: $warning;
+        margin-bottom: 1;
+    }
+    _ConfirmStopModal #stop-actions {
+        height: 3;
+        align-horizontal: center;
+        margin-top: 1;
+    }
+    _ConfirmStopModal Button {
+        width: 1fr;
+        height: 3;
+        margin: 0 1;
+        border: none;
+        text-style: bold;
+    }
+    """
+
+    BINDINGS = [
+        ("p", "do_pause", "Pause"),
+        ("k", "do_kill", "Kill"),
+        ("escape", "do_cancel", "Cancel"),
+    ]
+
+    def __init__(self, action: str) -> None:
+        super().__init__()
+        self._action = action  # "pause" or "kill"
+
+    def compose(self) -> ComposeResult:
+        if self._action == "pause":
+            title = "⏸  Pause after current iteration?"
+            detail = "Current step finishes, then run pauses. Resume with 'splinter resume'."
+        else:
+            title = "🛑  Kill process now?"
+            detail = "Subprocesses terminated immediately. Resume with 'splinter resume'."
+        with Vertical(id="stop-dialog"):
+            yield Static(title, id="stop-title")
+            yield Static(f"[dim]{detail}[/]")
+            with Horizontal(id="stop-actions"):
+                yield Button("  Confirm  (Enter)", id="confirm", variant="warning")
+                yield Button("  Cancel  (Esc)", id="cancel", variant="primary")
+
+    def on_mount(self) -> None:
+        self.query_one("#confirm", Button).focus()
+
+    def action_do_pause(self) -> None:
+        self.dismiss("pause")
+
+    def action_do_kill(self) -> None:
+        self.dismiss("kill")
+
+    def action_do_cancel(self) -> None:
+        self.dismiss(None)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "confirm":
+            self.dismiss(self._action)
+        else:
+            self.dismiss(None)
+
+
+class _ManualValidationModal(ModalScreen[tuple[str, str] | None]):
+    """Shown after final eval — user approves, rejects, or requests corrections.
+
+    Dismiss values:
+      ("approve", "")          → run accepted
+      ("changes", "<text>")    → plan changes and resume loop with corrections
+      None                     → rejected / exit
+    """
+
+    DEFAULT_CSS = """
+    _ManualValidationModal {
+        align: center middle;
+        background: $background 60%;
+    }
+    _ManualValidationModal > Vertical#val-dialog {
+        width: 84;
+        height: auto;
+        max-height: 92%;
+        border: round $primary;
+        background: $surface;
+        padding: 1 2;
+    }
+    _ManualValidationModal #val-title {
+        text-style: bold;
+        color: $primary;
+        margin-bottom: 1;
+    }
+    _ManualValidationModal #val-summary {
+        color: $text-muted;
+        margin-bottom: 1;
+        max-height: 20;
+        overflow-y: auto;
+    }
+    _ManualValidationModal #val-response {
+        height: 6;
+        margin-bottom: 1;
+    }
+    _ManualValidationModal #val-actions {
+        height: 3;
+        align-horizontal: center;
+    }
+    _ManualValidationModal Button {
+        width: 1fr;
+        height: 3;
+        margin: 0 1;
+        border: none;
+        text-style: bold;
+    }
+    """
+
+    BINDINGS = [
+        ("a", "approve", "Approve"),
+        ("p", "plan_changes", "Plan Changes"),
+        ("r", "reject", "Reject"),
+        ("escape", "reject", "Reject"),
+    ]
+
+    def __init__(self, summary: str = "", all_passed: bool = True) -> None:
+        super().__init__()
+        self._summary = summary
+        self._all_passed = all_passed
+
+    def compose(self) -> ComposeResult:
+        status = "✅ checks passed" if self._all_passed else "⚠️  some checks failed"
+        with Vertical(id="val-dialog"):
+            yield Static(f"🔍  Final Eval · {status}", id="val-title")
+            yield Rule()
+            yield Static(self._summary or "Final eval complete.", id="val-summary")
+            yield Rule()
+            yield Label("Describe changes (leave blank to approve as-is):")
+            yield TextArea("", id="val-response")
+            with Horizontal(id="val-actions"):
+                yield Button("  Approve  (a)", id="approve", variant="success")
+                yield Button("  Plan Changes  (p)", id="plan_changes", variant="primary")
+                yield Button("  Reject  (r)", id="reject", variant="error")
+
+    def on_mount(self) -> None:
+        self.query_one("#val-response", TextArea).focus()
+
+    def action_approve(self) -> None:
+        self.query_one("#approve", Button).press()
+
+    def action_plan_changes(self) -> None:
+        self.query_one("#plan_changes", Button).press()
+
+    def action_reject(self) -> None:
+        self.query_one("#reject", Button).press()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        bid = event.button.id or "reject"
+        text = self.query_one("#val-response", TextArea).text.strip()
+        if bid == "approve":
+            self.dismiss(("approve", text))
+        elif bid == "plan_changes":
+            self.dismiss(("changes", text))
+        else:
+            self.dismiss(None)
+
+
 class RunApp(App[int]):
     """Live dashboard for ``splinter run``: overview + streaming activity log."""
 
@@ -1125,7 +1307,8 @@ class RunApp(App[int]):
     BINDINGS = [
         ("q", "quit", "Quit"),
         ("ctrl+c", "quit", "Quit"),
-        ("shift+p", "pause", "Pause"),
+        ("p", "pause_graceful", "Pause"),
+        ("k", "pause_kill", "Kill"),
     ]
 
     _maximized: reactive[bool] = reactive(False)
@@ -1138,6 +1321,7 @@ class RunApp(App[int]):
         self.error = ""
         self._timer: Any = None
         self._handler: logging.Handler | None = None
+        self._prev_propagate: bool = True
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -1155,6 +1339,8 @@ class RunApp(App[int]):
         self._handler.setFormatter(logging.Formatter("%(message)s"))
         splog = logging.getLogger("splinter")
         splog.setLevel(logging.INFO)
+        self._prev_propagate = splog.propagate
+        splog.propagate = False
         splog.addHandler(self._handler)
         logging.getLogger("splinter.live").setLevel(logging.INFO)
 
@@ -1211,6 +1397,33 @@ class RunApp(App[int]):
 
         self.push_screen(_AskUserModal(reason, corrections), callback=_on_choice)
 
+    def _show_manual_validation_modal(self) -> None:
+        st = self.session.read_status()
+        summary = str(st.get("final_eval_summary", ""))
+        all_passed = bool(st.get("final_eval_passed", True))
+
+        def _on_choice(result: tuple[str, str] | None) -> None:
+            if result is None:
+                self.write_log("— rejected ❌ — run marked failed —", logging.WARNING)
+                self.session.set_status("failed", stage="final_eval")
+                self.exit(1)
+                return
+            action, text = result
+            if action == "approve":
+                self.write_log("— validated ✅ — run accepted —", logging.INFO)
+                self.session.set_status("completed", stage="done")
+                self._write_run_complete()
+            elif action == "changes":
+                guidance = text or summary
+                self.write_log(
+                    f"— planning corrections: {guidance[:80]}… —", logging.INFO
+                )
+                if self._timer is None:
+                    self._timer = self.set_interval(0.5, self._refresh)
+                self._run_pipeline_worker(resume=True, user_guidance=guidance)
+
+        self.push_screen(_ManualValidationModal(summary, all_passed), callback=_on_choice)
+
     def _run_pipeline_worker(
         self,
         *,
@@ -1251,7 +1464,10 @@ class RunApp(App[int]):
 
     def on_unmount(self) -> None:
         if self._handler is not None:
-            logging.getLogger("splinter").removeHandler(self._handler)
+            splog = logging.getLogger("splinter")
+            splog.removeHandler(self._handler)
+            splog.propagate = self._prev_propagate
+        logging.getLogger("splinter.live").setLevel(logging.NOTSET)
 
     async def action_quit(self) -> None:
         # Kill any running provider subprocess so the worker thread can unblock.
@@ -1260,17 +1476,35 @@ class RunApp(App[int]):
         procreg.terminate_all()
         self.exit(self.rc)
 
-    async def action_pause(self) -> None:
-        """Shift+P — kill current subprocess and pause the run."""
-        from splinter import procreg
+    async def action_pause_graceful(self) -> None:
+        """p — finish current iteration then pause."""
+        def _on_choice(result: str | None) -> None:
+            if result != "pause":
+                return
+            from splinter import procreg
+            procreg.request_stop()
+            self.write_log(
+                "— graceful pause requested — will stop after current iteration —",
+                logging.WARNING,
+            )
 
-        procreg.terminate_all()
-        self.session.set_status("paused", reason="user_pause")
-        self.write_log(
-            "— paused by user (Shift+P) — resume with: splinter resume —", logging.WARNING
-        )
-        self.rc = 2
-        self.exit(2)
+        self.push_screen(_ConfirmStopModal("pause"), callback=_on_choice)
+
+    async def action_pause_kill(self) -> None:
+        """k — kill subprocesses immediately and pause."""
+        def _on_choice(result: str | None) -> None:
+            if result != "kill":
+                return
+            from splinter import procreg
+            procreg.terminate_all()
+            self.session.set_status("paused", reason="user_kill")
+            self.write_log(
+                "— killed by user — resume with: splinter resume —", logging.WARNING
+            )
+            self.rc = 2
+            self.exit(2)
+
+        self.push_screen(_ConfirmStopModal("kill"), callback=_on_choice)
 
     def _work(self) -> None:
         self._run_pipeline_worker()
@@ -1318,6 +1552,9 @@ class RunApp(App[int]):
         elif self.rc == 3:
             self.write_log("— run PAUSED (needs your input) —", logging.WARNING)
             self.call_after_refresh(self._show_ask_user_modal)
+        elif self.rc == 4:
+            self.write_log("— final eval complete — awaiting manual validation —", logging.INFO)
+            self.call_after_refresh(self._show_manual_validation_modal)
         else:
             # On failure, finish the TUI automatically (after a brief glimpse).
             self.write_log(f"— run failed (rc={self.rc}) — closing —", logging.ERROR)
@@ -2078,6 +2315,7 @@ class PrdSessionApp(App[int | None]):
         elif phase == "review":
             self.phase = "review"
             self._show_stories()
+            self._show_final_eval_hint()
             self._say(
                 "[green]Type 'accept' to run, 'cowabunga' to run as-is, or describe changes.[/]"
             )
@@ -2433,6 +2671,7 @@ class PrdSessionApp(App[int | None]):
         self._save_state()
         self._set_preview(prd)
         self._show_stories()
+        self._show_final_eval_hint()
         self._say("[green]Revised. Type 'accept' to run, or describe more changes.[/]")
         self._render_actions("review")
         self._set_busy(False, "accept / edit / gate: <cmds> / changes / cowabunga")
@@ -2476,6 +2715,20 @@ class PrdSessionApp(App[int | None]):
                 self._say(f"  • {escape(t)}")
         else:
             self._say("[yellow]No US-NNN stories found — the PRD runs as a single task.[/]")
+
+    def _show_final_eval_hint(self) -> None:
+        """Show configured final_eval entries if any, so the user knows they'll run."""
+        from splinter.configure import load_config, load_final_eval
+
+        try:
+            entries = load_final_eval(load_config())
+        except Exception:
+            return
+        if not entries:
+            return
+        self._say("[dim]Final eval will run after tasks complete:[/]")
+        for e in entries:
+            self._say(f"  [dim]• {escape(e.name)} ({e.kind})[/]")
 
     # --- input dispatch ---
     def _on_generate(self) -> None:
@@ -2566,6 +2819,7 @@ class PrdSessionApp(App[int | None]):
         self._save_state()
         self._set_preview(self.final_prd)
         self._show_stories()
+        self._show_final_eval_hint()
         self._say("[green]Type 'accept' to run, 'cowabunga' to run as-is, or describe changes.[/]")
         self._say(
             "[dim]Gate auto-detected at run; set it yourself with "

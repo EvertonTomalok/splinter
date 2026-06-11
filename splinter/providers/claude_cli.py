@@ -65,51 +65,62 @@ def _tool_detail(inp: dict[str, Any]) -> str:
     return ""
 
 
-def _stream_claude_event(line: str) -> None:
-    """Log a one-line, human-readable summary of a claude stream-json event."""
+def _event_summaries(line: str) -> list[tuple[str, str]]:
+    """Parse a claude stream-json event line into (kind, summary) pairs.
+
+    Returns list of (kind, summary) tuples where kind ∈ ("tool_use", "text").
+    Returns [] on malformed JSON, non-dict, or non-assistant events.
+    """
     line = line.strip()
     if not line:
-        return
+        return []
     try:
         obj = json.loads(line)
     except (json.JSONDecodeError, ValueError):
-        return
+        return []
     if not isinstance(obj, dict):
-        return
+        return []
 
     msg_type = obj.get("type")
-    if msg_type == "assistant":
-        message = obj.get("message")
-        if not isinstance(message, dict):
-            return
-        content = message.get("content")
-        if not isinstance(content, list):
-            return
-        for block in content:
-            if not isinstance(block, dict):
-                continue
-            if block.get("type") == "tool_use":
-                tool = block.get("name") or "tool"
-                raw_inp = block.get("input")
-                inp: dict[str, Any] = raw_inp if isinstance(raw_inp, dict) else {}
-                detail = _tool_detail(inp)
-                _stream_log.info("  🔧 %s %s", tool, detail[:90].replace("\n", " "))
-            elif block.get("type") == "text":
-                txt = str(block.get("text", "")).strip().replace("\n", " ")
-                if txt:
-                    _stream_log.info("  💬 %s", txt[:120])
-        return
+    if msg_type != "assistant":
+        return []
 
-    if msg_type != "stream_event":
-        return
-    event = obj.get("event")
-    if not isinstance(event, dict):
-        return
-    etype = event.get("type")
-    if etype == "content_block_start":
-        cb = event.get("content_block")
-        if isinstance(cb, dict) and cb.get("type") == "tool_use":
-            _stream_log.info("  🔧 %s …", cb.get("name") or "tool")
+    message = obj.get("message")
+    if not isinstance(message, dict):
+        return []
+    content = message.get("content")
+    if not isinstance(content, list):
+        return []
+
+    summaries: list[tuple[str, str]] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") == "tool_use":
+            tool = block.get("name") or "tool"
+            raw_inp = block.get("input")
+            inp: dict[str, Any] = raw_inp if isinstance(raw_inp, dict) else {}
+            detail = _tool_detail(inp)
+            summary = f"🔧 {tool} {detail[:90].replace(chr(10), ' ')}"
+            summaries.append(("tool_use", summary))
+        elif block.get("type") == "text":
+            txt = str(block.get("text", "")).strip().replace("\n", " ")
+            if txt:
+                summary = f"💬 {txt[:120]}"
+                summaries.append(("text", summary))
+    return summaries
+
+
+def _stream_claude_event(line: str) -> None:
+    """Log a one-line, human-readable summary of a claude stream-json event."""
+    summaries = _event_summaries(line)
+    for kind, summary in summaries:
+        _stream_log.info("  %s", summary)
+        try:
+            from splinter.obs.agentic import record_action
+            record_action(kind, summary)
+        except Exception:
+            pass
 
 
 def _parse_stream_json(stdout: str) -> dict[str, Any]:

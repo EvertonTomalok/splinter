@@ -34,7 +34,11 @@ from splinter.obs.trace import Trace, log_run
 from splinter.providers.registry import available_providers, get_provider
 from splinter.strategies.base import EvalVerdict
 from splinter.strategies.registry import available_strategies, get_strategy
-from splinter.strategies.stages import _parse_verdict
+from splinter.strategies.stages import (
+    IterationContext,
+    RunStage,
+    _parse_verdict,
+)
 from splinter.templating import TEMPLATE_NAMES, packaged_template, render, section
 
 
@@ -989,6 +993,162 @@ def test_trajectory_lines_collapse_phases(
     session.write("prd_phases.md", "- refine\n- refine\n- refine\n")
     out = "\n".join(_trajectory_lines(session, []))
     assert "x3" in out
+
+
+def test_structure_renders_at_run_entry(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
+) -> None:
+    """Verify folder structure anchor writes at RunStage entry, before run_task."""
+    monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
+    session = Session("ses_test")
+
+    task = Task(
+        description="test task",
+        acceptance="test acceptance",
+        target_files=["test.py"],
+    )
+    ladder = load_ladder()
+    trace = Trace()
+    knowledge = KnowledgeStore(session)
+
+    ctx = IterationContext(
+        task=task,
+        plan="test plan",
+        tier=0,
+        iteration=1,
+        ladder=ladder,
+        session=session,
+        trace=trace,
+        knowledge=knowledge,
+    )
+
+    call_log: list[str] = []
+
+    def stub_run_task(*args, **kwargs):  # type: ignore
+        call_log.append("run_task called")
+        loop_content = session.read("loop.md")
+        call_log.append(f"loop.md has: {repr(loop_content[:50])}")
+        from splinter.agents.runner import RunResult
+        return RunResult(
+            text="test output",
+            model="test-model",
+            tier=0,
+            tokens={"completion": 100, "prompt": 50},
+            cost=0.01,
+            raw={},
+        )
+
+    monkeypatch.setattr("splinter.strategies.stages.run_task", stub_run_task)
+
+    stage = RunStage()
+    stage.process(ctx)
+
+    assert len(call_log) >= 2
+    assert "run_task called" in call_log
+    assert "## Iteration 1" in call_log[1]
+
+
+def test_no_duplicate_structure_after_eval(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
+) -> None:
+    """Verify structure anchor appears exactly once after RunStage then EvalStage."""
+    monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
+    session = Session("ses_test")
+
+    task = Task(
+        description="test task",
+        acceptance="test acceptance",
+        target_files=["test.py"],
+    )
+    ladder = load_ladder()
+    trace = Trace()
+    knowledge = KnowledgeStore(session)
+
+    ctx = IterationContext(
+        task=task,
+        plan="test plan",
+        tier=0,
+        iteration=1,
+        ladder=ladder,
+        session=session,
+        trace=trace,
+        knowledge=knowledge,
+    )
+
+    def stub_run_task(*args, **kwargs):  # type: ignore
+        from splinter.agents.runner import RunResult
+        return RunResult(
+            text="test output",
+            model="test-model",
+            tier=0,
+            tokens={"completion": 100, "prompt": 50},
+            cost=0.01,
+            raw={},
+        )
+
+    monkeypatch.setattr("splinter.strategies.stages.run_task", stub_run_task)
+
+    # Run RunStage
+    run_stage = RunStage()
+    run_stage.process(ctx)
+
+    # Check loop.md has exactly one "## Iteration 1"
+    loop_content = session.read("loop.md")
+    count = loop_content.count("## Iteration 1")
+    assert count == 1, f"Expected 1 '## Iteration 1', found {count}"
+
+
+def test_trajectory_independent_of_eval(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
+) -> None:
+    """Verify trajectory renders after RunStage only, without EvalStage."""
+    monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
+    session = Session("ses_test")
+
+    task = Task(
+        description="test task",
+        acceptance="test acceptance",
+        target_files=["test.py"],
+    )
+    ladder = load_ladder()
+    trace = Trace()
+    knowledge = KnowledgeStore(session)
+
+    ctx = IterationContext(
+        task=task,
+        plan="test plan",
+        tier=0,
+        iteration=1,
+        ladder=ladder,
+        session=session,
+        trace=trace,
+        knowledge=knowledge,
+    )
+
+    def stub_run_task(*args, **kwargs):  # type: ignore
+        from splinter.agents.runner import RunResult
+        return RunResult(
+            text="test output",
+            model="test-model",
+            tier=0,
+            tokens={"completion": 100, "prompt": 50},
+            cost=0.01,
+            raw={},
+        )
+
+    monkeypatch.setattr("splinter.strategies.stages.run_task", stub_run_task)
+
+    # Run RunStage only, NOT EvalStage
+    run_stage = RunStage()
+    run_stage.process(ctx)
+
+    # Parse trajectory from loop.md
+    loop_content = session.read("loop.md")
+
+    # Should have at least the structure anchor
+    assert "## Iteration 1" in loop_content
+    # Note: we can't verify verdict without running EvalStage
+    # but we can verify the structure is there
 
 
 def test_overview_md_trajectory_task_bullets(

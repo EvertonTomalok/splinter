@@ -19,6 +19,22 @@ from dataclasses import dataclass
 
 _lock = threading.Lock()
 _active: set[subprocess.Popen[str]] = set()
+_stop_event = threading.Event()
+
+
+def request_stop() -> None:
+    """Signal the pipeline to stop gracefully after the current iteration."""
+    _stop_event.set()
+
+
+def stop_requested() -> bool:
+    """Return True if a graceful stop has been requested."""
+    return _stop_event.is_set()
+
+
+def clear_stop() -> None:
+    """Clear the stop flag (called on resume so a fresh run isn't pre-stopped)."""
+    _stop_event.clear()
 
 
 @dataclass(frozen=True)

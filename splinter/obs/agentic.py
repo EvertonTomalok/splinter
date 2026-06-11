@@ -7,6 +7,7 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
 from typing import Any
 
 from splinter.memory.session import Session
@@ -146,6 +147,38 @@ def record_exchange(
 def record_gate_marker() -> None:
     """Record a gate marker (empty prompt/response)."""
     record_exchange("", "")
+
+
+def _now_iso() -> str:
+    """Get current time as ISO 8601 string."""
+    return datetime.now(timezone.utc).isoformat()
+
+
+def record_action(kind: str, summary: str, *, provider: str = "claude") -> None:
+    """Record a provider action (tool_use or text) within an agentic_scope.
+
+    Args:
+        kind: Action kind (e.g. "tool_use", "text")
+        summary: One-line human-readable summary (e.g. "🔧 Edit /path/to/file")
+        provider: Provider name (default "claude")
+
+    If no agentic_scope is active, this is a no-op (never raises).
+    """
+    ctx = _ctx.get()
+    if ctx is None:
+        return
+    event = AgenticEvent(
+        task_index=ctx.task_index,
+        iteration=ctx.iteration,
+        provider=provider,
+        model="",
+        kind=kind,
+        tokens={},
+        cost=0.0,
+        ts=_now_iso(),
+        extra={"summary": summary},
+    )
+    append_jsonl(ctx.session, event)
 
 
 def _persist_exchange(
