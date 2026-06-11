@@ -60,6 +60,8 @@ def _run_state(session: Session) -> str:
         return "RUNNING" if _pid_alive(status.get("pid")) else "INTERRUPTED"
     if state == "awaiting_user":
         return "AWAITING_USER"
+    if state == "awaiting_validation":
+        return "AWAITING_VALIDATION"
     if state:
         return state.upper()
     return "DONE" if session.read("trace.md") else "UNKNOWN"
@@ -234,6 +236,7 @@ _OVERVIEW_EMOJI = {
     "DONE": "🟢",
     "FAILED": "🔴",
     "INTERRUPTED": "🟠",
+    "AWAITING_VALIDATION": "🔍",
     "UNKNOWN": "⚪",
 }
 
@@ -310,7 +313,12 @@ def _fmt_elapsed(raw: str) -> str:
 
 def _trajectory_lines(session: Session, iters: list[tuple[int, str, str]]) -> list[str]:
     phases = _prd_phases(session.read("prd_phases.md"))
-    if not (phases or iters):
+    status = session.read_status()
+    final_eval_md = session.read("final_eval.md")
+    has_final_eval = bool(
+        (session.dir / "final_eval.yaml").exists() or final_eval_md
+    )
+    if not (phases or iters or has_final_eval):
         return []
 
     lines = ["", "[bold]TRAJECTORY[/]"]
@@ -323,38 +331,50 @@ def _trajectory_lines(session: Session, iters: list[tuple[int, str, str]]) -> li
         ]
         lines.append("  [dim]prd[/]  " + " [dim]→[/] ".join(cells))
 
-    if not iters:
-        return lines
-
-    tally: dict[str, int] = {}
-    for _, _, verdict in iters:
-        tally[verdict] = tally.get(verdict, 0) + 1
-    order = list(_VERDICT_GLYPH)
-    ranked = [v for v in order if v in tally] + [v for v in tally if v not in order]
-    tally_parts = []
-    for verdict in ranked:
-        glyph, color = _verdict_glyph(verdict)
-        tally_parts.append(f"[{color}]{glyph}[/] {tally[verdict]}")
-    lines.append(f"  [dim]run[/]  [dim]{len(iters)} iters[/] · " + "  ".join(tally_parts))
-
-    loop_md = session.read("loop.md")
-    task_groups = _task_iters(loop_md)
-    multi_task = len(task_groups) > 1
-
-    for task_no, _title, task_iters in task_groups:
-        if not task_iters:
-            continue
-        if multi_task:
-            lines.append(f"  [dim]task {task_no}[/]")
-        esc = _escalations(task_iters)
-        iter_cells = []
-        for idx, tier, verdict in task_iters:
+    if iters:
+        tally: dict[str, int] = {}
+        for _, _, verdict in iters:
+            tally[verdict] = tally.get(verdict, 0) + 1
+        order = list(_VERDICT_GLYPH)
+        ranked = [v for v in order if v in tally] + [v for v in tally if v not in order]
+        tally_parts = []
+        for verdict in ranked:
             glyph, color = _verdict_glyph(verdict)
-            prefix = "⤴ " if (idx - 1) in esc else ""
-            iter_cells.append(f"{prefix}{idx} {tier} [{color}]{glyph}[/]")
-        indent = "    " if multi_task else "  "
-        for i in range(0, len(iter_cells), 3):
-            lines.append(indent + "  ".join(iter_cells[i : i + 3]))
+            tally_parts.append(f"[{color}]{glyph}[/] {tally[verdict]}")
+        lines.append(f"  [dim]run[/]  [dim]{len(iters)} iters[/] · " + "  ".join(tally_parts))
+
+        loop_md = session.read("loop.md")
+        task_groups = _task_iters(loop_md)
+        multi_task = len(task_groups) > 1
+
+        for task_no, _title, task_iters in task_groups:
+            if not task_iters:
+                continue
+            if multi_task:
+                lines.append(f"  [dim]task {task_no}[/]")
+            esc = _escalations(task_iters)
+            iter_cells = []
+            for idx, tier, verdict in task_iters:
+                glyph, color = _verdict_glyph(verdict)
+                prefix = "⤴ " if (idx - 1) in esc else ""
+                iter_cells.append(f"{prefix}{idx} {tier} [{color}]{glyph}[/]")
+            indent = "    " if multi_task else "  "
+            for i in range(0, len(iter_cells), 3):
+                lines.append(indent + "  ".join(iter_cells[i : i + 3]))
+
+    if has_final_eval:
+        raw_state = str(status.get("state", ""))
+        fe_passed = status.get("final_eval_passed")
+        awaiting = raw_state == "awaiting_validation"
+        if final_eval_md and fe_passed:
+            fe_label = "[green]✓ approved[/]"
+        elif awaiting:
+            fe_label = "[cyan]🔍 awaiting review[/]"
+        elif final_eval_md:
+            fe_label = "[red]✗ failed[/]"
+        else:
+            fe_label = "[dim]pending[/]"
+        lines.append(f"  [dim]final_eval[/]  {fe_label}")
 
     return lines
 
@@ -396,6 +416,7 @@ def render_overview(session: Session, state: str) -> str:
         "FAILED": "red",
         "INTERRUPTED": "dark_orange",
         "AWAITING_USER": "magenta",
+        "AWAITING_VALIDATION": "cyan",
     }.get(state, "white")
     emoji = _OVERVIEW_EMOJI.get(state, "⚪")
     completed = state in ("COMPLETED", "DONE")
@@ -505,6 +526,13 @@ def render_overview(session: Session, state: str) -> str:
     last_verdict = iters[-1][2] if iters else ""
     has_eval = any(v in ("PASS", "RETRY", "ESCALATE") for _, _, v in iters)
 
+    final_eval_md = session.read("final_eval.md")
+    has_final_eval_cfg = bool(
+        (session.dir / "final_eval.yaml").exists() or final_eval_md
+    )
+    fe_passed = status.get("final_eval_passed")
+    awaiting_validation = state == "AWAITING_VALIDATION"
+
     lines.append("")
     lines.append("[bold]STEPS[/]")
     lines.append(
@@ -545,6 +573,19 @@ def render_overview(session: Session, state: str) -> str:
         lines.append(step(False, current_stage == "run", "run"))
         lines.append(step(False, False, "eval"))
 
+    if has_final_eval_cfg:
+        if awaiting_validation:
+            fe_detail = "awaiting review"
+        elif fe_passed:
+            fe_detail = "approved"
+        elif final_eval_md:
+            fe_detail = "failed"
+        else:
+            fe_detail = ""
+        fe_done = bool(fe_passed) or (completed and bool(final_eval_md))
+        fe_current = awaiting_validation or (running and current_stage == "final_eval")
+        lines.append(step(fe_done, fe_current, "final_eval", fe_detail))
+
     lines.extend(_trajectory_lines(session, iters))
 
     return "\n".join(lines)
@@ -554,7 +595,9 @@ def render_trajectory(session: Session) -> str:
     phases = _prd_phases(session.read("prd_phases.md"))
     loop = session.read("loop.md")
     iters = _iterations(loop)
-    if not phases and not iters:
+    final_eval_md = session.read("final_eval.md")
+    has_final_eval = bool((session.dir / "final_eval.yaml").exists() or final_eval_md)
+    if not phases and not iters and not has_final_eval:
         return "no iterations yet."
     lines = ["Trajectory:"]
     for i, (phase, detail) in enumerate(phases, 1):
@@ -566,6 +609,19 @@ def render_trajectory(session: Session) -> str:
             lines.append(f"  Task {task_no}:")
         for idx, tier, verdict in task_iters:
             lines.append(f"  {idx}. {tier} · {verdict}")
+    if has_final_eval:
+        status = session.read_status()
+        raw_state = str(status.get("state", ""))
+        fe_passed = status.get("final_eval_passed")
+        if fe_passed:
+            fe_verdict = "approved"
+        elif raw_state == "awaiting_validation":
+            fe_verdict = "awaiting review"
+        elif final_eval_md:
+            fe_verdict = "failed"
+        else:
+            fe_verdict = "pending"
+        lines.append(f"  final_eval · {fe_verdict}")
     if iters:
         lines.append("\nexpand one with: iter <n>")
     return "\n".join(lines)

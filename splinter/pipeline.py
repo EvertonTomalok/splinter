@@ -121,6 +121,36 @@ def _classify_failure(exc: BaseException) -> str:
     return "critical"
 
 
+def _run_final_eval_cli(
+    *,
+    session: Session,
+    final_eval: str,
+    eval_model: str | None,
+    eval_effort: str | None,
+    tasks: list[Task],
+    ladder: object,
+    round_index: int,
+    effort_cur: str,
+) -> None:
+    """Run a single CLI-supplied eval skill and write results to knowledge/final-eval.md."""
+    from splinter.agents.final_eval import run_final_eval
+    from splinter.configure import FinalEvalEntry
+    from splinter.enums import FinalEvalKind
+
+    entry = FinalEvalEntry(
+        name=final_eval,
+        kind=FinalEvalKind.SKILL,
+        skill=final_eval,
+        model=eval_model,
+    )
+    task = tasks[0] if tasks else None
+    result = run_final_eval(entry, task=task, ladder=ladder)  # type: ignore[arg-type]
+    content = f"# Final Eval (CLI)\n\n{result.output}\n"
+    session.write("knowledge/final-eval.md", content)
+    verdict = "PASS" if result.passed else "FAIL"
+    session.append("events.md", f"final eval (CLI): {final_eval} · {verdict}")
+
+
 def _load_task_from_yaml(path: str) -> Task:
     with open(path) as f:
         data = yaml.safe_load(f) or {}
