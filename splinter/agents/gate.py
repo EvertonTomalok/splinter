@@ -14,7 +14,10 @@ import re
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from splinter.agents.runner import Task
 
 import yaml
 
@@ -28,13 +31,49 @@ class GateResult:
 
 
 DEFAULT_CHECKS = [
-    {"name": "ruff", "cmd": "uv run ruff check", "when": "always"},
-    {"name": "mypy", "cmd": "uv run mypy splinter", "when": "always"},
-    {"name": "pytest", "cmd": "uv run pytest", "when": "tests_exist"},
+    {"name": "ruff", "cmd": "uv run ruff check", "when": "always", "language": "python"},
+    {"name": "mypy", "cmd": "uv run mypy splinter", "when": "always", "language": "python"},
+    {"name": "pytest", "cmd": "uv run pytest", "when": "tests_exist", "language": "python"},
 ]
 
 #: File under the session dir holding the resolved gate checks for this run.
 GATE_FILE = "gate.json"
+
+_EXT_LANG: dict[str, str] = {
+    ".py": "python",
+    ".go": "go",
+    ".rs": "rust",
+    ".ts": "typescript",
+    ".tsx": "typescript",
+    ".js": "javascript-npm",
+    ".jsx": "javascript-npm",
+    ".rb": "ruby",
+    ".java": "java",
+    ".kt": "kotlin",
+    ".swift": "swift",
+    ".cs": "csharp",
+    ".php": "php",
+    ".cc": "cpp",
+    ".cpp": "cpp",
+    ".h": "cpp",
+}
+
+
+def task_languages(task: Task) -> set[str]:
+    langs: set[str] = set()
+    for f in task.target_files or []:
+        lang = _EXT_LANG.get(Path(f).suffix)
+        if lang:
+            langs.add(lang)
+    return langs
+
+
+def _with_language(checks: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Normalize checks by adding 'language' field if missing."""
+    return [
+        {**check, "language": check.get("language", "all")}
+        for check in checks
+    ]
 
 
 def _config_gate_checks(project_dir: str) -> list[dict[str, str]] | None:
@@ -44,7 +83,7 @@ def _config_gate_checks(project_dir: str) -> list[dict[str, str]] | None:
             cfg: dict[str, Any] = yaml.safe_load(f) or {}
         checks: list[dict[str, str]] | None = cfg.get("gate_checks")
         if checks:
-            return checks
+            return _with_language(checks)
     return None
 
 
@@ -63,7 +102,7 @@ def configured_gate_checks(
                 loaded = json.loads(p.read_text())
                 # File present == explicitly configured; [] means "no checks".
                 if isinstance(loaded, list):
-                    return loaded
+                    return _with_language(loaded)
             except (json.JSONDecodeError, ValueError):
                 pass
     return _config_gate_checks(project_dir)
@@ -74,11 +113,12 @@ def save_gate_checks(session_dir: str | Path, checks: list[dict[str, str]]) -> N
     Path(session_dir, GATE_FILE).write_text(json.dumps(checks, indent=2))
 
 
-def parse_gate_spec(spec: str) -> list[dict[str, str]]:
+def parse_gate_spec(spec: str, language: str) -> list[dict[str, str]]:
     """Turn a free-form gate spec into checks.
 
     Accepts a JSON array, or a simple ``cmd1; cmd2`` / newline-separated list of
     shell commands. ``none``/``skip`` yields an empty gate (no mechanical checks).
+    Each check is stamped with the provided language.
     """
     spec = spec.strip()
     if not spec or spec.lower() in ("none", "skip", "no gate"):
@@ -86,14 +126,23 @@ def parse_gate_spec(spec: str) -> list[dict[str, str]]:
     try:
         data = json.loads(spec)
         if isinstance(data, list):
-            return [c for c in data if isinstance(c, dict) and c.get("cmd")]
+            return [
+                {**c, "language": c.get("language", language)}
+                for c in data
+                if isinstance(c, dict) and c.get("cmd")
+            ]
     except (json.JSONDecodeError, ValueError):
         pass
     checks: list[dict[str, str]] = []
     for cmd in re.split(r"[;\n]+", spec):
         cmd = cmd.strip()
         if cmd:
-            checks.append({"name": cmd.split()[0], "cmd": cmd, "when": "always"})
+            checks.append({
+                "name": cmd.split()[0],
+                "cmd": cmd,
+                "when": "always",
+                "language": language,
+            })
     return checks
 
 
@@ -155,13 +204,27 @@ def _should_run(check: dict[str, str], project_dir: str) -> bool:
     return True
 
 
-def run_gate(project_dir: str = ".", session_dir: str | Path | None = None) -> GateResult:
+def _lang_match(check: dict[str, str], languages: set[str]) -> bool:
+    if not languages:
+        return True
+    lang = check.get("language", "all")
+    return lang == "all" or lang in languages
+
+
+def run_gate(
+    project_dir: str = ".",
+    session_dir: str | Path | None = None,
+    languages: set[str] | None = None,
+) -> GateResult:
     checks = _load_gate_checks(project_dir, session_dir)
+    active_langs = languages or set()
     results: list[tuple[str, bool, str]] = []
     all_passed = True
 
     for check in checks:
         if not _should_run(check, project_dir):
+            continue
+        if not _lang_match(check, active_langs):
             continue
         name = check["name"]
         cmd = check["cmd"]
@@ -201,7 +264,8 @@ def detect_gate_checks(ladder: Any, project_dir: str = ".") -> list[dict[str, st
         "typecheck, build, and tests as applicable to this project's stack.\n\n"
         "Output ONLY a JSON array, no prose. Each item: "
         '{"name": "<short>", "cmd": "<exact shell command>", '
-        '"when": "always" | "tests_exist" | "proto_changed"}.\n'
+        '"when": "always" | "tests_exist" | "proto_changed", '
+        '"language": "all" | "<language key e.g. python/go/rust/typescript>"}.\n'
         "Use the project's real tooling (e.g. npm/pnpm/yarn scripts, make targets, "
         'cargo, go, gradle, pytest, etc.). Use "when":"tests_exist" for the test '
         'command. Use "when":"proto_changed" for proto codegen commands (e.g. wire gen, protoc). '
@@ -237,6 +301,7 @@ def _parse_detected(raw: str) -> list[dict[str, str]]:
                     "name": str(item.get("name") or str(item["cmd"]).split()[0]),
                     "cmd": str(item["cmd"]),
                     "when": str(item.get("when") or "always"),
+                    "language": str(item.get("language") or "all"),
                 }
             )
     return out

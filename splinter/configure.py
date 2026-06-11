@@ -11,87 +11,197 @@ from splinter.templating import TEMPLATE_NAMES, packaged_template
 
 LANGUAGE_GATE_DEFAULTS: dict[str, list[dict[str, str]]] = {
     "python": [
-        {"name": "ruff", "cmd": "ruff check .", "when": "always"},
-        {"name": "mypy", "cmd": "mypy .", "when": "always"},
-        {"name": "pytest", "cmd": "pytest", "when": "tests_exist"},
+        {"name": "ruff", "cmd": "ruff check .", "when": "always", "language": "python"},
+        {"name": "mypy", "cmd": "mypy .", "when": "always", "language": "python"},
+        {"name": "pytest", "cmd": "pytest", "when": "tests_exist", "language": "python"},
     ],
     "go": [
-        {"name": "gofmt", "cmd": "gofmt -l .", "when": "always"},
-        {"name": "go-vet", "cmd": "go vet ./...", "when": "always"},
-        {"name": "go-test", "cmd": "go test ./...", "when": "always"},
+        {"name": "gofmt", "cmd": "gofmt -l .", "when": "always", "language": "go"},
+        {"name": "go-vet", "cmd": "go vet ./...", "when": "always", "language": "go"},
+        {"name": "go-test", "cmd": "go test ./...", "when": "always", "language": "go"},
     ],
     "rust": [
-        {"name": "fmt", "cmd": "cargo fmt -- --check", "when": "always"},
-        {"name": "clippy", "cmd": "cargo clippy", "when": "always"},
-        {"name": "test", "cmd": "cargo test", "when": "always"},
+        {"name": "fmt", "cmd": "cargo fmt -- --check", "when": "always", "language": "rust"},
+        {"name": "clippy", "cmd": "cargo clippy", "when": "always", "language": "rust"},
+        {"name": "test", "cmd": "cargo test", "when": "always", "language": "rust"},
     ],
     "typescript": [
-        {"name": "tsc", "cmd": "tsc --noEmit", "when": "always"},
-        {"name": "eslint", "cmd": "eslint .", "when": "always"},
+        {"name": "tsc", "cmd": "tsc --noEmit", "when": "always", "language": "typescript"},
+        {"name": "eslint", "cmd": "eslint .", "when": "always", "language": "typescript"},
     ],
     "javascript-npm": [
-        {"name": "lint", "cmd": "npm run lint", "when": "always"},
-        {"name": "test", "cmd": "npm test", "when": "always"},
+        {"name": "lint", "cmd": "npm run lint", "when": "always", "language": "javascript-npm"},
+        {"name": "test", "cmd": "npm test", "when": "always", "language": "javascript-npm"},
     ],
     "javascript-pnpm": [
-        {"name": "biome", "cmd": "biome check .", "when": "always"},
-        {"name": "test", "cmd": "pnpm test", "when": "always"},
+        {"name": "biome", "cmd": "biome check .", "when": "always", "language": "javascript-pnpm"},
+        {"name": "test", "cmd": "pnpm test", "when": "always", "language": "javascript-pnpm"},
     ],
     "javascript-yarn": [
-        {"name": "lint", "cmd": "yarn lint", "when": "always"},
-        {"name": "test", "cmd": "yarn test", "when": "always"},
+        {"name": "lint", "cmd": "yarn lint", "when": "always", "language": "javascript-yarn"},
+        {"name": "test", "cmd": "yarn test", "when": "always", "language": "javascript-yarn"},
     ],
     "node": [
-        {"name": "test", "cmd": "npm test", "when": "always"},
+        {"name": "test", "cmd": "npm test", "when": "always", "language": "node"},
     ],
     "ruby": [
-        {"name": "rubocop", "cmd": "bundle exec rubocop", "when": "always"},
-        {"name": "rspec", "cmd": "bundle exec rspec", "when": "tests_exist"},
-        {"name": "proto-gen", "cmd": "grpc_tools_ruby_protoc --ruby_out=. --grpc_out=. proto/*.proto", "when": "proto_changed"},
+        {
+            "name": "rubocop",
+            "cmd": "bundle exec rubocop",
+            "when": "always",
+            "language": "ruby",
+        },
+        {
+            "name": "rspec",
+            "cmd": "bundle exec rspec",
+            "when": "tests_exist",
+            "language": "ruby",
+        },
+        {
+            "name": "proto-gen",
+            "cmd": "grpc_tools_ruby_protoc --ruby_out=. --grpc_out=. proto/*.proto",
+            "when": "proto_changed",
+            "language": "ruby",
+        },
     ],
     "cpp": [
-        {"name": "cmake-build", "cmd": "cmake --build build", "when": "always"},
-        {"name": "ctest", "cmd": "ctest --test-dir build", "when": "tests_exist"},
-        {"name": "proto-gen", "cmd": "protoc --cpp_out=. --grpc_out=. --plugin=protoc-gen-grpc=`which grpc_cpp_plugin` proto/*.proto", "when": "proto_changed"},
+        {
+            "name": "cmake-build",
+            "cmd": "cmake --build build",
+            "when": "always",
+            "language": "cpp",
+        },
+        {
+            "name": "ctest",
+            "cmd": "ctest --test-dir build",
+            "when": "tests_exist",
+            "language": "cpp",
+        },
+        {
+            "name": "proto-gen",
+            "cmd": "protoc --cpp_out=. --grpc_out=. --plugin=protoc-gen-grpc=`which grpc_cpp_plugin` proto/*.proto",  # noqa: E501
+            "when": "proto_changed",
+            "language": "cpp",
+        },
     ],
     "swift": [
-        {"name": "build", "cmd": "swift build", "when": "always"},
-        {"name": "test", "cmd": "swift test", "when": "tests_exist"},
-        {"name": "proto-gen", "cmd": "protoc --swift_out=. --grpc-swift_out=. proto/*.proto", "when": "proto_changed"},
+        {
+            "name": "build",
+            "cmd": "swift build",
+            "when": "always",
+            "language": "swift",
+        },
+        {
+            "name": "test",
+            "cmd": "swift test",
+            "when": "tests_exist",
+            "language": "swift",
+        },
+        {
+            "name": "proto-gen",
+            "cmd": "protoc --swift_out=. --grpc-swift_out=. proto/*.proto",
+            "when": "proto_changed",
+            "language": "swift",
+        },
     ],
     "csharp": [
-        {"name": "build", "cmd": "dotnet build", "when": "always"},
-        {"name": "test", "cmd": "dotnet test", "when": "tests_exist"},
-        {"name": "proto-gen", "cmd": "dotnet build", "when": "proto_changed"},
+        {"name": "build", "cmd": "dotnet build", "when": "always", "language": "csharp"},
+        {"name": "test", "cmd": "dotnet test", "when": "tests_exist", "language": "csharp"},
+        {"name": "proto-gen", "cmd": "dotnet build", "when": "proto_changed", "language": "csharp"},
     ],
     "php": [
-        {"name": "phpstan", "cmd": "vendor/bin/phpstan analyse", "when": "always"},
-        {"name": "phpunit", "cmd": "vendor/bin/phpunit", "when": "tests_exist"},
-        {"name": "proto-gen", "cmd": "protoc --php_out=. --grpc_out=. --plugin=protoc-gen-grpc=`which grpc_php_plugin` proto/*.proto", "when": "proto_changed"},
+        {
+            "name": "phpstan",
+            "cmd": "vendor/bin/phpstan analyse",
+            "when": "always",
+            "language": "php",
+        },
+        {
+            "name": "phpunit",
+            "cmd": "vendor/bin/phpunit",
+            "when": "tests_exist",
+            "language": "php",
+        },
+        {
+            "name": "proto-gen",
+            "cmd": "protoc --php_out=. --grpc_out=. --plugin=protoc-gen-grpc=`which grpc_php_plugin` proto/*.proto",  # noqa: E501
+            "when": "proto_changed",
+            "language": "php",
+        },
     ],
     "java": [
-        {"name": "build", "cmd": "./gradlew build -x test", "when": "always"},
-        {"name": "test", "cmd": "./gradlew test", "when": "tests_exist"},
-        {"name": "proto-gen", "cmd": "./gradlew generateProto", "when": "proto_changed"},
+        {
+            "name": "build",
+            "cmd": "./gradlew build -x test",
+            "when": "always",
+            "language": "java",
+        },
+        {
+            "name": "test",
+            "cmd": "./gradlew test",
+            "when": "tests_exist",
+            "language": "java",
+        },
+        {
+            "name": "proto-gen",
+            "cmd": "./gradlew generateProto",
+            "when": "proto_changed",
+            "language": "java",
+        },
     ],
     "kotlin": [
-        {"name": "build", "cmd": "./gradlew build -x test", "when": "always"},
-        {"name": "test", "cmd": "./gradlew test", "when": "tests_exist"},
-        {"name": "proto-gen", "cmd": "./gradlew generateProto", "when": "proto_changed"},
+        {
+            "name": "build",
+            "cmd": "./gradlew build -x test",
+            "when": "always",
+            "language": "kotlin",
+        },
+        {
+            "name": "test",
+            "cmd": "./gradlew test",
+            "when": "tests_exist",
+            "language": "kotlin",
+        },
+        {
+            "name": "proto-gen",
+            "cmd": "./gradlew generateProto",
+            "when": "proto_changed",
+            "language": "kotlin",
+        },
     ],
     "rust-proto": [
-        {"name": "fmt", "cmd": "cargo fmt -- --check", "when": "always"},
-        {"name": "clippy", "cmd": "cargo clippy", "when": "always"},
-        {"name": "test", "cmd": "cargo test", "when": "always"},
-        {"name": "proto-gen", "cmd": "cargo build", "when": "proto_changed"},
+        {
+            "name": "fmt",
+            "cmd": "cargo fmt -- --check",
+            "when": "always",
+            "language": "rust-proto",
+        },
+        {
+            "name": "clippy",
+            "cmd": "cargo clippy",
+            "when": "always",
+            "language": "rust-proto",
+        },
+        {
+            "name": "test",
+            "cmd": "cargo test",
+            "when": "always",
+            "language": "rust-proto",
+        },
+        {
+            "name": "proto-gen",
+            "cmd": "cargo build",
+            "when": "proto_changed",
+            "language": "rust-proto",
+        },
     ],
 }
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "gate_checks": [
-        {"name": "ruff", "cmd": "uv run ruff check", "when": "always"},
-        {"name": "mypy", "cmd": "uv run mypy splinter", "when": "always"},
-        {"name": "pytest", "cmd": "uv run pytest", "when": "tests_exist"},
+        {"name": "ruff", "cmd": "uv run ruff check", "when": "always", "language": "python"},
+        {"name": "mypy", "cmd": "uv run mypy splinter", "when": "always", "language": "python"},
+        {"name": "pytest", "cmd": "uv run pytest", "when": "tests_exist", "language": "python"},
     ],
     "defaults": {
         "strategy": "cascade",
@@ -268,6 +378,14 @@ def current_model_selections() -> dict[str, Any]:
     }
 
 
+def _normalize_gate_checks(checks: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Ensure gate checks have language field."""
+    return [
+        {**c, "language": c.get("language", "all")}
+        for c in checks
+    ]
+
+
 def write_model_config(
     models: dict[str, Any],
     efforts: dict[str, Any] | None = None,
@@ -284,7 +402,9 @@ def write_model_config(
     config = load_config()
     config.setdefault("gate_checks", DEFAULT_CONFIG["gate_checks"])
     if gate_checks is not None:
-        config["gate_checks"] = gate_checks
+        config["gate_checks"] = _normalize_gate_checks(gate_checks)
+    else:
+        config["gate_checks"] = _normalize_gate_checks(config["gate_checks"])
     config.setdefault("defaults", DEFAULT_CONFIG["defaults"].copy())
     config["models"] = models
     if efforts is not None:
@@ -305,7 +425,7 @@ def write_gate_checks(checks: list[dict[str, str]]) -> Path:
     """Persist gate checks into config.yaml. Preserves models, efforts, timeouts, defaults."""
     config = load_config()
     config.setdefault("defaults", DEFAULT_CONFIG["defaults"].copy())
-    config["gate_checks"] = checks
+    config["gate_checks"] = _normalize_gate_checks(checks)
 
     p = _config_path("project")
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -442,7 +562,7 @@ def run_configure(
             cmd = cmd.strip()
             if cmd:
                 name = cmd.split()[0] if cmd else "check"
-                checks.append({"name": name, "cmd": cmd, "when": "always"})
+                checks.append({"name": name, "cmd": cmd, "when": "always", "language": "all"})
         config["gate_checks"] = checks
 
     p = _config_path("project")

@@ -1426,8 +1426,9 @@ class ConfigureApp(App[bool]):
       align: left middle;
     }
     .gate-name { width: 14; text-style: bold; height: 3; content-align: left middle; }
-    .gate-cmd { width: 1fr; height: 3; }
-    .gate-when { width: 22; height: 3; margin-left: 1; }
+    .gate-cmd { width: 45%; height: 3; }
+    .gate-when { width: 18; height: 3; margin-left: 1; }
+    .gate-lang { width: 18; height: 3; margin-left: 1; }
     .gate-del { width: 10; height: 3; margin-left: 1; }
     .gate-add-input { width: 1fr; height: 3; margin-right: 1; }
     """
@@ -1517,7 +1518,11 @@ class ConfigureApp(App[bool]):
     _WHEN_CHOICES: list[str] = ["always", "tests_exist", "proto_changed"]
 
     def _gate_row(self, index: int, check: dict[str, str]) -> Horizontal:
+        from splinter.configure import gate_default_languages
+
         when_opts = [(w, w) for w in self._WHEN_CHOICES]
+        lang_choices = [""] + gate_default_languages()
+        lang_opts = [(lang or "—", lang) for lang in lang_choices]
         return Horizontal(
             Label(check["name"], classes="gate-name"),
             Input(value=check["cmd"], id=f"gate_cmd_{index}", classes="gate-cmd"),
@@ -1527,6 +1532,13 @@ class ConfigureApp(App[bool]):
                 self._WHEN_CHOICES,
                 id=f"gate_when_{index}",
                 classes="gate-when",
+            ),
+            self._select(
+                lang_opts,
+                check.get("language", ""),
+                lang_choices,
+                id=f"gate_lang_{index}",
+                classes="gate-lang",
             ),
             Button("Delete", id=f"gate_del_{index}", classes="gate-del", variant="error"),
             classes="gate-row",
@@ -1558,6 +1570,9 @@ class ConfigureApp(App[bool]):
 
     def _capture_gates(self) -> None:
         """Read all live gate Input/Select widgets into self._gate_checks (new list)."""
+        from splinter.configure import gate_default_languages
+
+        lang_choices = [""] + gate_default_languages()
         checks: list[dict[str, str]] = []
         for i, original in enumerate(self._gate_checks):
             try:
@@ -1568,12 +1583,23 @@ class ConfigureApp(App[bool]):
                     if isinstance(raw_when, str) and raw_when in self._WHEN_CHOICES
                     else "always"
                 )
+                raw_lang: Any = self.query_one(f"#gate_lang_{i}", Select).value
+                language = (
+                    raw_lang
+                    if isinstance(raw_lang, str) and raw_lang in lang_choices and raw_lang
+                    else "all"
+                )
             except Exception:
                 checks.append(dict(original))
                 continue
             if cmd:
                 name = original["name"] if cmd == original["cmd"] else cmd.split()[0]
-                checks.append({"name": name, "cmd": cmd, "when": when})
+                checks.append({
+                    "name": name,
+                    "cmd": cmd,
+                    "when": when,
+                    "language": language,
+                })
         self._gate_checks = checks
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
@@ -1586,7 +1612,7 @@ class ConfigureApp(App[bool]):
             if raw:
                 from splinter.agents.gate import parse_gate_spec
 
-                self._gate_checks = self._gate_checks + parse_gate_spec(raw)
+                self._gate_checks = self._gate_checks + parse_gate_spec(raw, "all")
             try:
                 self.query_one("#gate_add_input", Input).value = ""
             except Exception:
@@ -2557,7 +2583,7 @@ class PrdSessionApp(App[int | None]):
         if text.lower().startswith("gate:"):
             from splinter.agents import gate
 
-            checks = gate.parse_gate_spec(text.split(":", 1)[1])
+            checks = gate.parse_gate_spec(text.split(":", 1)[1], "unknown")
             gate.save_gate_checks(self.session.dir, checks)
             if checks:
                 self._say("[green]Gate set:[/] " + ", ".join(c["cmd"] for c in checks))

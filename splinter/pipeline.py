@@ -63,14 +63,17 @@ class _SessionTraceHandler(logging.Handler):
             pass
 
 
-def _resolve_gate(session: Session, ladder: object) -> None:
+def _resolve_gate(session: Session, ladder: object, tasks: list[Task]) -> None:
     """Ensure the run has a gate. Precedence: already-configured (session gate.json
-    or .splinter/config.yaml) → model-detected from the repo → Python defaults.
+    or .splinter/config.yaml) → model-detected from the repo → language-specific
+    defaults derived from the union of all task languages → Python defaults.
 
     Users can override per project via ``gate_checks`` in config.yaml, or per run
     in the PRD review phase; this just makes the planner bring one when none is set.
     """
     from splinter.agents import gate
+    from splinter.agents.gate import task_languages
+    from splinter.configure import gate_default_for
 
     existing = gate.configured_gate_checks(session_dir=session.dir)
     if existing is not None:
@@ -84,10 +87,21 @@ def _resolve_gate(session: Session, ladder: object) -> None:
         gate.save_gate_checks(session.dir, detected)
         log.info("gate: detected — %s", ", ".join(c["name"] for c in detected))
     else:
-        log.warning(
-            "gate: could not detect checks — using defaults. Set `gate_checks` "
-            "in .splinter/config.yaml or specify them in the PRD review."
-        )
+        all_langs: set[str] = set()
+        for t in tasks:
+            all_langs.update(task_languages(t))
+        log.info("gate: resolved languages: %s", sorted(all_langs) or ["(none)"])
+        if all_langs:
+            lang_checks: list[dict[str, str]] = []
+            for lang in sorted(all_langs):
+                lang_checks.extend(gate_default_for(lang))
+            gate.save_gate_checks(session.dir, lang_checks)
+            log.info("gate: using language-specific defaults for %s", sorted(all_langs))
+        else:
+            log.warning(
+                "gate: could not detect checks — using defaults. Set `gate_checks` "
+                "in .splinter/config.yaml or specify them in the PRD review."
+            )
 
 
 def _classify_failure(exc: BaseException) -> str:
@@ -301,7 +315,7 @@ def run_pipeline(
                     )
                 session.write(loc_key, "\n".join(loc_lines))
 
-        _resolve_gate(session, ladder)
+        _resolve_gate(session, ladder, tasks)
 
         session.set_status("running", stage="run")
         results = strat.execute(

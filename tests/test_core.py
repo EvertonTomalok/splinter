@@ -162,7 +162,11 @@ def test_write_gate_checks_roundtrip(tmp_path: Path, monkeypatch: "pytest.Monkey
     ]
     write_gate_checks(checks)
     result = _config_gate_checks(str(tmp_path))
-    assert result == checks
+    # Expect language field to default to "all" when missing
+    assert result == [
+        {"name": "ruff", "cmd": "ruff check", "when": "always", "language": "all"},
+        {"name": "mypy", "cmd": "mypy", "when": "always", "language": "all"},
+    ]
 
 
 def test_write_gate_checks_empty_list(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
@@ -192,7 +196,15 @@ def test_write_gate_checks_preserves_model_blocks(
     assert config["models"] == models
     assert config["efforts"] == efforts
     assert config["timeouts"] == timeouts
-    assert config["gate_checks"] == checks
+    # Language field defaults to "all" when missing
+    assert config["gate_checks"] == [
+        {
+            "name": "test",
+            "cmd": "pytest",
+            "when": "always",
+            "language": "all",
+        }
+    ]
 
 
 def test_write_model_then_gate_save_order(
@@ -211,7 +223,15 @@ def test_write_model_then_gate_save_order(
     assert "models" in config
     assert "gate_checks" in config
     assert config["models"]["planner"] == "sonnet"
-    assert config["gate_checks"] == checks
+    # Language field defaults to "all" when missing
+    assert config["gate_checks"] == [
+        {
+            "name": "lint",
+            "cmd": "ruff",
+            "when": "always",
+            "language": "all",
+        }
+    ]
 
 
 def test_write_gate_checks_go_preset(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
@@ -430,6 +450,7 @@ def test_gate_default_for_go() -> None:
     # All should be "always"
     for check in checks:
         assert check["when"] == "always"
+        assert check["language"] == "go"
 
 
 def test_gate_default_for_rust() -> None:
@@ -498,12 +519,14 @@ def test_gate_default_for_unknown_language() -> None:
 def test_gate_default_for_copy_semantics() -> None:
     """Mutating the returned list/dict does not affect subsequent calls."""
     first = gate_default_for("python")
-    first.append({"name": "extra", "cmd": "extra cmd", "when": "always"})
+    first.append({"name": "extra", "cmd": "extra cmd", "when": "always", "language": "python"})
     first[0]["cmd"] = "modified"
     second = gate_default_for("python")
     assert len(second) == 3
     assert second[0]["cmd"] == "ruff check ."
     assert all(c.get("name") != "extra" for c in second)
+    for check in second:
+        assert check["language"] == "python"
 
 
 def test_gate_default_languages() -> None:
@@ -1516,12 +1539,28 @@ def test_no_ground_flag_skips_ground_localization(
 
     monkeypatch.setattr(prd_session, "ground_localization", _spy_ground)
 
-    fake_result = type("R", (), {"text": "Q1?", "raw": {"_session_id": "sid"}, "usage": {"input_tokens": 0, "output_tokens": 0}})()
+    fake_result = type(
+        "R",
+        (),
+        {
+            "text": "Q1?",
+            "raw": {"_session_id": "sid"},
+            "usage": {"input_tokens": 0, "output_tokens": 0},
+        },
+    )()
     _prd_body = (
         "---\nfeature: x\nstrategy: direct\nkind: feature\ncreated: 2026-06-10\n---\n"
         "### US-001: X\n**Description:** d\n**Acceptance Criteria:**\n- [ ] c\n"
     )
-    fake_result2 = type("R", (), {"text": _prd_body, "raw": {"_session_id": "sid"}, "usage": {"input_tokens": 0, "output_tokens": 0}})()
+    fake_result2 = type(
+        "R",
+        (),
+        {
+            "text": _prd_body,
+            "raw": {"_session_id": "sid"},
+            "usage": {"input_tokens": 0, "output_tokens": 0},
+        },
+    )()
 
     import splinter.providers.claude_cli as cc
 
@@ -1665,6 +1704,10 @@ def test_configure_tui_lists_gate_checks(tmp_path: Path, monkeypatch: "pytest.Mo
             assert app._gate_checks == DEFAULT_CONFIG["gate_checks"]
             gate_rows = app.query("#gate-rows .gate-row")
             assert len(gate_rows) == len(DEFAULT_CONFIG["gate_checks"])
+            # Verify language column is present for each row
+            for i in range(len(DEFAULT_CONFIG["gate_checks"])):
+                lang_select = app.query_one(f"#gate_lang_{i}")
+                assert lang_select is not None
 
     asyncio.run(drive())
 
@@ -1726,7 +1769,11 @@ def test_configure_save_with_seeded_config(
 
     asyncio.run(drive())
     config = load_config()
-    assert config["gate_checks"] == custom_checks
+    # Language field defaults to "all" for checks without explicit language
+    assert config["gate_checks"] == [
+        {"name": "lint", "cmd": "ruff check .", "when": "always", "language": "all"},
+        {"name": "types", "cmd": "mypy src", "when": "always", "language": "all"},
+    ]
 
 
 def test_configure_tui_gate_delete(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
@@ -1963,17 +2010,62 @@ def test_append_preset_persists_on_save(tmp_path: Path, monkeypatch: "pytest.Mon
 def test_parse_gate_spec_single_cmd() -> None:
     from splinter.agents.gate import parse_gate_spec
 
-    checks = parse_gate_spec("npm run build")
-    assert checks == [{"name": "npm", "cmd": "npm run build", "when": "always"}]
+    checks = parse_gate_spec("npm run build", "unknown")
+    assert checks == [
+        {
+            "name": "npm",
+            "cmd": "npm run build",
+            "when": "always",
+            "language": "unknown",
+        }
+    ]
 
 
 def test_parse_gate_spec_multi_cmd() -> None:
     from splinter.agents.gate import parse_gate_spec
 
-    checks = parse_gate_spec("npm run lint; npm test")
+    checks = parse_gate_spec("npm run lint; npm test", "unknown")
     assert len(checks) == 2
-    assert checks[0] == {"name": "npm", "cmd": "npm run lint", "when": "always"}
-    assert checks[1] == {"name": "npm", "cmd": "npm test", "when": "always"}
+    expected_0 = {
+        "name": "npm",
+        "cmd": "npm run lint",
+        "when": "always",
+        "language": "unknown",
+    }
+    expected_1 = {
+        "name": "npm",
+        "cmd": "npm test",
+        "when": "always",
+        "language": "unknown",
+    }
+    assert checks[0] == expected_0
+    assert checks[1] == expected_1
+
+
+def test_parse_gate_spec_with_language() -> None:
+    from splinter.agents.gate import parse_gate_spec
+
+    checks = parse_gate_spec("npm run build", language="javascript-npm")
+    assert len(checks) == 1
+    assert checks[0]["language"] == "javascript-npm"
+
+
+def test_parse_gate_spec_json_with_language() -> None:
+    from splinter.agents.gate import parse_gate_spec
+
+    spec = '[{"name": "lint", "cmd": "npm lint", "when": "always"}]'
+    checks = parse_gate_spec(spec, language="javascript-npm")
+    assert len(checks) == 1
+    assert checks[0]["language"] == "javascript-npm"
+
+
+def test_parse_gate_spec_json_preserves_language() -> None:
+    from splinter.agents.gate import parse_gate_spec
+
+    spec = '[{"name": "lint", "cmd": "npm lint", "when": "always", "language": "custom"}]'
+    checks = parse_gate_spec(spec, language="javascript-npm")
+    assert len(checks) == 1
+    assert checks[0]["language"] == "custom"
 
 
 def test_write_model_config_gate_checks_empty(
@@ -1987,12 +2079,35 @@ def test_write_model_config_gate_checks_empty(
     assert config["gate_checks"] == []
 
 
+def test_configured_gate_checks_backward_compat(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
+) -> None:
+    from splinter.agents.gate import configured_gate_checks, save_gate_checks
+
+    monkeypatch.chdir(tmp_path)
+    # Simulate old gate.json without language field
+    old_checks = [
+        {"name": "ruff", "cmd": "ruff check", "when": "always"},
+        {"name": "mypy", "cmd": "mypy .", "when": "always"},
+    ]
+    session_dir = tmp_path / "session"
+    session_dir.mkdir()
+    save_gate_checks(session_dir, old_checks)
+
+    # Load should stamp missing language with "all"
+    loaded = configured_gate_checks(session_dir=session_dir)
+    assert loaded is not None
+    assert len(loaded) == 2
+    for check in loaded:
+        assert check["language"] == "all"
+
+
 def test_configure_tui_add_custom_gate(
     tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
 ) -> None:
     import asyncio
 
-    from textual.widgets import Button, Input
+    from textual.widgets import Button, Input, Select
 
     from splinter.configure import load_config
     from splinter.tui import ConfigureApp
@@ -2003,9 +2118,15 @@ def test_configure_tui_add_custom_gate(
         app = ConfigureApp()
         async with app.run_test() as pilot:
             await pilot.pause()
+            initial_count = len(app._gate_checks)
             app.query_one("#gate_add_input", Input).value = "npm run build"
             await pilot.pause()
             app.query_one("#gate_add", Button).press()
+            await pilot.pause()
+            # Set language for the newly added gate
+            new_gate_idx = initial_count
+            lang_select = app.query_one(f"#gate_lang_{new_gate_idx}", Select)
+            lang_select.value = "javascript-npm"
             await pilot.pause()
             await pilot.press("s")
             await pilot.pause()
@@ -2013,10 +2134,13 @@ def test_configure_tui_add_custom_gate(
 
     asyncio.run(drive())
     config = load_config()
-    assert any(
-        c["name"] == "npm" and c["cmd"] == "npm run build" and c["when"] == "always"
-        for c in config["gate_checks"]
+    added_check = next(
+        (c for c in config["gate_checks"] if c["name"] == "npm" and c["cmd"] == "npm run build"),
+        None,
     )
+    assert added_check is not None
+    assert added_check["when"] == "always"
+    assert added_check["language"] == "javascript-npm"
 
 
 def test_configure_tui_edit_gate_cmd(
@@ -2024,7 +2148,7 @@ def test_configure_tui_edit_gate_cmd(
 ) -> None:
     import asyncio
 
-    from textual.widgets import Input
+    from textual.widgets import Input, Select
 
     from splinter.configure import load_config
     from splinter.tui import ConfigureApp
@@ -2037,6 +2161,10 @@ def test_configure_tui_edit_gate_cmd(
             await pilot.pause()
             app.query_one("#gate_cmd_0", Input).value = "uv run ruff check --strict"
             await pilot.pause()
+            # Change language of first gate
+            lang_select = app.query_one("#gate_lang_0", Select)
+            lang_select.value = "rust"
+            await pilot.pause()
             await pilot.press("s")
             await pilot.pause()
         assert app.saved
@@ -2044,6 +2172,7 @@ def test_configure_tui_edit_gate_cmd(
     asyncio.run(drive())
     config = load_config()
     assert config["gate_checks"][0]["cmd"] == "uv run ruff check --strict"
+    assert config["gate_checks"][0]["language"] == "rust"
     assert config["gate_checks"][1] == DEFAULT_CONFIG["gate_checks"][1]
     assert config["gate_checks"][2] == DEFAULT_CONFIG["gate_checks"][2]
 
@@ -2076,3 +2205,202 @@ def test_configure_tui_delete_all_gates(
     asyncio.run(drive())
     config = load_config()
     assert config["gate_checks"] == []
+
+
+# --- US-002: gate language survives save/load --------------------------------
+
+
+def test_gate_load_defaults_missing_language_to_all(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
+) -> None:
+    """Loading a gate check without language field defaults to 'all'."""
+    import json
+
+    from splinter.agents.gate import configured_gate_checks
+
+    monkeypatch.chdir(tmp_path)
+    session_dir = tmp_path / ".splinter" / "sessions" / "test_session"
+    session_dir.mkdir(parents=True, exist_ok=True)
+
+    # Write a gate.json with checks lacking language field
+    checks_without_lang = [
+        {"name": "lint", "cmd": "ruff check", "when": "always"},
+        {"name": "test", "cmd": "pytest", "when": "tests_exist"},
+    ]
+    (session_dir / "gate.json").write_text(json.dumps(checks_without_lang))
+
+    result = configured_gate_checks(session_dir=session_dir)
+    assert result is not None
+    assert len(result) == 2
+    assert all(c["language"] == "all" for c in result)
+
+
+def test_gate_save_load_round_trip_preserves_language(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
+) -> None:
+    """Gate language persists through save_gate_checks -> configured_gate_checks."""
+    from splinter.agents.gate import configured_gate_checks, save_gate_checks
+
+    monkeypatch.chdir(tmp_path)
+    session_dir = tmp_path / ".splinter" / "sessions" / "test_session"
+    session_dir.mkdir(parents=True, exist_ok=True)
+
+    # Save checks with explicit language values
+    checks = [
+        {"name": "ruff", "cmd": "ruff check", "when": "always", "language": "python"},
+        {"name": "cargo", "cmd": "cargo test", "when": "always", "language": "rust"},
+        {"name": "generic", "cmd": "custom cmd", "when": "always", "language": "all"},
+    ]
+    save_gate_checks(session_dir, checks)
+
+    # Load them back
+    loaded = configured_gate_checks(session_dir=session_dir)
+    assert loaded is not None
+    assert len(loaded) == 3
+    assert loaded[0]["language"] == "python"
+    assert loaded[1]["language"] == "rust"
+    assert loaded[2]["language"] == "all"
+
+
+def test_configure_save_preserves_gate_language_from_preset(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
+) -> None:
+    """Gate language from presets (e.g., go, rust) survives save/load."""
+    from splinter.configure import gate_default_for, load_config, write_gate_checks
+
+    monkeypatch.chdir(tmp_path)
+    go_checks = gate_default_for("go")
+    assert len(go_checks) > 0
+    assert all(c["language"] == "go" for c in go_checks)
+
+    write_gate_checks(go_checks)
+    config = load_config()
+
+    # Verify all checks preserved their language field
+    assert len(config["gate_checks"]) == len(go_checks)
+    assert all(c["language"] == "go" for c in config["gate_checks"])
+
+
+def test_write_gate_checks_normalizes_missing_language_to_all(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
+) -> None:
+    """write_gate_checks normalizes checks lacking language to 'all'."""
+    from splinter.configure import load_config, write_gate_checks
+
+    monkeypatch.chdir(tmp_path)
+    checks_without_lang = [
+        {"name": "test1", "cmd": "cmd1", "when": "always"},
+        {"name": "test2", "cmd": "cmd2", "when": "always"},
+    ]
+    write_gate_checks(checks_without_lang)
+    config = load_config()
+
+    assert len(config["gate_checks"]) == 2
+    assert all(c["language"] == "all" for c in config["gate_checks"])
+
+
+# --- US-004: language-filtered gate -----------------------------------------
+
+
+def test_run_gate_skips_other_language_check(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
+) -> None:
+    from splinter.agents.gate import run_gate, save_gate_checks
+
+    class _FakeProc:
+        returncode = 0
+        stdout = "ok"
+        stderr = ""
+
+    monkeypatch.setattr("subprocess.run", lambda cmd, **kw: _FakeProc())
+
+    session_dir = tmp_path / "session"
+    session_dir.mkdir()
+    save_gate_checks(session_dir, [
+        {"name": "ruff", "cmd": "ruff check", "when": "always", "language": "python"},
+        {"name": "cargo-test", "cmd": "cargo test", "when": "always", "language": "go"},
+    ])
+
+    result = run_gate(session_dir=session_dir, languages={"python"})
+    check_names = [name for name, _, _ in result.checks]
+    assert "ruff" in check_names
+    assert "cargo-test" not in check_names
+
+
+def test_run_gate_runs_all_when_no_language(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
+) -> None:
+    from splinter.agents.gate import run_gate, save_gate_checks
+
+    class _FakeProc:
+        returncode = 0
+        stdout = "ok"
+        stderr = ""
+
+    monkeypatch.setattr("subprocess.run", lambda cmd, **kw: _FakeProc())
+
+    session_dir = tmp_path / "session"
+    session_dir.mkdir()
+    save_gate_checks(session_dir, [
+        {"name": "ruff", "cmd": "ruff check", "when": "always", "language": "python"},
+        {"name": "go-test", "cmd": "go test ./...", "when": "always", "language": "go"},
+    ])
+
+    for langs in (None, set()):
+        result = run_gate(session_dir=session_dir, languages=langs)
+        check_names = [name for name, _, _ in result.checks]
+        assert "ruff" in check_names, f"ruff missing with languages={langs}"
+        assert "go-test" in check_names, f"go-test missing with languages={langs}"
+
+
+def test_run_gate_runs_all_tagged_check(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
+) -> None:
+    from splinter.agents.gate import run_gate, save_gate_checks
+
+    class _FakeProc:
+        returncode = 0
+        stdout = "ok"
+        stderr = ""
+
+    monkeypatch.setattr("subprocess.run", lambda cmd, **kw: _FakeProc())
+
+    session_dir = tmp_path / "session"
+    session_dir.mkdir()
+    save_gate_checks(session_dir, [
+        {"name": "always-check", "cmd": "always-cmd", "when": "always", "language": "all"},
+        {"name": "go-check", "cmd": "go-cmd", "when": "always", "language": "go"},
+    ])
+
+    result = run_gate(session_dir=session_dir, languages={"python"})
+    check_names = [name for name, _, _ in result.checks]
+    assert "always-check" in check_names
+    assert "go-check" not in check_names
+
+
+def test_task_languages_union() -> None:
+    from splinter.agents.gate import task_languages
+
+    task = Task(description="t", acceptance="t", target_files=["a.py", "b.go"])
+    assert task_languages(task) == {"python", "go"}
+
+    task_mixed = Task(description="t", acceptance="t", target_files=["x.ts", "y.rs", "z.py"])
+    assert task_languages(task_mixed) == {"typescript", "rust", "python"}
+
+    task_empty = Task(description="t", acceptance="t", target_files=[])
+    assert task_languages(task_empty) == set()
+
+    task_none = Task(description="t", acceptance="t", target_files=None)
+    assert task_languages(task_none) == set()
+
+
+def test_gate_default_for_tags_language() -> None:
+    from splinter.configure import LANGUAGE_GATE_DEFAULTS
+
+    for lang in LANGUAGE_GATE_DEFAULTS:
+        checks = gate_default_for(lang)
+        for check in checks:
+            assert check.get("language") == lang, (
+                f"gate_default_for({lang!r}) check {check['name']!r} "
+                f"has language={check.get('language')!r}"
+            )

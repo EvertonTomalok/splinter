@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
+
+import pytest
 
 from splinter.agents.localizer import (
     CodeAnchor,
@@ -574,28 +577,24 @@ def test_precision_prompt_requires_one_line_insight() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_find_meta_files_empty_repo(tmp_path: "Path") -> None:
-    from pathlib import Path
+def test_find_meta_files_empty_repo(tmp_path: Path) -> None:
     result = _find_meta_files(str(tmp_path))
     assert result == []
 
 
-def test_find_meta_files_agents_md(tmp_path: "Path") -> None:
-    from pathlib import Path
+def test_find_meta_files_agents_md(tmp_path: Path) -> None:
     (tmp_path / "AGENTS.md").write_text("# Agents\nuse tool X")
     result = _find_meta_files(str(tmp_path))
     assert "AGENTS.md" in result
 
 
-def test_find_meta_files_claude_md(tmp_path: "Path") -> None:
-    from pathlib import Path
+def test_find_meta_files_claude_md(tmp_path: Path) -> None:
     (tmp_path / "CLAUDE.md").write_text("# Claude instructions")
     result = _find_meta_files(str(tmp_path))
     assert "CLAUDE.md" in result
 
 
-def test_find_meta_files_skill_md(tmp_path: "Path") -> None:
-    from pathlib import Path
+def test_find_meta_files_skill_md(tmp_path: Path) -> None:
     skill_dir = tmp_path / "skills" / "run_python"
     skill_dir.mkdir(parents=True)
     (skill_dir / "SKILL.md").write_text("---\nname: run_python\n---\nRun Python.")
@@ -603,8 +602,7 @@ def test_find_meta_files_skill_md(tmp_path: "Path") -> None:
     assert any("SKILL.md" in f and "run_python" in f for f in result)
 
 
-def test_find_meta_files_splinter_skill_md(tmp_path: "Path") -> None:
-    from pathlib import Path
+def test_find_meta_files_splinter_skill_md(tmp_path: Path) -> None:
     skill_dir = tmp_path / "splinter" / "skills" / "run_tests"
     skill_dir.mkdir(parents=True)
     (skill_dir / "SKILL.md").write_text("---\nname: run_tests\n---\nRun tests.")
@@ -612,8 +610,7 @@ def test_find_meta_files_splinter_skill_md(tmp_path: "Path") -> None:
     assert any("SKILL.md" in f and "run_tests" in f for f in result)
 
 
-def test_find_meta_files_agents_in_subdir(tmp_path: "Path") -> None:
-    from pathlib import Path
+def test_find_meta_files_agents_in_subdir(tmp_path: Path) -> None:
     sub = tmp_path / "pkg"
     sub.mkdir()
     (sub / "AGENTS.md").write_text("sub-package agents")
@@ -626,8 +623,7 @@ def test_find_meta_files_agents_in_subdir(tmp_path: "Path") -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_meta_anchors_agents_md(tmp_path: "Path") -> None:
-    from pathlib import Path
+def test_meta_anchors_agents_md(tmp_path: Path) -> None:
     (tmp_path / "AGENTS.md").write_text("# Agents")
     anchors = _meta_anchors(str(tmp_path), existing_files=set())
     assert any(a.file == "AGENTS.md" for a in anchors)
@@ -637,15 +633,13 @@ def test_meta_anchors_agents_md(tmp_path: "Path") -> None:
     assert "agent" in agents_anchor.reason.lower() or "convention" in agents_anchor.reason.lower()
 
 
-def test_meta_anchors_skips_existing(tmp_path: "Path") -> None:
-    from pathlib import Path
+def test_meta_anchors_skips_existing(tmp_path: Path) -> None:
     (tmp_path / "AGENTS.md").write_text("# Agents")
     anchors = _meta_anchors(str(tmp_path), existing_files={"AGENTS.md"})
     assert not any(a.file == "AGENTS.md" for a in anchors)
 
 
-def test_meta_anchors_claude_md(tmp_path: "Path") -> None:
-    from pathlib import Path
+def test_meta_anchors_claude_md(tmp_path: Path) -> None:
     (tmp_path / "CLAUDE.md").write_text("# Claude instructions")
     anchors = _meta_anchors(str(tmp_path), existing_files=set())
     assert any(a.file == "CLAUDE.md" for a in anchors)
@@ -653,8 +647,7 @@ def test_meta_anchors_claude_md(tmp_path: "Path") -> None:
     assert claude_anchor.relevance == "hot"
 
 
-def test_meta_anchors_skill_file(tmp_path: "Path") -> None:
-    from pathlib import Path
+def test_meta_anchors_skill_file(tmp_path: Path) -> None:
     skill_dir = tmp_path / "skills" / "run_python"
     skill_dir.mkdir(parents=True)
     (skill_dir / "SKILL.md").write_text("skill content")
@@ -664,8 +657,7 @@ def test_meta_anchors_skill_file(tmp_path: "Path") -> None:
     assert skill_anchor.relevance == "hot"
 
 
-def test_meta_anchors_skips_missing_file(tmp_path: "Path") -> None:
-    from pathlib import Path
+def test_meta_anchors_skips_missing_file(tmp_path: Path) -> None:
     # AGENTS.md listed by _find_meta_files but doesn't exist on disk — skip it
     # (simulate by not creating the file; _meta_anchors checks existence)
     anchors = _meta_anchors(str(tmp_path), existing_files=set())
@@ -677,8 +669,9 @@ def test_meta_anchors_skips_missing_file(tmp_path: "Path") -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_run_search_tools_includes_meta_section(tmp_path: "Path", monkeypatch: "pytest.MonkeyPatch") -> None:
-    import pytest
+def test_run_search_tools_includes_meta_section(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.chdir(tmp_path)
     (tmp_path / "AGENTS.md").write_text("# Agents\nuse tool X")
     result = _run_search_tools("build a feature", repo_path=str(tmp_path))
@@ -687,8 +680,9 @@ def test_run_search_tools_includes_meta_section(tmp_path: "Path", monkeypatch: "
     assert "use tool X" in result
 
 
-def test_run_search_tools_no_meta_when_empty_repo(tmp_path: "Path", monkeypatch: "pytest.MonkeyPatch") -> None:
-    import pytest
+def test_run_search_tools_no_meta_when_empty_repo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.chdir(tmp_path)
     result = _run_search_tools("build a feature", repo_path=str(tmp_path))
     assert "Meta / Agent / Skill Files" not in result

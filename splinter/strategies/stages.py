@@ -15,7 +15,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
 from splinter.agents.evaluator import Evaluator
-from splinter.agents.gate import run_gate
+from splinter.agents.gate import run_gate, task_languages
 from splinter.agents.runner import RunResult, Task, run_task
 from splinter.memory.knowledge import KnowledgeStore
 from splinter.memory.session import Session
@@ -165,7 +165,8 @@ class GateStage(Stage):
     def process(self, ctx: IterationContext) -> bool:
         with agentic_scope(ctx.session, "gate", ctx.task_index, ctx.iteration):
             try:
-                result = run_gate(session_dir=ctx.session.dir)
+                langs = task_languages(ctx.task)
+                result = run_gate(session_dir=ctx.session.dir, languages=langs)
             except Exception:
                 # Gate unavailable in this project — nothing to record, eval decides.
                 return True
