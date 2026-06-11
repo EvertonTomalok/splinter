@@ -226,6 +226,96 @@ config takes precedence when both exist.
 
 ---
 
+## Commands
+
+| Command | Description |
+|---------|-------------|
+| `splinter setup` | Verify environment — checks both CLIs, pings each provider, validates the ladder |
+| `splinter prd [description]` | Generate a PRD interactively (Q&A with the sensei) |
+| `splinter run` | Run a task or PRD through a strategy |
+| `splinter resume [session]` | Resume a session — PRD refinement, or a failed/interrupted run |
+| `splinter analyze` | Inspect a session in an interactive TUI |
+| `splinter configure` | Pick per-step models in a TUI, then write `config.yaml` |
+
+### `splinter run`
+
+```
+splinter run [OPTIONS]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--strategy TEXT` | Strategy name or turtle alias (`cascade`/`leonardo`, `direct`/`raphael`, `adaptive`/`donatello`, `sprint`/`michelangelo`) |
+| `--prd TEXT` | Path to `prd.md` |
+| `--task TEXT` | Path to `task.yaml` (for `direct` strategy) |
+| `--effort TEXT` | Override reasoning effort (`trivial`, `normal`, `hard`, `critical`) |
+| `--budget FLOAT` | Max cost cap in USD |
+| `--max-iterations INT` | Max loop iterations (default: 5) |
+| `--eval TEXT` | Override eval skill |
+| `--eval-model TEXT` | Override evaluator model |
+| `--eval-effort TEXT` | Override evaluator reasoning effort |
+| `--cowabunga` | Full autonomy — skip PRD Q&A, never stop on `ASK_USER` |
+| `--no-ground` | Skip codebase grounding before PRD Q&A |
+| `--quiet` | Plain log output instead of the live TUI |
+| `--use-cc-only` | Swap to Claude-only runners before running |
+
+### `splinter prd`
+
+```
+splinter prd [description]
+```
+
+| Option | Description |
+|--------|-------------|
+| `description` | Feature or bug description (passed inline or typed interactively) |
+| `--strategy TEXT` | Pre-select strategy, skips that question in Q&A |
+| `--no-ground` | Skip codebase grounding before PRD Q&A |
+
+### `splinter resume`
+
+```
+splinter resume [session]
+```
+
+Transient failures continue from where they stopped; critical failures roll back the failing stage and redo it.
+
+| Option | Description |
+|--------|-------------|
+| `session` | Session ID to resume (default: latest in-progress session) |
+| `--reset` | Re-run from the head — fresh localize + plan |
+| `--use-cc-only` | Swap to Claude-only runners before resuming |
+
+### `splinter analyze`
+
+```
+splinter analyze [OPTIONS]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--session TEXT` | Session ID (default: most recent) |
+| `--watch` | Live-refresh until the run finishes |
+| `--expand [plan\|loop\|eval\|localization\|trace\|agentic\|all]` | Print a step's full markdown one-shot |
+| `--no-interactive` | Static overview instead of the TUI |
+
+### `splinter configure`
+
+```
+splinter configure [OPTIONS]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--use-cc-only` | Switch to Claude-only ladder (`haiku` / `sonnet` / `opus`) |
+| `--use-default` | Switch back to the full opencode roster |
+| `--timeout INT` | Set per-call model timeout in seconds (default: 3600) |
+| `--gate-checks TEXT` | Replace gate check suite (comma-separated commands) |
+| `--init-prompts` | Scaffold editable prompt templates into `.splinter/prompts/` |
+| `--force` | Overwrite existing prompt templates |
+| `--no-interactive` | Skip the TUI even in a terminal |
+
+---
+
 ## Quickstart
 
 Create a PRD interactively, then run it. `splinter prd` asks a few lettered
