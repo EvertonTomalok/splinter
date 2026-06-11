@@ -14,8 +14,11 @@ from splinter.agents import planner
 from splinter.agents.localizer import CodeAnchor, filter_task_context, localize, rtk_cat_tip
 from splinter.agents.runner import Task
 from splinter.memory.session import Session, new_session_id
-from splinter.models.roster import load_ladder
+from splinter.models.roster import bump_effort, load_ladder
 from splinter.obs.agentic import agentic_scope
+from splinter.providers.base import ProviderGapError
+from splinter.enums import Decision
+from splinter.strategies.base import AskUserPause, ManualValidationPause
 from splinter.strategies.registry import available_strategies, get_strategy
 
 DEFAULT_STRATEGY = "cascade"
@@ -119,6 +122,36 @@ def _classify_failure(exc: BaseException) -> str:
     return "critical"
 
 
+def _run_final_eval_cli(
+    *,
+    session: Session,
+    final_eval: str,
+    eval_model: str | None,
+    eval_effort: str | None,
+    tasks: list[Task],
+    ladder: object,
+    round_index: int,
+    effort_cur: str,
+) -> None:
+    """Run a single CLI-supplied eval skill and write results to knowledge/final-eval.md."""
+    from splinter.agents.final_eval import run_final_eval
+    from splinter.configure import FinalEvalEntry
+    from splinter.enums import FinalEvalKind
+
+    entry = FinalEvalEntry(
+        name=final_eval,
+        kind=FinalEvalKind.SKILL,
+        skill=final_eval,
+        model=eval_model,
+    )
+    task = tasks[0] if tasks else None
+    result = run_final_eval(entry, task=task, ladder=ladder)  # type: ignore[arg-type]
+    content = f"# Final Eval (CLI)\n\n{result.output}\n"
+    session.write("knowledge/final-eval.md", content)
+    verdict = "PASS" if result.passed else "FAIL"
+    session.append("events.md", f"final eval (CLI): {final_eval} · {verdict}")
+
+
 def _load_task_from_yaml(path: str) -> Task:
     with open(path) as f:
         data = yaml.safe_load(f) or {}
@@ -139,6 +172,44 @@ def _load_tasks_from_prd(prd_path: str) -> tuple[list[Task], str | None]:
     strategy = fm.get("strategy")
     tasks = planner.parse_stories(text)
     return tasks, strategy
+
+
+def _clear_round_caches(session: Session) -> None:
+    """Remove stale plan/filter/per-task-localization files before a new round."""
+    import re as _re
+
+    kdir = session.dir / "knowledge"
+    if not kdir.exists():
+        return
+    for p in kdir.iterdir():
+        if not p.suffix == ".md":
+            continue
+        name = p.stem
+        # keep localization.md (main); remove localization-N.md, plan*.md, filter-*.md
+        if name == "localization":
+            continue
+        if _re.match(r"^(plan(-\d+)?|filter-\d+|localization-\d+)$", name):
+            p.unlink(missing_ok=True)
+
+
+def _load_round_history(session: Session) -> str:
+    """Concatenate all round-eval-N notes into a single string."""
+    import re as _re
+
+    kdir = session.dir / "knowledge"
+    if not kdir.exists():
+        return ""
+    notes: list[tuple[int, str, str]] = []
+    for p in kdir.glob("round-eval-*.md"):
+        m = _re.match(r"^round-eval-(\d+)$", p.stem)
+        if m:
+            notes.append((int(m.group(1)), p.stem, p.read_text()))
+    if not notes:
+        return ""
+    parts: list[str] = []
+    for _, stem, content in sorted(notes):
+        parts.append(f"## {stem}\n\n{content}")
+    return "\n\n".join(parts)
 
 
 def run_pipeline(
@@ -176,6 +247,15 @@ def run_pipeline(
     if session is None:
         # Fresh session per run so prior runs (especially failed ones) are kept.
         session = Session(new_session_id())
+
+    # Read resume context now that session is guaranteed to exist.
+    resume_round = 0
+    resume_effort: str | None = None
+    if resume:
+        _cur = session.read_status()
+        resume_round = int(_cur.get("round_index", 0))
+        resume_effort = _cur.get("next_effort") or None
+    effective_effort = effort or resume_effort
 
     tasks: list[Task] = []
     if task_path:
@@ -251,8 +331,11 @@ def run_pipeline(
         localization = ""
         anchors: list[CodeAnchor] = []
         if prd_text:
-            # localize() returns cached anchors on resume (no-op if file exists + parseable).
-            if resume and session.has("knowledge/localization.md"):
+            # On a new round (resume_round > 0), clear stale caches and force re-localize.
+            if resume and resume_round > 0:
+                _clear_round_caches(session)
+            # Reuse localization cache only on first-round resume.
+            if resume and resume_round == 0 and session.has("knowledge/localization.md"):
                 log.info("resume: reusing existing localization")
                 localization = session.read("knowledge/localization.md")
                 from splinter.agents.localizer import _parse_anchors
@@ -320,12 +403,16 @@ def run_pipeline(
 
         _resolve_gate(session, ladder, tasks)
 
+        round_history = _load_round_history(session)
+        if round_history:
+            session.write("knowledge/previous_rounds.md", round_history)
+
         session.set_status("running", stage="run")
         results = strat.execute(
             tasks,
             session,
             ladder,
-            effort=effort,
+            effort=effective_effort,
             budget=budget,
             max_iterations=max_iterations,
             localization=localization,
@@ -339,9 +426,14 @@ def run_pipeline(
 
         from splinter.agents.final_eval import run_all_final_evals
         from splinter.configure import load_config, load_final_eval
-        from splinter.strategies.base import ManualValidationPause
 
-        final_eval_entries = load_final_eval(load_config())
+        _session_fe_path = session.dir / "final_eval.yaml"
+        if _session_fe_path.exists():
+            _fe_config = yaml.safe_load(_session_fe_path.read_text()) or {}
+            final_eval_entries = load_final_eval(_fe_config)
+            log.info("final eval: loaded from session dir (%d entries)", len(final_eval_entries))
+        else:
+            final_eval_entries = load_final_eval(load_config())
         if final_eval_entries:
             session.set_status("running", stage="final_eval")
             log.info("running %d final eval(s)…", len(final_eval_entries))
@@ -362,13 +454,32 @@ def run_pipeline(
             if not all_passed:
                 failed = [r.name for r in fe_results if not r.passed]
                 log.warning("final eval FAILED: %s", ", ".join(failed))
-            session.set_status(
-                "awaiting_validation",
-                stage="final_eval",
-                final_eval_summary=fe_summary,
-                final_eval_passed=all_passed,
-            )
-            raise ManualValidationPause(summary=fe_summary, all_passed=all_passed)
+                fe_fail_text = "\n".join(r.output for r in fe_results if not r.passed)
+                # ask_user / review kinds → manual validation modal (rc=4), not ask_user modal.
+                needs_manual = any(
+                    r.verdict is not None and r.verdict.decision == Decision.ASK_USER
+                    for r in fe_results
+                )
+                if needs_manual:
+                    raise ManualValidationPause(summary=fe_summary, all_passed=False)
+                session.write(
+                    f"knowledge/round-eval-{resume_round}.md",
+                    f"# Round {resume_round} Eval\n\n{fe_fail_text}\n",
+                )
+                task_effort = tasks[0].effort if tasks else "normal"
+                cur_effort = effective_effort or task_effort or "normal"
+                next_eff = bump_effort(cur_effort)
+                session.set_status(
+                    "awaiting_user",
+                    round_index=resume_round + 1,
+                    next_effort=next_eff,
+                    ask_corrections=fe_fail_text,
+                )
+                log.info(
+                    "final eval failed — pausing for round %d (effort: %s)",
+                    resume_round + 1, next_eff,
+                )
+                return 3
 
         session.set_status("completed", stage="done")
         total = sum(r.cost for r in results)
@@ -377,20 +488,18 @@ def run_pipeline(
         print(f"  runs: {len(results)}")
         print(f"  cost: ${total:.4f}")
         return 0
-    except Exception as val_exc:
-        from splinter.strategies.base import ManualValidationPause
-
-        if not isinstance(val_exc, ManualValidationPause):
-            raise val_exc from val_exc
+    except ManualValidationPause as val_exc:
+        session.set_status(
+            "awaiting_validation",
+            stage="final_eval",
+            final_eval_summary=val_exc.summary,
+            final_eval_passed=val_exc.all_passed,
+        )
         log.info("run paused — awaiting manual validation")
         print(f"run complete — awaiting manual validation.\n{val_exc.summary}")
         print(f"  validate: splinter resume {session.id}")
         return 4
-    except Exception as ask_exc:
-        from splinter.strategies.base import AskUserPause
-
-        if not isinstance(ask_exc, AskUserPause):
-            raise
+    except AskUserPause as ask_exc:
         session.set_status(
             "awaiting_user",
             ask_reason=ask_exc.reason,
@@ -403,11 +512,7 @@ def run_pipeline(
         print(f"run paused — needs your input.\n  {ask_exc.reason}")
         print(f"  resume: splinter resume {session.id}")
         return 3
-    except Exception as gap_exc:
-        from splinter.providers.base import ProviderGapError
-
-        if not isinstance(gap_exc, ProviderGapError):
-            raise
+    except ProviderGapError as gap_exc:
         session.set_status(
             "paused",
             kind=gap_exc.kind,

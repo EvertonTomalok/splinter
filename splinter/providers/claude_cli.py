@@ -250,13 +250,19 @@ class ClaudeProvider(ModelProvider):
         model: str,
         *,
         variant: str | None = None,
+        output_format: str = "json",
         session: str | None = None,
         timeout: int | None = None,
+        agent: str = "build",
     ) -> ProviderResponse:
         from splinter.providers.base import detect_provider_gap
 
         try:
-            result = run(prompt, model, effort=variant, resume=session, timeout=timeout)
+            result = run(
+                prompt, model,
+                effort=variant, output_format=output_format,
+                resume=session, timeout=timeout,
+            )
         except Exception as exc:
             gap = detect_provider_gap(exc, self.name, model)
             if gap:

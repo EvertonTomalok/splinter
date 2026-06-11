@@ -275,8 +275,9 @@ class DirectStrategy(Strategy):
             try:
                 log.info("planning task %d with %s", i + 1, ladder.planner_model)
                 task_loc = session.read(f"knowledge/localization-{i + 1}.md")
+                prev_rounds = session.read("knowledge/previous_rounds.md")
                 code_ctx = "\n\n".join(
-                    filter(None, [task_loc, task.filtered_context or localization])
+                    filter(None, [prev_rounds, task_loc, task.filtered_context or localization])
                 )
                 with agentic_scope(session, "plan", i, 0):
                     plan = _make_plan(task, ladder, code_ctx, session=session)
@@ -364,7 +365,10 @@ class DirectStrategy(Strategy):
                 session.write(task_plan_file, f"# Plan\n\n{plan}\n")
         else:
             log.info("planning with %s (once)", ladder.planner_model)
-            code_ctx = task.filtered_context or localization
+            prev_rounds = session.read("knowledge/previous_rounds.md")
+            code_ctx = "\n\n".join(
+                filter(None, [prev_rounds, task.filtered_context or localization])
+            )
             with agentic_scope(session, "plan", task_index, 0):
                 plan = _make_plan(task, ladder, code_ctx, session=session)
             session.write("knowledge/plan.md", f"# Plan\n\n{plan}\n")
