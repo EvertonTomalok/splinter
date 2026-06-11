@@ -20,7 +20,7 @@ from splinter.agents.runner import RunResult, Task, run_task
 from splinter.memory.knowledge import KnowledgeStore
 from splinter.memory.session import Session
 from splinter.models.roster import Ladder
-from splinter.obs.agentic import agentic_scope, record_gate_marker
+from splinter.obs.agentic import agentic_scope, load_agentic_events, record_gate_marker
 from splinter.obs.trace import RunEntry, Trace, log_run
 from splinter.skills import ResolvedSkill
 from splinter.strategies.base import EvalVerdict
@@ -55,6 +55,14 @@ class IterationContext:
     gate_output: str = ""
     verdict: EvalVerdict | None = None
     _loop_lines: list[str] = field(default_factory=list)
+    _structure_flushed: bool = field(default=False)
+
+    def flush_structure(self) -> None:
+        """Write the iteration header to ``loop.md`` (idempotent, at RUN entry)."""
+        if self._structure_flushed:
+            return
+        self.session.append("loop.md", f"## Iteration {self.iteration}\n")
+        self._structure_flushed = True
 
     def flush_loop(self) -> None:
         """Write the accumulated iteration log to ``loop.md`` (append-only)."""
@@ -89,12 +97,35 @@ def build_chain(*stages: Stage) -> Stage:
     return stages[0]
 
 
+def _render_actions(task_index: int, iteration: int, session: Session) -> str:
+    """Render captured actions for this task/iteration as markdown.
+
+    Returns empty string if no actions found.
+    """
+    events = load_agentic_events(session)
+    actions = [
+        e for e in events
+        if e.task_index == task_index
+        and e.iteration == iteration
+        and e.kind in {"tool_use", "text"}
+    ]
+    if not actions:
+        return ""
+    lines = ["## Actions"]
+    for e in actions:
+        summary = e.extra.get("summary", "")
+        if summary:
+            lines.append(f"- {summary}")
+    return "\n".join(lines) + "\n"
+
+
 class RunStage(Stage):
     """Execute the task with the current tier's model, recording the run."""
 
     def process(self, ctx: IterationContext) -> bool:
         from splinter.agents.runner import resolve_model, resolve_variant
 
+        ctx.flush_structure()
         mode = "fixing" if ctx.corrections else "implementing"
         model_id, _ = resolve_model(ctx.tier, ctx.ladder)
         variant = resolve_variant(ctx.task, ctx.effort_override, ctx.ladder, ctx.tier)
@@ -132,17 +163,18 @@ class RunStage(Stage):
             ctx.oc_session = result.opencode_session
 
         # Persist the runner's raw output so `analyze` can expand it per iteration.
+        actions_md = _render_actions(ctx.task_index, ctx.iteration, ctx.session)
         ctx.session.write(
             f"runs/iter-{ctx.iteration}.md",
             f"# Run output — iteration {ctx.iteration}\n"
             f"- model: {result.model} (tier {ctx.tier})\n"
             f"- tokens: {result.tokens}\n"
             f"- cost: ${result.cost:.4f}\n\n"
+            f"{actions_md}"
             f"{result.text}\n",
         )
 
         ctx._loop_lines += [
-            f"## Iteration {ctx.iteration}",
             f"- model: {result.model} (tier {ctx.tier})",
             f"- session: {ctx.oc_session or 'new'}",
             f"- tokens: {result.tokens}",
