@@ -54,7 +54,12 @@ def parse_stories(prd_text: str) -> list[Task]:
         effort = effort_match.group(1) if effort_match else "normal"
 
         skill_match = re.search(r"eval_skill:\s*(\S+)", block)
-        skill = skill_match.group(1) if skill_match else None
+        _raw_skill = skill_match.group(1) if skill_match else None
+        skill = (
+            None
+            if _raw_skill is None or _raw_skill.lower() in ("omit", "none", "null") or _raw_skill.startswith("(")
+            else _raw_skill
+        )
 
         ac_lines = re.findall(r"- \[[ x]\]\s*(.+)", block)
         acceptance = "\n".join(ac_lines) if ac_lines else desc

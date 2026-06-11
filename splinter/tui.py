@@ -300,6 +300,8 @@ class AnalyzeApp(App[None]):
         super().__init__()
         self.session = session
         self._traj_node: TreeNode[Any] | None = None
+        self._kn_node: TreeNode[Any] | None = None
+        self._kn_labels: set[str] = set()
         self._timer: Any = None
 
     def compose(self) -> ComposeResult:
@@ -350,9 +352,10 @@ class AnalyzeApp(App[None]):
             if lbl not in ("plan", "localization") and not lbl.startswith("plan-")
         ]
         if extra:
-            kn = tree.root.add("📝 Knowledge", expand=False)
+            self._kn_node = tree.root.add("📝 Knowledge", expand=True)
             for filename, label in extra:
-                kn.add_leaf(label, data={"kind": "file", "label": label, "file": filename})
+                self._kn_labels.add(label)
+                self._kn_node.add_leaf(label, data={"kind": "file", "label": label, "file": filename})
 
         self._traj_node = tree.root.add("📈 Trajectory", expand=True)
         self._refresh_trajectory()
@@ -407,10 +410,28 @@ class AnalyzeApp(App[None]):
         """Shift+R — flip the 1s auto-refresh on/off."""
         self._auto = not self._auto
 
+    def _refresh_knowledge(self) -> None:
+        notes = _knowledge_notes(self.session)
+        extra = [
+            (fn, lbl)
+            for fn, lbl in notes
+            if lbl not in ("plan", "localization") and not lbl.startswith("plan-")
+        ]
+        new = [(fn, lbl) for fn, lbl in extra if lbl not in self._kn_labels]
+        if not new:
+            return
+        tree = self.query_one("#nav", Tree)
+        if self._kn_node is None:
+            self._kn_node = tree.root.add("📝 Knowledge", expand=True)
+        for filename, label in new:
+            self._kn_labels.add(label)
+            self._kn_node.add_leaf(label, data={"kind": "file", "label": label, "file": filename})
+
     def _do_reload(self) -> None:
         state = _run_state(self.session)
         self.title = f"splinter analyze · {self.session.id}"
         self._refresh_trajectory()
+        self._refresh_knowledge()
 
         node = self.query_one("#nav", Tree).cursor_node
         self._render_data(node.data if node is not None else None)
