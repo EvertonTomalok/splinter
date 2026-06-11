@@ -7,13 +7,17 @@ from typing import Any
 
 import yaml
 
+CODEX_MODELS: dict[str, str] = {
+    "gpt5_codex": "codex/gpt-5-codex",
+}
+
 
 def provider_for(model_id: str) -> str:
     """Infer the provider from a model id."""
-    if model_id.startswith("opencode-go/") or model_id.startswith("opencode/"):
-        return "opencode"
     if model_id.startswith("codex/"):
         return "codex"
+    if model_id.startswith("opencode-go/") or model_id.startswith("opencode/"):
+        return "opencode"
     return "claude"
 
 
@@ -88,8 +92,23 @@ class Ladder:
     def opencode_model_ids(self) -> list[str]:
         return [m for t in self.tiers if t.provider == "opencode" for m in t.models]
 
+    def codex_model_ids(self) -> list[str]:
+        return [m for t in self.tiers if t.provider == "codex" for m in t.models]
+
     def effort_mapping(self, effort: str) -> EffortMapping | None:
         return self.effort_map.get(effort)
+
+
+_EFFORT_ORDER = ["trivial", "normal", "hard", "critical"]
+
+
+def bump_effort(effort: str) -> str:
+    """Return next effort level up; stays at max if already at top."""
+    try:
+        idx = _EFFORT_ORDER.index(effort)
+    except ValueError:
+        return effort
+    return _EFFORT_ORDER[min(idx + 1, len(_EFFORT_ORDER) - 1)]
 
 
 def rewrite_runners_claude(

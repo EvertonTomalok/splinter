@@ -1344,8 +1344,11 @@ class RunApp(App[int]):
         splog.addHandler(self._handler)
         logging.getLogger("splinter.live").setLevel(logging.INFO)
 
-        if self.session.read_status().get("state") == "awaiting_user":
+        _state = self.session.read_status().get("state")
+        if _state == "awaiting_user":
             self.call_after_refresh(self._show_ask_user_modal)
+        elif _state == "awaiting_validation":
+            self.call_after_refresh(self._show_manual_validation_modal)
         else:
             self.run_worker(self._work, thread=True, name="pipeline", exclusive=True)
 
@@ -2721,7 +2724,13 @@ class PrdSessionApp(App[int | None]):
         from splinter.configure import load_config, load_final_eval
 
         try:
-            entries = load_final_eval(load_config())
+            fe_path = self.session.dir / "final_eval.yaml"
+            if fe_path.exists():
+                import yaml as _yaml
+                _fe_cfg = _yaml.safe_load(fe_path.read_text()) or {}
+                entries = load_final_eval(_fe_cfg)
+            else:
+                entries = load_final_eval(load_config())
         except Exception:
             return
         if not entries:
@@ -2884,6 +2893,18 @@ class PrdSessionApp(App[int | None]):
         self._say(f"[green]▶ running with strategy '{self.strategy}'…[/]")
         self.phase = "run"
         self._save_state()
+        # Write session-scoped final_eval if not already set (global config or session file).
+        fe_path = self.session.dir / "final_eval.yaml"
+        if not fe_path.exists():
+            from splinter.configure import load_config, load_final_eval
+            import yaml as _yaml
+            if not load_final_eval(load_config()):
+                fe_path.write_text(
+                    _yaml.dump(
+                        {"final_eval": [{"name": "review", "kind": "ask_user"}]},
+                        default_flow_style=False,
+                    )
+                )
         self.exit(0)
 
 
@@ -3064,7 +3085,7 @@ def resume_session(session_id: str | None, *, reset: bool = False) -> int:
     from splinter.prd_session import prune_dead_prd_sessions
 
     prune_dead_prd_sessions()  # drop abandoned empty refinements before resolving
-    resumable_run = {"FAILED", "INTERRUPTED", "PAUSED", "AWAITING_USER"}
+    resumable_run = {"FAILED", "INTERRUPTED", "PAUSED", "AWAITING_USER", "AWAITING_VALIDATION"}
     sessions = list_sessions()
 
     sid = session_id

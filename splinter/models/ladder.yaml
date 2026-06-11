@@ -58,6 +58,14 @@ tiers:
       - *sonnet
     variant: max
 
+  - name: codex
+    level: 6
+    # codex-based runner; reached by escalation beyond last-resort
+    provider: codex
+    models:
+      - *codex_gpt5
+    variant: high
+
 # Task difficulty → starting tier. Escalation walks up from there; the per-tier
 # `variant` above sets the reasoning level at each rung.
 effort_map:

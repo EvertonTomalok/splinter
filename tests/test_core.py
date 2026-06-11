@@ -61,10 +61,11 @@ def isolated_ladder(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> "objec
 
 def test_ladder_loads(isolated_ladder: "object") -> None:
     ladder = isolated_ladder
-    assert len(ladder.tiers) == 6
+    assert len(ladder.tiers) == 7
     assert ladder.tiers[0].name == "easy"
     assert ladder.tiers[4].name == "critical"
     assert ladder.tiers[5].name == "last-resort"
+    assert ladder.tiers[6].name == "codex"
     assert len(ladder.all_model_ids()) > 0
     # floor is deepseek-v4-pro; workhorse rung (T1) switches to minimax-m3
     assert ladder.tiers[0].models[0] == "opencode-go/deepseek-v4-pro"
@@ -76,11 +77,14 @@ def test_ladder_loads(isolated_ladder: "object") -> None:
     assert ladder.tier_variant(3) == "max"
     assert ladder.tier_variant(4) == "high"
     assert ladder.tier_variant(5) == "max"
-    # T4 critical is the strong open runner (qwen); T5 last-resort is Claude
+    assert ladder.tier_variant(6) == "high"
+    # T4 critical is the strong open runner (qwen); T5 last-resort is Claude; T6 codex
     assert ladder.tier_by_level(4).models[0] == "opencode-go/qwen3.7-plus"
     assert ladder.tier_by_level(4).provider == "opencode"
     assert ladder.tier_by_level(5).models[0] == "sonnet"
     assert ladder.tier_by_level(5).provider == "claude"
+    assert ladder.tier_by_level(6).models[0] == "codex/gpt-5-codex"
+    assert ladder.tier_by_level(6).provider == "codex"
 
 
 def test_ladder_tier_by_level() -> None:
@@ -327,6 +331,24 @@ def test_rewrite_runners_claude(isolated_ladder: "object") -> None:
         assert provider == "claude"
         assert model_id == "sonnet"
         assert ladder.tier_variant(level) == Variant.HIGH
+
+
+def test_roster_loads_codex_tiers(isolated_ladder: "object") -> None:
+    from splinter.models.roster import provider_for
+
+    ladder = isolated_ladder
+    codex_tier = ladder.tier_by_name("codex")
+    assert codex_tier is not None
+    assert codex_tier.provider == "codex"
+    assert len(codex_tier.models) > 0
+    assert all(provider_for(m) == "codex" for m in codex_tier.models)
+    codex_ids = ladder.codex_model_ids()
+    assert len(codex_ids) > 0
+    assert codex_ids == codex_tier.models
+    assert provider_for("codex/gpt-5-codex") == "codex"
+    assert provider_for("opencode/foo") == "opencode"
+    assert provider_for("opencode-go/bar") == "opencode"
+    assert provider_for("sonnet") == "claude"
 
 
 def test_session_write_read(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
@@ -682,6 +704,55 @@ def test_provider_for_codex_resolution(tmp_path: Path, monkeypatch: "pytest.Monk
     ladder = load_ladder(raw)
     t0 = ladder.tier_by_level(0)
     assert t0.provider == "codex", "explicit provider: codex label must survive load_ladder"
+
+
+def test_available_models_includes_codex() -> None:
+    from splinter.configure import CODEX_MODELS, available_models
+
+    models = available_models()
+    assert isinstance(models, list)
+    for codex_model in CODEX_MODELS:
+        assert codex_model in models, f"codex model {codex_model} not in available_models()"
+
+
+def test_provider_for_codex() -> None:
+    from splinter.models.roster import provider_for
+
+    assert provider_for("codex/gpt-5-codex") == "codex"
+    assert provider_for("opencode/foo") == "opencode"
+    assert provider_for("opencode-go/bar") == "opencode"
+    assert provider_for("sonnet") == "claude"
+
+
+def test_check_codex_valid(monkeypatch: "pytest.MonkeyPatch") -> None:
+    from splinter.providers import codex
+    from splinter.setup import _check_codex
+
+    monkeypatch.setattr("shutil.which", lambda _: "/usr/local/bin/codex")
+    monkeypatch.setattr(codex, "ping", lambda **kw: True)
+    ok, detail = _check_codex()
+    assert ok is True
+    assert detail == "/usr/local/bin/codex"
+
+
+def test_check_codex_missing(monkeypatch: "pytest.MonkeyPatch") -> None:
+    from splinter.setup import _check_codex
+
+    monkeypatch.setattr("shutil.which", lambda _: None)
+    ok, detail = _check_codex()
+    assert ok is False
+    assert "codex not found in PATH" in detail
+
+
+def test_check_codex_invalid(monkeypatch: "pytest.MonkeyPatch") -> None:
+    from splinter.providers import codex
+    from splinter.setup import _check_codex
+
+    monkeypatch.setattr("shutil.which", lambda _: "/usr/local/bin/codex")
+    monkeypatch.setattr(codex, "ping", lambda **kw: False)
+    ok, detail = _check_codex()
+    assert ok is False
+    assert "codex exec did not respond" in detail
 
 
 def test_decision_strenum_compares_to_str() -> None:
@@ -2612,9 +2683,19 @@ def _make_fake_provider(name: str, resp_text: str = "ok", session_id: str | None
     class FakeProvider(ModelProvider):
         name = ""  # overridden below
 
-        def run(self, prompt, model, *, variant=None, output_format="json", session=None, timeout=None, agent="build"):  # type: ignore[override]
-            calls.append(dict(prompt=prompt, model=model, variant=variant, output_format=output_format, session=session, timeout=timeout, agent=agent))
-            return ProviderResponse(text=resp_text, tokens={"input": 1, "output": 1}, cost=0.01, raw={}, session_id=session_id)
+        def run(  # type: ignore[override]
+            self, prompt, model, *, variant=None, output_format="json",
+            session=None, timeout=None, agent="build",
+        ):
+            calls.append(dict(
+                prompt=prompt, model=model, variant=variant,
+                output_format=output_format, session=session,
+                timeout=timeout, agent=agent,
+            ))
+            return ProviderResponse(
+                text=resp_text, tokens={"input": 1, "output": 1},
+                cost=0.01, raw={}, session_id=session_id,
+            )
 
     p = FakeProvider()
     FakeProvider.name = name
@@ -2642,7 +2723,7 @@ def test_dispatch_run_text_opencode_routes_correctly(monkeypatch: "pytest.Monkey
     assert fake.calls[0]["agent"] == "build"  # type: ignore[attr-defined]
 
 
-def test_dispatch_run_text_calls_log_when_session_present(monkeypatch: "pytest.MonkeyPatch") -> None:
+def test_dispatch_run_text_calls_log_when_session_present(monkeypatch: "pytest.MonkeyPatch") -> None:  # noqa: E501
     from splinter.providers import dispatch
 
     fake = _make_fake_provider("claude")
@@ -2673,7 +2754,7 @@ def test_dispatch_run_text_no_log_when_session_none(monkeypatch: "pytest.MonkeyP
     assert logged == []
 
 
-def test_dispatch_run_text_session_returns_sid_from_provider(monkeypatch: "pytest.MonkeyPatch") -> None:
+def test_dispatch_run_text_session_returns_sid_from_provider(monkeypatch: "pytest.MonkeyPatch") -> None:  # noqa: E501
     from splinter.providers import dispatch
 
     fake = _make_fake_provider("claude", session_id="new-sid")
@@ -2683,7 +2764,7 @@ def test_dispatch_run_text_session_returns_sid_from_provider(monkeypatch: "pytes
     assert sid == "new-sid"
 
 
-def test_dispatch_run_text_session_fallback_to_passed_session(monkeypatch: "pytest.MonkeyPatch") -> None:
+def test_dispatch_run_text_session_fallback_to_passed_session(monkeypatch: "pytest.MonkeyPatch") -> None:  # noqa: E501
     """When provider returns session_id=None, sid falls back to passed-in session."""
     from splinter.providers import dispatch
 
@@ -2694,7 +2775,7 @@ def test_dispatch_run_text_session_fallback_to_passed_session(monkeypatch: "pyte
     assert sid == "prior-sid"
 
 
-def test_dispatch_run_provider_session_resp_sid_matches_returned_sid(monkeypatch: "pytest.MonkeyPatch") -> None:
+def test_dispatch_run_provider_session_resp_sid_matches_returned_sid(monkeypatch: "pytest.MonkeyPatch") -> None:  # noqa: E501
     from splinter.providers import dispatch
     from splinter.providers.base import ProviderResponse
 

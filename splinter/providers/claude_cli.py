@@ -259,7 +259,9 @@ class ClaudeProvider(ModelProvider):
 
         try:
             result = run(
-                prompt, model, effort=variant, output_format=output_format, resume=session, timeout=timeout
+                prompt, model,
+                effort=variant, output_format=output_format,
+                resume=session, timeout=timeout,
             )
         except Exception as exc:
             gap = detect_provider_gap(exc, self.name, model)

@@ -291,7 +291,9 @@ class OpencodeProvider(ModelProvider):
 
         try:
             result = run(
-                prompt, model, variant=variant, fmt=output_format, session=session, timeout=timeout, agent=agent
+                prompt, model,
+                variant=variant, fmt=output_format,
+                session=session, timeout=timeout, agent=agent,
             )
         except Exception as exc:
             gap = detect_provider_gap(exc, self.name, model)

@@ -339,8 +339,13 @@ def gate_default_languages() -> list[str]:
     return sorted(LANGUAGE_GATE_DEFAULTS)
 
 
+CODEX_MODELS: list[str] = [
+    "codex/gpt-5-codex",
+]
+
+
 def available_models() -> list[str]:
-    """All selectable model ids: opencode-go/* & opencode/* (live) + claude + ladder defaults."""
+    """All selectable model ids: claude + opencode + ladder + codex."""
     from splinter.models.roster import load_ladder
 
     models: set[str] = {"sonnet", "opus"}
@@ -355,6 +360,7 @@ def available_models() -> list[str]:
     except Exception:
         pass
     models.update(load_ladder().all_model_ids())
+    models.update(CODEX_MODELS)
     return sorted(models)
 
 

@@ -14,9 +14,10 @@ from splinter.agents import planner
 from splinter.agents.localizer import CodeAnchor, filter_task_context, localize, rtk_cat_tip
 from splinter.agents.runner import Task
 from splinter.memory.session import Session, new_session_id
-from splinter.models.roster import load_ladder
+from splinter.models.roster import bump_effort, load_ladder
 from splinter.obs.agentic import agentic_scope
 from splinter.providers.base import ProviderGapError
+from splinter.enums import Decision
 from splinter.strategies.base import AskUserPause, ManualValidationPause
 from splinter.strategies.registry import available_strategies, get_strategy
 
@@ -173,6 +174,44 @@ def _load_tasks_from_prd(prd_path: str) -> tuple[list[Task], str | None]:
     return tasks, strategy
 
 
+def _clear_round_caches(session: Session) -> None:
+    """Remove stale plan/filter/per-task-localization files before a new round."""
+    import re as _re
+
+    kdir = session.dir / "knowledge"
+    if not kdir.exists():
+        return
+    for p in kdir.iterdir():
+        if not p.suffix == ".md":
+            continue
+        name = p.stem
+        # keep localization.md (main); remove localization-N.md, plan*.md, filter-*.md
+        if name == "localization":
+            continue
+        if _re.match(r"^(plan(-\d+)?|filter-\d+|localization-\d+)$", name):
+            p.unlink(missing_ok=True)
+
+
+def _load_round_history(session: Session) -> str:
+    """Concatenate all round-eval-N notes into a single string."""
+    import re as _re
+
+    kdir = session.dir / "knowledge"
+    if not kdir.exists():
+        return ""
+    notes: list[tuple[int, str, str]] = []
+    for p in kdir.glob("round-eval-*.md"):
+        m = _re.match(r"^round-eval-(\d+)$", p.stem)
+        if m:
+            notes.append((int(m.group(1)), p.stem, p.read_text()))
+    if not notes:
+        return ""
+    parts: list[str] = []
+    for _, stem, content in sorted(notes):
+        parts.append(f"## {stem}\n\n{content}")
+    return "\n\n".join(parts)
+
+
 def run_pipeline(
     *,
     strategy: str | None = None,
@@ -208,6 +247,15 @@ def run_pipeline(
     if session is None:
         # Fresh session per run so prior runs (especially failed ones) are kept.
         session = Session(new_session_id())
+
+    # Read resume context now that session is guaranteed to exist.
+    resume_round = 0
+    resume_effort: str | None = None
+    if resume:
+        _cur = session.read_status()
+        resume_round = int(_cur.get("round_index", 0))
+        resume_effort = _cur.get("next_effort") or None
+    effective_effort = effort or resume_effort
 
     tasks: list[Task] = []
     if task_path:
@@ -283,8 +331,11 @@ def run_pipeline(
         localization = ""
         anchors: list[CodeAnchor] = []
         if prd_text:
-            # localize() returns cached anchors on resume (no-op if file exists + parseable).
-            if resume and session.has("knowledge/localization.md"):
+            # On a new round (resume_round > 0), clear stale caches and force re-localize.
+            if resume and resume_round > 0:
+                _clear_round_caches(session)
+            # Reuse localization cache only on first-round resume.
+            if resume and resume_round == 0 and session.has("knowledge/localization.md"):
                 log.info("resume: reusing existing localization")
                 localization = session.read("knowledge/localization.md")
                 from splinter.agents.localizer import _parse_anchors
@@ -352,12 +403,16 @@ def run_pipeline(
 
         _resolve_gate(session, ladder, tasks)
 
+        round_history = _load_round_history(session)
+        if round_history:
+            session.write("knowledge/previous_rounds.md", round_history)
+
         session.set_status("running", stage="run")
         results = strat.execute(
             tasks,
             session,
             ladder,
-            effort=effort,
+            effort=effective_effort,
             budget=budget,
             max_iterations=max_iterations,
             localization=localization,
@@ -399,7 +454,32 @@ def run_pipeline(
             if not all_passed:
                 failed = [r.name for r in fe_results if not r.passed]
                 log.warning("final eval FAILED: %s", ", ".join(failed))
-            raise ManualValidationPause(summary=fe_summary, all_passed=all_passed)
+                fe_fail_text = "\n".join(r.output for r in fe_results if not r.passed)
+                # ask_user / review kinds → manual validation modal (rc=4), not ask_user modal.
+                needs_manual = any(
+                    r.verdict is not None and r.verdict.decision == Decision.ASK_USER
+                    for r in fe_results
+                )
+                if needs_manual:
+                    raise ManualValidationPause(summary=fe_summary, all_passed=False)
+                session.write(
+                    f"knowledge/round-eval-{resume_round}.md",
+                    f"# Round {resume_round} Eval\n\n{fe_fail_text}\n",
+                )
+                task_effort = tasks[0].effort if tasks else "normal"
+                cur_effort = effective_effort or task_effort or "normal"
+                next_eff = bump_effort(cur_effort)
+                session.set_status(
+                    "awaiting_user",
+                    round_index=resume_round + 1,
+                    next_effort=next_eff,
+                    ask_corrections=fe_fail_text,
+                )
+                log.info(
+                    "final eval failed — pausing for round %d (effort: %s)",
+                    resume_round + 1, next_eff,
+                )
+                return 3
 
         session.set_status("completed", stage="done")
         total = sum(r.cost for r in results)
