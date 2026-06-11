@@ -14,9 +14,11 @@ from splinter.obs.agentic import (
     append_jsonl,
     load_agentic_events,
     read_events,
+    record_action,
     record_exchange,
     record_gate_marker,
 )
+from splinter.providers.claude_cli import _event_summaries
 
 
 @pytest.fixture
@@ -231,3 +233,194 @@ def test_exchange_verbatim_no_truncation(tmp_session: Session) -> None:
     assert len(events) == 1
     assert events[0].prompt == long_prompt
     assert events[0].response == long_response
+
+
+# ---------------------------------------------------------------------------
+# Provider action recording — AC unit tests
+# ---------------------------------------------------------------------------
+
+
+def test_event_summaries_tool_use(
+) -> None:
+    """Parse assistant message with tool_use block into (kind, summary) pair."""
+    line = json.dumps({
+        "type": "assistant",
+        "message": {
+            "content": [
+                {
+                    "type": "tool_use",
+                    "name": "Edit",
+                    "input": {"file_path": "/path/to/file.py", "old": "a", "new": "b"},
+                }
+            ]
+        },
+    })
+    summaries = _event_summaries(line)
+    assert len(summaries) == 1
+    assert summaries[0][0] == "tool_use"
+    assert "Edit" in summaries[0][1]
+    assert "/path/to/file.py" in summaries[0][1]
+
+
+def test_event_summaries_text(
+) -> None:
+    """Parse assistant message with text block into (kind, summary) pair."""
+    line = json.dumps({
+        "type": "assistant",
+        "message": {
+            "content": [
+                {
+                    "type": "text",
+                    "text": "Here is the solution to your problem",
+                }
+            ]
+        },
+    })
+    summaries = _event_summaries(line)
+    assert len(summaries) == 1
+    assert summaries[0][0] == "text"
+    assert "solution" in summaries[0][1]
+
+
+def test_event_summaries_mixed_content(
+) -> None:
+    """Parse assistant message with both tool_use and text blocks."""
+    line = json.dumps({
+        "type": "assistant",
+        "message": {
+            "content": [
+                {
+                    "type": "tool_use",
+                    "name": "Write",
+                    "input": {"file_path": "/new/file.ts"},
+                },
+                {
+                    "type": "text",
+                    "text": "Created the new file",
+                },
+            ]
+        },
+    })
+    summaries = _event_summaries(line)
+    assert len(summaries) == 2
+    assert summaries[0][0] == "tool_use"
+    assert summaries[1][0] == "text"
+
+
+def test_event_summaries_tool_detail_truncation(
+) -> None:
+    """Tool details truncated to ≤90 chars."""
+    long_path = "a" * 200
+    line = json.dumps({
+        "type": "assistant",
+        "message": {
+            "content": [
+                {
+                    "type": "tool_use",
+                    "name": "Edit",
+                    "input": {"file_path": long_path},
+                }
+            ]
+        },
+    })
+    summaries = _event_summaries(line)
+    assert len(summaries) == 1
+    summary = summaries[0][1]
+    assert len(summary) <= 110  # "🔧 Edit " + 90 chars max
+
+
+def test_event_summaries_text_truncation(
+) -> None:
+    """Text summaries truncated to ≤120 chars."""
+    long_text = "B" * 300
+    line = json.dumps({
+        "type": "assistant",
+        "message": {
+            "content": [
+                {
+                    "type": "text",
+                    "text": long_text,
+                }
+            ]
+        },
+    })
+    summaries = _event_summaries(line)
+    assert len(summaries) == 1
+    summary = summaries[0][1]
+    assert len(summary) <= 130  # "💬 " + 120 chars max
+
+
+def test_event_summaries_malformed_json(
+) -> None:
+    """Malformed JSON returns empty list."""
+    assert _event_summaries("not valid json") == []
+    assert _event_summaries("{unclosed") == []
+    assert _event_summaries("") == []
+
+
+def test_event_summaries_non_assistant_ignored(
+) -> None:
+    """Non-assistant messages return empty list."""
+    line = json.dumps({"type": "stream_event", "event": {"type": "other"}})
+    assert _event_summaries(line) == []
+
+
+def test_event_summaries_non_dict(
+) -> None:
+    """Non-dict objects return empty list."""
+    assert _event_summaries('"just a string"') == []
+    assert _event_summaries('["array", "not", "dict"]') == []
+
+
+def test_record_action_inside_scope(tmp_session: Session) -> None:
+    """record_action inside agentic_scope writes AgenticEvent."""
+    with agentic_scope(tmp_session, "run", 2, 1):
+        record_action("tool_use", "🔧 Edit /path/to/file")
+        record_action("text", "💬 Here is the solution")
+
+    loaded = load_agentic_events(tmp_session)
+    assert len(loaded) == 2
+
+    tool_event = loaded[0]
+    assert tool_event.task_index == 2
+    assert tool_event.iteration == 1
+    assert tool_event.kind == "tool_use"
+    assert tool_event.extra.get("summary") == "🔧 Edit /path/to/file"
+    assert tool_event.provider == "claude"
+    assert tool_event.model == ""
+    assert tool_event.tokens == {}
+    assert tool_event.cost == 0.0
+
+    text_event = loaded[1]
+    assert text_event.kind == "text"
+    assert text_event.extra.get("summary") == "💬 Here is the solution"
+
+
+def test_record_action_outside_scope(tmp_session: Session) -> None:
+    """record_action outside agentic_scope is no-op, no file written."""
+    record_action("tool_use", "🔧 Edit /path/to/file")
+
+    loaded = load_agentic_events(tmp_session)
+    assert len(loaded) == 0
+
+
+def test_record_action_custom_provider(tmp_session: Session) -> None:
+    """record_action respects custom provider parameter."""
+    with agentic_scope(tmp_session, "run", 0, 1):
+        record_action("tool_use", "🔧 WebSearch", provider="cursor")
+
+    loaded = load_agentic_events(tmp_session)
+    assert len(loaded) == 1
+    assert loaded[0].provider == "cursor"
+
+
+def test_record_action_timestamp_iso_format(tmp_session: Session) -> None:
+    """record_action sets ts in ISO 8601 format."""
+    with agentic_scope(tmp_session, "run", 0, 1):
+        record_action("text", "💬 Action summary")
+
+    loaded = load_agentic_events(tmp_session)
+    assert len(loaded) == 1
+    ts = loaded[0].ts
+    assert "T" in ts
+    assert ts.endswith("Z") or "+" in ts
