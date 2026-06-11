@@ -31,6 +31,7 @@ from splinter.enums import Decision
 from splinter.memory.knowledge import KnowledgeStore
 from splinter.memory.session import Session
 from splinter.models.roster import Ladder
+from splinter.obs.agentic import agentic_scope, record_exchange
 from splinter.obs.trace import Trace
 from splinter.providers.dispatch import run_text
 from splinter.skills import resolve_eval_skill
@@ -277,7 +278,8 @@ class DirectStrategy(Strategy):
                 code_ctx = "\n\n".join(
                     filter(None, [task_loc, task.filtered_context or localization])
                 )
-                plan = _make_plan(task, ladder, code_ctx, session=session)
+                with agentic_scope(session, "plan", i, 0):
+                    plan = _make_plan(task, ladder, code_ctx, session=session)
                 session.write(task_plan_file, f"# Plan\n\n{plan}\n")
                 if i == 0:
                     session.write("knowledge/plan.md", f"# Plan\n\n{plan}\n")
@@ -363,7 +365,8 @@ class DirectStrategy(Strategy):
         else:
             log.info("planning with %s (once)", ladder.planner_model)
             code_ctx = task.filtered_context or localization
-            plan = _make_plan(task, ladder, code_ctx, session=session)
+            with agentic_scope(session, "plan", task_index, 0):
+                plan = _make_plan(task, ladder, code_ctx, session=session)
             session.write("knowledge/plan.md", f"# Plan\n\n{plan}\n")
             session.write(task_plan_file, f"# Plan\n\n{plan}\n")
 
@@ -596,10 +599,12 @@ def _make_plan(task: Task, ladder: Ladder, code_ctx: str, session: object = None
         code_context_section=section("Code Context", code_ctx),
         standards_section=section("Code Conventions", load_standards()),
     )
-    return run_text(
+    plan = run_text(
         prompt,
         ladder.planner_model,
         variant=ladder.planner_effort,
         timeout=ladder.planner_timeout,
         session=session,
     )
+    record_exchange(prompt, plan, model=ladder.planner_model)
+    return plan

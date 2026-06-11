@@ -16,6 +16,7 @@ import os
 import re
 import sys
 import time
+from typing import Any
 
 from rich.console import Console
 
@@ -24,7 +25,7 @@ from splinter.memory.session import Session
 # Renders the markup in render_overview() for the non-TUI (print) code paths.
 _console = Console()
 
-EXPANDABLE = ("plan", "loop", "eval", "localization", "trace", "knowledge", "all")
+EXPANDABLE = ("plan", "loop", "eval", "localization", "trace", "knowledge", "agentic", "all")
 
 _EXPAND_FILES = {
     "plan": "knowledge/plan.md",
@@ -62,6 +63,65 @@ def _run_state(session: Session) -> str:
     if state:
         return state.upper()
     return "DONE" if session.read("trace.md") else "UNKNOWN"
+
+
+def _tasks(loop_md: str) -> list[tuple[int, str, str]]:
+    r"""Parse loop.md into (task_no, title, body) tuples per task header.
+
+    Splits on ^# Task (\d+)/\d+: (.*)$. If no header found, returns [(1, "", loop_md)]
+    for backward compat (single-task flat layout).
+    """
+    if not loop_md.strip():
+        return [(1, "", "")]
+
+    blocks = re.split(r"^# Task (\d+)/\d+: *(.*)$", loop_md, flags=re.MULTILINE)
+    if len(blocks) == 1:
+        return [(1, "", loop_md)]
+
+    out: list[tuple[int, str, str]] = []
+    for i in range(1, len(blocks), 3):
+        task_no = int(blocks[i])
+        title = blocks[i + 1].strip()
+        body = blocks[i + 2] if i + 2 < len(blocks) else ""
+        out.append((task_no, title, body))
+    return out
+
+
+def _eval_segments(eval_md: str, task_count: int) -> list[str]:
+    """Re-segment eval.md by iteration-number resets (detect task boundaries).
+
+    eval.md has no task headers, only ### Iter blocks in chronological order.
+    A block whose iter # <= previous iter # starts a new task. Returns one
+    eval slice per task, or [eval_md] if task_count <= 1 (no segmentation needed).
+    """
+    if task_count <= 1:
+        return [eval_md]
+
+    if not eval_md.strip():
+        return [""] * task_count
+
+    segments: list[str] = []
+    current_segment: list[str] = []
+    prev_iter: int = -1
+
+    parts = re.split(r"^### Iter (\d+):", eval_md, flags=re.MULTILINE)
+    for i in range(1, len(parts), 2):
+        iter_num = int(parts[i])
+        block_body = parts[i + 1] if i + 1 < len(parts) else ""
+
+        if iter_num <= prev_iter:
+            if current_segment:
+                segments.append("".join(current_segment))
+            current_segment = []
+        current_segment.append(f"### Iter {iter_num}:{block_body}")
+        prev_iter = iter_num
+
+    if current_segment:
+        segments.append("".join(current_segment))
+
+    while len(segments) < task_count:
+        segments.append("")
+    return segments[:task_count]
 
 
 def _iterations(loop_md: str) -> list[tuple[int, str, str]]:
@@ -497,6 +557,10 @@ def render_expand(session: Session, what: str) -> str:
             content = session.read(filename)
             out.append(f"===== {label} =====\n{content.strip() if content else '(empty)'}")
         return "\n\n".join(out)
+
+    if what == "agentic":
+        from splinter.obs.agentic import render_agentic
+        return render_agentic(session)
 
     if what == "plan":
         plans = _plan_files(session)

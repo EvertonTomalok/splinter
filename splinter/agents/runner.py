@@ -9,6 +9,7 @@ from typing import Any
 
 from splinter.enums import Effort, Variant
 from splinter.models.roster import Ladder
+from splinter.obs.agentic import record_exchange
 from splinter.providers.registry import get_provider
 from splinter.templating import render, section
 
@@ -144,6 +145,7 @@ def run_task(
             )
             time.sleep(wait)
     assert response is not None
+    record_exchange(prompt, response.text, model=model_id)
 
     return RunResult(
         text=response.text,

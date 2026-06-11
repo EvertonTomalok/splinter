@@ -103,7 +103,7 @@ def _ask(prompt: str, *, resume: str | None, session: object = None) -> Turn:
     cost = claude_cli._calc_cost(PRD_MODEL, result.usage)
     if session is not None:
         try:
-            session.log_llm_usage(PRD_MODEL, tokens, cost)  # type: ignore[union-attr]
+            session.log_llm_usage(PRD_MODEL, tokens, cost)  # type: ignore[attr-defined]
         except Exception:
             pass
     return Turn(text=result.text, session_id=sid, tokens=tokens, cost=cost)
@@ -147,7 +147,12 @@ def _resume_preamble(prd_text: str | None, *, resume: str | None) -> str:
 
 
 def refine(
-    answers: str, *, resume: str, prd_text: str | None = None, localization: str = "", session: object = None
+    answers: str,
+    *,
+    resume: str,
+    prd_text: str | None = None,
+    localization: str = "",
+    session: object = None
 ) -> Turn:
     """Incorporate the user's answers; return the updated draft + remaining questions.
 
@@ -207,7 +212,9 @@ def finalize(
     return _ask(prompt, resume=resume, session=session)
 
 
-def revise_final(instructions: str, *, resume: str, prd_text: str | None = None, session: object = None) -> Turn:
+def revise_final(
+    instructions: str, *, resume: str, prd_text: str | None = None, session: object = None
+) -> Turn:
     """Apply free-form edits to the finalized PRD and re-emit the full document."""
     prompt = (
         f"{_resume_preamble(prd_text, resume=resume)}"
@@ -219,7 +226,11 @@ def revise_final(instructions: str, *, resume: str, prd_text: str | None = None,
 
 
 def generate_prd(
-    instructions: str, *, strategy: str | None = None, localization: str = "", session: object = None
+    instructions: str,
+    *,
+    strategy: str | None = None,
+    localization: str = "",
+    session: object = None
 ) -> Turn:
     """Generate a complete PRD directly from instructions (no Q&A).
 

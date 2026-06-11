@@ -21,6 +21,7 @@ class ExpandStep(str, Enum):
     eval = "eval"
     localization = "localization"
     trace = "trace"
+    agentic = "agentic"
     all = "all"
 
 

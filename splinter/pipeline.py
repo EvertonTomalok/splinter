@@ -15,6 +15,7 @@ from splinter.agents.localizer import CodeAnchor, filter_task_context, localize,
 from splinter.agents.runner import Task
 from splinter.memory.session import Session, new_session_id
 from splinter.models.roster import load_ladder
+from splinter.obs.agentic import agentic_scope
 from splinter.strategies.registry import available_strategies, get_strategy
 
 DEFAULT_STRATEGY = "cascade"
@@ -247,7 +248,8 @@ def run_pipeline(
                 log.info("resume: re-parsed %d anchor(s)", len(anchors))
             else:
                 log.info("localizing against the codebase…")
-                anchors = localize(prd_text, session, ladder)
+                with agentic_scope(session, "locate", 0, 0):
+                    anchors = localize(prd_text, session, ladder)
                 localization = session.read("knowledge/localization.md")
 
         if anchors and tasks:

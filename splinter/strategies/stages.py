@@ -20,6 +20,7 @@ from splinter.agents.runner import RunResult, Task, run_task
 from splinter.memory.knowledge import KnowledgeStore
 from splinter.memory.session import Session
 from splinter.models.roster import Ladder
+from splinter.obs.agentic import agentic_scope, record_gate_marker
 from splinter.obs.trace import RunEntry, Trace, log_run
 from splinter.skills import ResolvedSkill
 from splinter.strategies.base import EvalVerdict
@@ -107,16 +108,17 @@ class RunStage(Stage):
             "same session" if ctx.oc_session else "new session",
         )
         log.info("  ▸ task: %s", ctx.task.description.splitlines()[0][:100])
-        result = run_task(
-            ctx.task,
-            ctx.plan,
-            ctx.tier,
-            ctx.ladder,
-            effort_override=ctx.effort_override,
-            localization=ctx.localization,
-            corrections=ctx.corrections,
-            opencode_session=ctx.oc_session,
-        )
+        with agentic_scope(ctx.session, "run", ctx.task_index, ctx.iteration):
+            result = run_task(
+                ctx.task,
+                ctx.plan,
+                ctx.tier,
+                ctx.ladder,
+                effort_override=ctx.effort_override,
+                localization=ctx.localization,
+                corrections=ctx.corrections,
+                opencode_session=ctx.oc_session,
+            )
         log.info(
             "iter %d · ran %s · tokens=%s · $%.4f",
             ctx.iteration,
@@ -161,33 +163,35 @@ class GateStage(Stage):
     """
 
     def process(self, ctx: IterationContext) -> bool:
-        try:
-            result = run_gate(session_dir=ctx.session.dir)
-        except Exception:
-            # Gate unavailable in this project — nothing to record, eval decides.
-            return True
+        with agentic_scope(ctx.session, "gate", ctx.task_index, ctx.iteration):
+            try:
+                result = run_gate(session_dir=ctx.session.dir)
+            except Exception:
+                # Gate unavailable in this project — nothing to record, eval decides.
+                return True
 
-        ctx.gate_passed = result.passed
-        if not result.passed:
-            failed = [name for name, passed, _ in result.checks if not passed]
-            ctx.gate_detail = f"failed: {', '.join(failed)}"
-            # Keep the actual failing output so the runner can see what broke.
-            ctx.gate_output = "\n\n".join(
-                f"### {name}\n{out}".rstrip()
-                for name, passed, out in result.checks
-                if not passed and out
+            ctx.gate_passed = result.passed
+            if not result.passed:
+                failed = [name for name, passed, _ in result.checks if not passed]
+                ctx.gate_detail = f"failed: {', '.join(failed)}"
+                # Keep the actual failing output so the runner can see what broke.
+                ctx.gate_output = "\n\n".join(
+                    f"### {name}\n{out}".rstrip()
+                    for name, passed, out in result.checks
+                    if not passed and out
+                )
+            log.info(
+                "iter %d · gate %s%s",
+                ctx.iteration,
+                "PASS" if result.passed else "FAIL",
+                f" ({ctx.gate_detail})" if not result.passed else "",
             )
-        log.info(
-            "iter %d · gate %s%s",
-            ctx.iteration,
-            "PASS" if result.passed else "FAIL",
-            f" ({ctx.gate_detail})" if not result.passed else "",
-        )
 
-        ctx._loop_lines.append(
-            f"- gate: {'PASS' if result.passed else 'FAIL'} {ctx.gate_detail}".rstrip()
-        )
-        return True
+            ctx._loop_lines.append(
+                f"- gate: {'PASS' if result.passed else 'FAIL'} {ctx.gate_detail}".rstrip()
+            )
+            record_gate_marker()
+            return True
 
 
 class EvalStage(Stage):
@@ -208,19 +212,20 @@ class EvalStage(Stage):
         evaluator = self._evaluator or Evaluator(ctx.ladder)
         eval_effort = evaluator.eval_effort_for(ctx.tier)
 
-        verdict = evaluator.judge(
-            ctx.task,
-            ctx.run_result.text,
-            eval_model=ctx.ladder.eval_model,
-            eval_effort=eval_effort,
-            plan=ctx.plan,
-            previous_evals="\n".join(ctx.eval_history[-2:]),
-            eval_skill=self._resolved_skill,
-            gate_passed=ctx.gate_passed,
-            gate_detail=ctx.gate_detail,
-            session=ctx.eval_session,
-            timeout=ctx.ladder.eval_timeout,
-        )
+        with agentic_scope(ctx.session, "eval", ctx.task_index, ctx.iteration):
+            verdict = evaluator.judge(
+                ctx.task,
+                ctx.run_result.text,
+                eval_model=ctx.ladder.eval_model,
+                eval_effort=eval_effort,
+                plan=ctx.plan,
+                previous_evals="\n".join(ctx.eval_history[-2:]),
+                eval_skill=self._resolved_skill,
+                gate_passed=ctx.gate_passed,
+                gate_detail=ctx.gate_detail,
+                session=ctx.eval_session,
+                timeout=ctx.ladder.eval_timeout,
+            )
         ctx.verdict = verdict
         ctx.eval_session = verdict.eval_session
         if verdict.cost > 0 or verdict.tokens:

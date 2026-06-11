@@ -6,10 +6,13 @@ written-criteria evaluation with no injected skill body).
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import logging
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -17,6 +20,7 @@ class ResolvedSkill:
     name: str
     description: str
     body: str
+    missing: bool = field(default=False)
 
 
 def _skill_paths(name: str) -> list[Path]:
@@ -44,7 +48,13 @@ def resolve_eval_skill(name: str | None) -> ResolvedSkill | None:
                     body = parts[2].strip()
             return ResolvedSkill(name=name, description=description, body=body)
 
-    raise ValueError(
-        f"unknown eval skill: '{name}'. "
-        f"Place a SKILL.md at skills/{name}/SKILL.md or splinter/skills/{name}/SKILL.md."
+    log.warning(
+        "eval skill '%s' not found (looked in skills/%s/SKILL.md and splinter/skills/%s/SKILL.md)",
+        name, name, name,
+    )
+    return ResolvedSkill(
+        name=name,
+        description="",
+        body="",
+        missing=True,
     )

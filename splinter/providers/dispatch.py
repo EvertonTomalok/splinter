@@ -42,7 +42,7 @@ def run_text(
 
 def _log(session: object, model: str, tokens: dict[str, int], cost: float) -> None:
     try:
-        session.log_llm_usage(model, tokens, cost)  # type: ignore[union-attr]
+        session.log_llm_usage(model, tokens, cost)  # type: ignore[attr-defined]
     except Exception:
         pass
 

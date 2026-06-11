@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from splinter.memory.knowledge import KnowledgeStore
 from splinter.memory.session import Session
 from splinter.models.roster import Ladder
+from splinter.obs.agentic import record_exchange
 from splinter.providers.base import ProviderGapError
 from splinter.providers.dispatch import run_text
 from splinter.tools import search as search_tools
@@ -223,10 +224,12 @@ def _recall_phase(
         "Use grep output lines (format: file:line:content) to populate line_start/line_end. "
         "Be thorough — coverage over precision. Output ONLY the JSON array, no prose."
     )
-    return run_text(
+    text = run_text(
         prompt, model, variant=variant, output_format="text", timeout=timeout, agent=agent,
         session=session,
     )
+    record_exchange(prompt, text, model=model)
+    return text
 
 
 _FILTER_MAX_FILE_CHARS = 4_000  # per file in the filter context

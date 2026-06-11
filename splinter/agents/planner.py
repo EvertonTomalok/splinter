@@ -57,7 +57,9 @@ def parse_stories(prd_text: str) -> list[Task]:
         _raw_skill = skill_match.group(1) if skill_match else None
         skill = (
             None
-            if _raw_skill is None or _raw_skill.lower() in ("omit", "none", "null") or _raw_skill.startswith("(")
+            if _raw_skill is None
+            or _raw_skill.lower() in ("omit", "none", "null")
+            or _raw_skill.startswith("(")
             else _raw_skill
         )
 

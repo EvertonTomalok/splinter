@@ -22,7 +22,7 @@ class EvalVerdict:
     #: session only when the eval decides to change the runner (escalate).
     eval_session: str | None = None
     cost: float = 0.0
-    tokens: dict = field(default_factory=dict)
+    tokens: dict[str, int] = field(default_factory=dict)
 
     @property
     def passed(self) -> bool:

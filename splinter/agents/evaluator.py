@@ -13,6 +13,7 @@ from dataclasses import dataclass, replace
 from splinter.agents.runner import Task
 from splinter.enums import Decision, Variant
 from splinter.models.roster import Ladder
+from splinter.obs.agentic import record_exchange
 from splinter.providers.dispatch import run_provider_session
 from splinter.skills import ResolvedSkill
 from splinter.strategies.base import EvalVerdict
@@ -80,7 +81,15 @@ class Evaluator:
         effort = eval_effort or self.ladder.eval_effort
         skill_section_text = ""
         if eval_skill is not None:
-            skill_section_text = section("Eval Skill", eval_skill.body)
+            if eval_skill.missing:
+                skill_section_text = section(
+                    "Eval Skill",
+                    f"⚠️ Eval skill '{eval_skill.name}' was requested but not found. "
+                    "No skill body is available. Evaluate based on the task description, "
+                    "acceptance criteria, and implementation output only.",
+                )
+            else:
+                skill_section_text = section("Eval Skill", eval_skill.body)
         gate_text = "PASS" if gate_passed else f"FAIL — {gate_detail or 'mechanical checks failed'}"
         plan_section_text = section("Implementation Plan", plan) if plan else ""
         prompt = render(
@@ -97,6 +106,7 @@ class Evaluator:
         response, sid = run_provider_session(
             prompt, model, variant=effort, session=session, timeout=timeout
         )
+        record_exchange(prompt, response.text, model=model)
         verdict = self._parse_verdict(response.text)
         return replace(verdict, eval_session=sid, cost=response.cost, tokens=response.tokens)
 

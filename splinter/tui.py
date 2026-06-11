@@ -46,13 +46,16 @@ from textual.widgets.tree import TreeNode
 from textual.worker import Worker, WorkerState
 
 from splinter.analyze import (
+    _eval_segments,
     _iterations,
     _knowledge_notes,
     _loop_block,
     _plan_files,
     _prd_phases,
     _run_state,
+    _tasks,
     _trace_metrics,
+    _verdict_glyph,
     format_run_completion,
     render_overview,
 )
@@ -71,6 +74,19 @@ _STATE_EMOJI = {
     "DONE": "🟢",
     "UNKNOWN": "⚪",
 }
+
+
+def _cap_payload(text: str, limit: int = 20_000) -> str:
+    """Cap long text at limit; preserve head + tail with ellipsis marker in between."""
+    if len(text) <= limit:
+        return text
+    marker_len = 50
+    head_size = (limit - marker_len) // 2
+    tail_size = (limit - marker_len) // 2
+    head = text[:head_size]
+    tail = text[-tail_size:]
+    dropped = len(text) - len(head) - len(tail)
+    return f"{head}\n\n…[truncated {dropped} chars]…\n\n{tail}"
 
 
 def _overview_md(session: Session, state: str) -> str:
@@ -124,17 +140,24 @@ def _overview_md(session: Session, state: str) -> str:
     return "\n".join(lines)
 
 
-def _iteration_md(session: Session, n: int) -> str:
-    summary = _loop_block(session.read("loop.md"), n)
+def _iteration_md(session: Session, task_no: int, n: int) -> str:
+    """Render iteration detail for a specific task."""
+    tasks = _tasks(session.read("loop.md"))
+    if task_no < 1 or task_no > len(tasks):
+        return f"_task {task_no} not found_"
+
+    _, _, task_body = tasks[task_no - 1]
+    summary = _loop_block(task_body, n)
     run_out = session.read(f"runs/iter-{n}.md").strip()
 
-    eval_md = session.read("eval.md")
-    parts = re.split(r"^### Iter (\d+):", eval_md, flags=re.MULTILINE)
+    eval_segments = _eval_segments(session.read("eval.md"), len(tasks))
     eval_block = ""
-    for i in range(1, len(parts), 2):
-        if int(parts[i]) == n:
-            eval_block = parts[i + 1].strip()
-            break
+    if task_no <= len(eval_segments):
+        parts = re.split(r"^### Iter (\d+):", eval_segments[task_no - 1], flags=re.MULTILINE)
+        for i in range(1, len(parts), 2):
+            if int(parts[i]) == n:
+                eval_block = parts[i + 1].strip()
+                break
 
     md = [f"# Iteration {n}"]
     if summary:
@@ -142,7 +165,7 @@ def _iteration_md(session: Session, n: int) -> str:
         md.append(summary)
     if run_out:
         md.append("## Runner output")
-        md.append(f"```\n{run_out}\n```")
+        md.append(f"```\n{_cap_payload(run_out)}\n```")
     if eval_block:
         md.append("## Eval verdict")
         md.append(eval_block)
@@ -155,17 +178,15 @@ def _file_md(session: Session, label: str, filename: str) -> str:
     content = session.read(filename).strip()
     if not content:
         if filename == "trace.md":
-            # trace.md is only written once an iteration finishes; show live status
-            # instead of a bare "empty" while the run is still working.
             loop = session.read("loop.md").strip()
             if loop:
                 return (
                     f"# {label}\n\n_no trace summary yet — run in progress_\n\n"
-                    f"## Loop so far\n\n{loop}"
+                    f"## Loop so far\n\n{_cap_payload(loop)}"
                 )
             return f"# {label}\n\n_run in progress — no iterations finished yet._"
         return f"# {label}\n\n_empty_"
-    return f"# {label}\n\n{content}"
+    return f"# {label}\n\n{_cap_payload(content)}"
 
 
 def _trace_md(session: Session) -> str:
@@ -179,9 +200,42 @@ def _trace_md(session: Session) -> str:
             f"tokens `{metrics.get('tokens', '{}')}`"
         )
     body = events if events else "run in progress — no events yet"
-    # Fenced so emoji/brackets in the stream render verbatim (no markdown mangling).
-    parts.append(f"## Events\n\n```\n{body}\n```")
+    parts.append(f"## Events\n\n```\n{_cap_payload(body)}\n```")
     return "\n\n".join(parts)
+
+
+def _task_md(session: Session, task_no: int, title: str) -> str:
+    """Detail for an expanded task node — title, iteration tally, last verdict."""
+    tasks = _tasks(session.read("loop.md"))
+    if task_no < 1 or task_no > len(tasks):
+        return f"_task {task_no} not found_"
+
+    _, _, task_body = tasks[task_no - 1]
+    iters = _iterations(task_body)
+
+    lines = [f"# Task {task_no}" + (f" · {title}" if title else "")]
+    if iters:
+        tally: dict[str, int] = {}
+        for _, _, verdict in iters:
+            tally[verdict] = tally.get(verdict, 0) + 1
+
+        parts = []
+        for verdict in tally:
+            glyph, color = _verdict_glyph(verdict)
+            parts.append(f"[{color}]{glyph}[/] {tally[verdict]} {verdict.lower()}")
+        if parts:
+            lines.append("")
+            lines.append("  " + "   ".join(parts))
+
+        lines.append("")
+        lines.append("## Iterations")
+        for n, tier, verdict in iters:
+            glyph, color = _verdict_glyph(verdict)
+            lines.append(f"- #{n} · {tier} · [{color}]{glyph} {verdict}[/]")
+    else:
+        lines.append("")
+        lines.append("_no iterations yet_")
+    return "\n".join(lines)
 
 
 def _prd_phase_md(session: Session, phase: str, detail: str) -> str:
@@ -222,9 +276,8 @@ def _prd_phase_md(session: Session, phase: str, detail: str) -> str:
             parts.append("## Tasks\n" + "\n".join(f"- {escape(t)}" for t in titles))
         return "\n\n".join(parts)
 
-    # clarify / refine / finalize — PRD lifecycle phases: show the PRD as it stands.
     prd = session.read("prd.md").strip()
-    body = prd if prd else "_PRD draft not captured yet._"
+    body = _cap_payload(prd) if prd else "_PRD draft not captured yet._"
     return f"# PRD · {phase}{f' — {detail}' if detail else ''}\n\n{body}"
 
 
@@ -303,6 +356,7 @@ class AnalyzeApp(App[None]):
         self._kn_node: TreeNode[Any] | None = None
         self._kn_labels: set[str] = set()
         self._timer: Any = None
+        self._expanded_tasks: set[int] = set()
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -355,7 +409,9 @@ class AnalyzeApp(App[None]):
             self._kn_node = tree.root.add("📝 Knowledge", expand=True)
             for filename, label in extra:
                 self._kn_labels.add(label)
-                self._kn_node.add_leaf(label, data={"kind": "file", "label": label, "file": filename})
+                self._kn_node.add_leaf(
+                    label, data={"kind": "file", "label": label, "file": filename}
+                )
 
         self._traj_node = tree.root.add("📈 Trajectory", expand=True)
         self._refresh_trajectory()
@@ -363,14 +419,49 @@ class AnalyzeApp(App[None]):
     def _refresh_trajectory(self) -> None:
         if self._traj_node is None:
             return
+
+        currently_expanded: set[int] = set()
+        if self._traj_node.children:
+            for child in self._traj_node.children:
+                try:
+                    is_expanded = bool(getattr(child, "_expanded", False))
+                except Exception:
+                    is_expanded = False
+                if is_expanded and child.data and child.data.get("kind") == "task":
+                    task_no = child.data.get("n")
+                    if task_no:
+                        currently_expanded.add(task_no)
+        self._expanded_tasks.update(currently_expanded)
+
         self._traj_node.remove_children()
         for phase, detail in _prd_phases(self.session.read("prd_phases.md")):
             label = f"📝 {phase}" + (f" · {detail}" if detail else "")
             self._traj_node.add_leaf(
                 label, data={"kind": "prd_phase", "phase": phase, "detail": detail}
             )
-        for n, tier, verdict in _iterations(self.session.read("loop.md")):
-            self._traj_node.add_leaf(f"#{n} · {tier} · {verdict}", data={"kind": "iter", "n": n})
+
+        loop_md = self.session.read("loop.md")
+        tasks = _tasks(loop_md)
+        if len(tasks) > 1:
+            for task_no, title, task_body in tasks:
+                task_iters = _iterations(task_body)
+                task_node = self._traj_node.add(
+                    f"🗂 Task {task_no} · {title}" if title else f"🗂 Task {task_no}",
+                    data={"kind": "task", "n": task_no, "title": title},
+                )
+                for n, tier, verdict in task_iters:
+                    task_node.add_leaf(
+                        f"#{n} · {tier} · {verdict}",
+                        data={"kind": "iter", "task": task_no, "n": n},
+                    )
+                if task_no in self._expanded_tasks:
+                    task_node.expand()
+        else:
+            for n, tier, verdict in _iterations(loop_md):
+                self._traj_node.add_leaf(
+                    f"#{n} · {tier} · {verdict}",
+                    data={"kind": "iter", "task": 1, "n": n},
+                )
 
     # --- detail ---
     def _detail(self) -> Markdown:
@@ -385,7 +476,10 @@ class AnalyzeApp(App[None]):
             return
         kind = data.get("kind")
         if kind == "iter":
-            self._detail().update(_iteration_md(self.session, data["n"]))
+            task_no = data.get("task", 1)
+            self._detail().update(_iteration_md(self.session, task_no, data["n"]))
+        elif kind == "task":
+            self._detail().update(_task_md(self.session, data["n"], data.get("title", "")))
         elif kind == "prd_phase":
             self._detail().update(_prd_phase_md(self.session, data["phase"], data["detail"]))
         elif kind == "trace":
@@ -1724,8 +1818,8 @@ class PrdSessionApp(App[int | None]):
             self._say(
                 "[dim]  raphael      - direct:    one task, implement → eval → escalate fast\n"
                 "  leonardo     - cascade:   multi-task, dependency-ordered, checkpointed\n"
-                "  donatello    - adaptive:  routes each task to cheapest capable tier within budget\n"
-                "  michelangelo - sprint:    always starts flash tier, escalates only on eval failure[/]"
+                "  donatello    - adaptive:  routes each task to cheapest tier within budget\n"
+                "  michelangelo - sprint:    starts flash tier, escalates only on eval failure[/]"
             )
             self._render_actions("strategy")
             self._set_busy(False, "strategy name / cowabunga")
@@ -1781,8 +1875,8 @@ class PrdSessionApp(App[int | None]):
         self._say(
             "[dim]  raphael      - direct:    one task, implement → eval → escalate fast\n"
             "  leonardo     - cascade:   multi-task, dependency-ordered, checkpointed\n"
-            "  donatello    - adaptive:  routes each task to cheapest capable tier within budget\n"
-            "  michelangelo - sprint:    always starts flash tier, escalates only on eval failure[/]"
+            "  donatello    - adaptive:  routes each task to cheapest tier within budget\n"
+            "  michelangelo - sprint:    starts flash tier, escalates only on eval failure[/]"
         )
         self.phase = "strategy"
         self._save_state()
