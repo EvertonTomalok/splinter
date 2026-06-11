@@ -117,7 +117,7 @@ def open_questions(
     strat_hint = (
         f"\nThe strategy is already chosen: {strategy}. Do NOT ask a strategy question.\n"
         if strategy
-        else "\nInclude a strategy question (cascade/direct/adaptive/sprint).\n"
+        else "\nDo NOT ask a strategy question. Strategy is decided later in the pipeline.\n"
     )
     ground_section = (
         f"## Codebase Localization (grounding)\n{localization}\n\n" if localization else ""
@@ -314,6 +314,54 @@ def user_story_titles(prd_text: str) -> list[str]:
         f"{m.group(1)}: {m.group(2).strip()}"
         for m in re.finditer(r"###\s+(US-\d+):\s*(.+)", prd_text)
     ]
+
+
+def prd_session_is_resumable(session: "Session") -> bool:
+    """Whether a ``refining`` session holds anything worth resuming.
+
+    True if a run already produced a trace, or the PRD has at least one
+    ``US-NNN`` user story. A bare stub (e.g. ``# Test`` with no stories) gives
+    the planner nothing to run, so it is junk — ``is_empty`` misses it because
+    the stub text is technically non-empty.
+    """
+    if session.read("trace.md").strip():
+        return True
+    return bool(user_story_titles(session.read("prd.md")))
+
+
+def prune_dead_prd_sessions(min_age_seconds: float = 60.0) -> list[str]:
+    """Garbage-collect abandoned ``refining`` sessions; return the deleted ids.
+
+    Targets sessions orphaned by a crash, force-quit, or a stub PRD that the
+    content-based ``is_empty`` cleanup failed to catch. Only ``refining``
+    sessions with no runnable PRD and no run are removed; anything touched in
+    the last ``min_age_seconds`` is spared so a live refinement in another
+    process is never nuked mid-edit.
+    """
+    from splinter.memory.session import (
+        Session,
+        _sessions_dir,
+        delete_session,
+        list_sessions,
+    )
+
+    now = datetime.now(timezone.utc).timestamp()
+    pruned: list[str] = []
+    for sid in list_sessions():
+        session = Session(sid)
+        if session.read_status().get("state") != "refining":
+            continue
+        if prd_session_is_resumable(session):
+            continue
+        try:
+            age = now - (_sessions_dir() / sid).stat().st_mtime
+        except OSError:
+            continue
+        if age < min_age_seconds:
+            continue
+        delete_session(sid)
+        pruned.append(sid)
+    return pruned
 
 
 #: ``### US-NNN: …`` header up to the next user story (or end of document).

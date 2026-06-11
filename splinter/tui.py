@@ -605,6 +605,9 @@ class SessionPicker(App[str | None]):
         table.focus()
 
     def _reload(self) -> None:
+        from splinter.prd_session import prune_dead_prd_sessions
+
+        prune_dead_prd_sessions()  # drop abandoned empty refinements before listing
         table = self.query_one(DataTable)
         table.clear()
         sessions = list_sessions()
@@ -2413,12 +2416,15 @@ def _prd_run_kwargs(prd_path: str, session: Session, run_kwargs: dict[str, Any])
 def run_prd_interactive(run_kwargs: dict[str, Any]) -> int:
     """Refine the PRD in a TUI, then execute it in-app and return exit code."""
     from splinter.memory.session import new_session_id
+    from splinter.prd_session import prd_session_is_resumable
 
     session = Session(new_session_id())
     result = PrdSessionApp(session, run_kwargs).run()
     if result is None:
-        if session.is_empty():
-            delete_session(session.id)  # abandoned before any work — don't litter
+        # Abandoned with no runnable PRD (a stub passes is_empty but has no
+        # user stories) — delete instead of littering a dead refining session.
+        if not prd_session_is_resumable(session):
+            delete_session(session.id)
         elif session.dir.exists():
             print(f"PRD session aborted — resume later: uv run splinter resume {session.id}")
         return 0
@@ -2446,8 +2452,13 @@ def _resume_prd(session: Session, status: dict[str, Any]) -> int:
         "cowabunga": False,
         "resume": True,
     }
+    from splinter.prd_session import prd_session_is_resumable
+
     result = PrdSessionApp(session, run_kwargs).run()
     if result is None:
+        if not prd_session_is_resumable(session):
+            delete_session(session.id)  # nothing runnable to resume — don't litter
+            return 0
         print(f"PRD session aborted — resume later: uv run splinter resume {session.id}")
         return 0
     if isinstance(result, int) and result == 0:
@@ -2525,7 +2536,9 @@ def resume_session(session_id: str | None, *, reset: bool = False) -> int:
     """
     from splinter.analyze import _run_state
     from splinter.memory.session import list_sessions
+    from splinter.prd_session import prune_dead_prd_sessions
 
+    prune_dead_prd_sessions()  # drop abandoned empty refinements before resolving
     resumable_run = {"FAILED", "INTERRUPTED", "PAUSED", "AWAITING_USER"}
     sessions = list_sessions()
 

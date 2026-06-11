@@ -1160,3 +1160,58 @@ def test_run_prd_keyboardinterrupt_cleans_up_empty_session(
     with pytest.raises(KeyboardInterrupt):
         run_prd(description="add auth", no_ground=True)
     assert list_sessions() == [], "interrupted PRD run must not litter an empty session"
+
+
+_STUB_PRD = "---\nstrategy: cascade\n---\n# Test"
+_REAL_PRD = "---\nstrategy: cascade\n---\n### US-001: Login\n**Description:** d\n"
+
+
+def _seed_refining(session_dir_factory: "object", sid: str, prd: str, *, age_s: float) -> "object":
+    """Build a refining session on disk with a backdated mtime."""
+    import os
+    from datetime import datetime, timezone
+
+    from splinter.memory.session import Session
+
+    s = Session(sid)
+    s.write("prd.md", prd)
+    s.set_status("refining", source="prd", phase="run")
+    old = datetime.now(timezone.utc).timestamp() - age_s
+    os.utime(s.dir, (old, old))
+    return s
+
+
+def test_prd_session_is_resumable_distinguishes_stub_from_real(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
+) -> None:
+    """A stub PRD with no user stories is not resumable; one with US-NNN is."""
+    monkeypatch.chdir(tmp_path)
+    from splinter.prd_session import prd_session_is_resumable
+
+    stub = _seed_refining(None, "ses_stub", _STUB_PRD, age_s=0)
+    real = _seed_refining(None, "ses_real", _REAL_PRD, age_s=0)
+    assert prd_session_is_resumable(stub) is False
+    assert prd_session_is_resumable(real) is True
+
+
+def test_prune_dead_prd_sessions_removes_only_old_stub_refinements(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
+) -> None:
+    """GC drops aged stub refinements; spares real PRDs and freshly-touched ones."""
+    monkeypatch.chdir(tmp_path)
+    from splinter.memory.session import Session, list_sessions
+    from splinter.prd_session import prune_dead_prd_sessions
+
+    _seed_refining(None, "ses_old_stub", _STUB_PRD, age_s=300)  # junk → prune
+    _seed_refining(None, "ses_real", _REAL_PRD, age_s=300)  # has stories → keep
+    _seed_refining(None, "ses_fresh_stub", _STUB_PRD, age_s=5)  # too new → keep
+    # A completed run with a stub PRD must never be touched.
+    done = Session("ses_done")
+    done.write("trace.md", "some run output")
+    done.set_status("completed")
+
+    pruned = prune_dead_prd_sessions(min_age_seconds=60.0)
+
+    assert pruned == ["ses_old_stub"]
+    remaining = set(list_sessions())
+    assert remaining == {"ses_real", "ses_fresh_stub", "ses_done"}

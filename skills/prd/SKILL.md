@@ -66,6 +66,8 @@ Ask only critical questions where the prompt is ambiguous. Always cover:
 - **Scope/Boundaries:** What should it NOT do?
 - **Success Criteria:** How do we know it is done?
 
+**NEVER ask about execution strategy (cascade/direct/adaptive/sprint).** Strategy is decided later in the pipeline, not here.
+
 ### Format Questions Like This
 
 ```
