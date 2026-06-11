@@ -35,6 +35,48 @@ The loop continues until the judge is satisfied or you hit `opus-4.8` at the top
 
 ---
 
+## Quickstart
+
+Create a PRD interactively, then run it. `splinter prd` asks a few lettered
+questions (including which turtle to use), writes the PRD into the session, and
+records the strategy in its frontmatter:
+
+```bash
+# describe the work; answer the clarifying questions it asks
+uv run splinter prd "add priority levels to tasks"
+
+# the strategy lives in the PRD, so run just points at it
+uv run splinter run --prd .splinter/sessions/<id>/prd.md
+```
+
+For a quick single task without a full PRD, the `direct` strategy takes a task
+file straight away:
+
+```bash
+uv run splinter run --strategy raphael --task task.yaml
+```
+
+```yaml
+# task.yaml
+description: "write a hello world in python and run it"
+acceptance: "the script runs with exit 0 and prints something containing 'hello'"
+eval_skill: "run_python"   # runs the script, captures stdout and exit code
+effort: trivial            # task difficulty, sets the starting tier
+reasoning_effort: auto     # how hard the model thinks, or let the agent decide
+suggested_tier: 0
+```
+
+The `run_python` skill just executes the generated file with the project
+interpreter (`uv run python <file>`), so the first task needs zero extra
+toolchains beyond what setup already verified.
+
+That run will: ask the sensei for a plan, hand it to a flash tier model, let it
+create the folder, write the Rust, compile and execute, then let the judge
+confirm the output. If the cheap model trips, Splinter quietly levels up and
+tries again.
+
+---
+
 ## Requirements
 
 Splinter is the conductor, not the models. You bring the two CLIs it drives:
@@ -313,48 +355,6 @@ splinter configure [OPTIONS]
 | `--init-prompts` | Scaffold editable prompt templates into `.splinter/prompts/` |
 | `--force` | Overwrite existing prompt templates |
 | `--no-interactive` | Skip the TUI even in a terminal |
-
----
-
-## Quickstart
-
-Create a PRD interactively, then run it. `splinter prd` asks a few lettered
-questions (including which turtle to use), writes the PRD into the session, and
-records the strategy in its frontmatter:
-
-```bash
-# describe the work; answer the clarifying questions it asks
-uv run splinter prd "add priority levels to tasks"
-
-# the strategy lives in the PRD, so run just points at it
-uv run splinter run --prd .splinter/sessions/<id>/prd.md
-```
-
-For a quick single task without a full PRD, the `direct` strategy takes a task
-file straight away:
-
-```bash
-uv run splinter run --strategy raphael --task task.yaml
-```
-
-```yaml
-# task.yaml
-description: "write a hello world in python and run it"
-acceptance: "the script runs with exit 0 and prints something containing 'hello'"
-eval_skill: "run_python"   # runs the script, captures stdout and exit code
-effort: trivial            # task difficulty, sets the starting tier
-reasoning_effort: auto     # how hard the model thinks, or let the agent decide
-suggested_tier: 0
-```
-
-The `run_python` skill just executes the generated file with the project
-interpreter (`uv run python <file>`), so the first task needs zero extra
-toolchains beyond what setup already verified.
-
-That run will: ask the sensei for a plan, hand it to a flash tier model, let it
-create the folder, write the Rust, compile and execute, then let the judge
-confirm the output. If the cheap model trips, Splinter quietly levels up and
-tries again.
 
 ---
 
