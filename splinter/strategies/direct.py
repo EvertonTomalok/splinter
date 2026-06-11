@@ -277,7 +277,7 @@ class DirectStrategy(Strategy):
                 code_ctx = "\n\n".join(
                     filter(None, [task_loc, task.filtered_context or localization])
                 )
-                plan = _make_plan(task, ladder, code_ctx)
+                plan = _make_plan(task, ladder, code_ctx, session=session)
                 session.write(task_plan_file, f"# Plan\n\n{plan}\n")
                 if i == 0:
                     session.write("knowledge/plan.md", f"# Plan\n\n{plan}\n")
@@ -363,7 +363,7 @@ class DirectStrategy(Strategy):
         else:
             log.info("planning with %s (once)", ladder.planner_model)
             code_ctx = task.filtered_context or localization
-            plan = _make_plan(task, ladder, code_ctx)
+            plan = _make_plan(task, ladder, code_ctx, session=session)
             session.write("knowledge/plan.md", f"# Plan\n\n{plan}\n")
             session.write(task_plan_file, f"# Plan\n\n{plan}\n")
 
@@ -586,7 +586,7 @@ def _correction_context(knowledge: KnowledgeStore, latest: str) -> str:
     return "\n\n".join(parts)
 
 
-def _make_plan(task: Task, ladder: Ladder, code_ctx: str) -> str:
+def _make_plan(task: Task, ladder: Ladder, code_ctx: str, session: object = None) -> str:
     from splinter.templating import load_standards
 
     prompt = render(
@@ -601,4 +601,5 @@ def _make_plan(task: Task, ladder: Ladder, code_ctx: str) -> str:
         ladder.planner_model,
         variant=ladder.planner_effort,
         timeout=ladder.planner_timeout,
+        session=session,
     )

@@ -205,6 +205,7 @@ def _recall_phase(
     variant: str = "minimal",
     timeout: int | None = None,
     agent: str = "build",
+    session: object = None,
 ) -> str:
     """Cheap model filters the raw search results to a candidate list."""
     text = _strip_frontmatter(prd_text)
@@ -223,7 +224,8 @@ def _recall_phase(
         "Be thorough — coverage over precision. Output ONLY the JSON array, no prose."
     )
     return run_text(
-        prompt, model, variant=variant, output_format="text", timeout=timeout, agent=agent
+        prompt, model, variant=variant, output_format="text", timeout=timeout, agent=agent,
+        session=session,
     )
 
 
@@ -281,6 +283,7 @@ def _anchors_from_recall(recall_output: str) -> list[CodeAnchor]:
 def filter_task_context(
     task: object,
     ladder: Ladder,
+    session: object = None,
 ) -> str:
     """Per-task filter run by the harness after localize, before planning.
 
@@ -324,6 +327,7 @@ def filter_task_context(
             variant=ladder.localizer_precision_variant,
             timeout=ladder.localizer_precision_timeout,
             agent=ladder.localizer_agent,
+            session=session,
         )
     except (ProviderGapError, RuntimeError) as e:
         log.warning("precision model failed (%s), retrying with fallback model", type(e).__name__)
@@ -333,6 +337,7 @@ def filter_task_context(
             variant=ladder.localizer_precision_variant,
             timeout=ladder.localizer_precision_timeout,
             agent=ladder.localizer_agent,
+            session=session,
         )
 
 
@@ -382,6 +387,7 @@ def localize(
             recall_variant,
             recall_timeout,
             agent=ladder.localizer_agent,
+            session=session,
         )
     except (ProviderGapError, RuntimeError) as e:
         log.warning("recall model failed (%s), retrying with fallback model", type(e).__name__)
@@ -392,6 +398,7 @@ def localize(
             recall_variant,
             recall_timeout,
             agent=ladder.localizer_agent,
+            session=session,
         )
 
     # Prefer structured anchors (file + symbol + reason) so per-task targeting in

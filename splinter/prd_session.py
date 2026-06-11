@@ -92,7 +92,7 @@ def _load_prd_skill() -> str:
     return ""
 
 
-def _ask(prompt: str, *, resume: str | None) -> Turn:
+def _ask(prompt: str, *, resume: str | None, session: object = None) -> Turn:
     # No effort: opus-4.8's default (high) is exactly what we want here.
     result = claude_cli.run(prompt, PRD_MODEL, output_format="json", resume=resume)
     sid = result.raw.get("_session_id", "") or (resume or "")
@@ -101,11 +101,16 @@ def _ask(prompt: str, *, resume: str | None) -> Turn:
         "output": result.usage.get("output_tokens", 0) or 0,
     }
     cost = claude_cli._calc_cost(PRD_MODEL, result.usage)
+    if session is not None:
+        try:
+            session.log_llm_usage(PRD_MODEL, tokens, cost)  # type: ignore[union-attr]
+        except Exception:
+            pass
     return Turn(text=result.text, session_id=sid, tokens=tokens, cost=cost)
 
 
 def open_questions(
-    prd_text: str, *, strategy: str | None = None, localization: str = ""
+    prd_text: str, *, strategy: str | None = None, localization: str = "", session: object = None
 ) -> Turn:
     """First turn: read the PRD and ask clarifying questions (lettered options)."""
     skill = _load_prd_skill()
@@ -126,7 +131,7 @@ def open_questions(
         "Ask 3-5 essential clarifying questions, each with lettered options (A/B/C/D). "
         "Cover only genuinely ambiguous points. Output ONLY the questions, no preamble."
     )
-    return _ask(prompt, resume=None)
+    return _ask(prompt, resume=None, session=session)
 
 
 def _resume_preamble(prd_text: str | None, *, resume: str | None) -> str:
@@ -142,7 +147,7 @@ def _resume_preamble(prd_text: str | None, *, resume: str | None) -> str:
 
 
 def refine(
-    answers: str, *, resume: str, prd_text: str | None = None, localization: str = ""
+    answers: str, *, resume: str, prd_text: str | None = None, localization: str = "", session: object = None
 ) -> Turn:
     """Incorporate the user's answers; return the updated draft + remaining questions.
 
@@ -161,7 +166,7 @@ def refine(
         "finalize.' if the PRD is now complete.\n"
         "Keep it tight; do not re-ask anything already answered."
     )
-    return _ask(prompt, resume=resume)
+    return _ask(prompt, resume=resume, session=session)
 
 
 def finalize(
@@ -171,6 +176,7 @@ def finalize(
     autodecide: bool,
     prd_text: str | None = None,
     localization: str = "",
+    session: object = None,
 ) -> Turn:
     """Emit the complete PRD with frontmatter and ``US-NNN`` user stories."""
     decide = (
@@ -198,10 +204,10 @@ def finalize(
         "'- [ ]' checkboxes.\n"
         "Output ONLY the PRD markdown — no preamble, no trailing commentary."
     )
-    return _ask(prompt, resume=resume)
+    return _ask(prompt, resume=resume, session=session)
 
 
-def revise_final(instructions: str, *, resume: str, prd_text: str | None = None) -> Turn:
+def revise_final(instructions: str, *, resume: str, prd_text: str | None = None, session: object = None) -> Turn:
     """Apply free-form edits to the finalized PRD and re-emit the full document."""
     prompt = (
         f"{_resume_preamble(prd_text, resume=resume)}"
@@ -209,11 +215,11 @@ def revise_final(instructions: str, *, resume: str, prd_text: str | None = None)
         "Output the COMPLETE updated PRD markdown only — same format as before, "
         "no preamble."
     )
-    return _ask(prompt, resume=resume)
+    return _ask(prompt, resume=resume, session=session)
 
 
 def generate_prd(
-    instructions: str, *, strategy: str | None = None, localization: str = ""
+    instructions: str, *, strategy: str | None = None, localization: str = "", session: object = None
 ) -> Turn:
     """Generate a complete PRD directly from instructions (no Q&A).
 
@@ -242,7 +248,7 @@ def generate_prd(
         "'- [ ]' checkboxes.\n"
         "Output ONLY the PRD markdown — no preamble, no trailing commentary."
     )
-    return _ask(prompt, resume=None)
+    return _ask(prompt, resume=None, session=session)
 
 
 def extract_working_draft(text: str) -> str:

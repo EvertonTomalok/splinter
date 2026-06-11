@@ -21,15 +21,30 @@ def run_text(
     output_format: str = "json",
     timeout: int | None = None,
     agent: str = "build",
+    session: object = None,
 ) -> str:
     """Run ``prompt`` on ``model``'s backend and return the response text."""
     if provider_for(model) == "opencode":
-        return opencode.run(
+        oc = opencode.run(
             prompt, model, variant=variant, fmt=output_format, timeout=timeout, agent=agent
-        ).text
-    return claude_cli.run(
-        prompt, model, effort=variant, output_format=output_format, timeout=timeout
-    ).text
+        )
+        if session is not None:
+            _log(session, model, oc.tokens, oc.cost)
+        return oc.text
+    cl = claude_cli.run(prompt, model, effort=variant, output_format=output_format, timeout=timeout)
+    if session is not None:
+        _log(session, model, {
+            "input": cl.usage.get("input_tokens", 0) or 0,
+            "output": cl.usage.get("output_tokens", 0) or 0,
+        }, claude_cli._calc_cost(model, cl.usage))
+    return cl.text
+
+
+def _log(session: object, model: str, tokens: dict[str, int], cost: float) -> None:
+    try:
+        session.log_llm_usage(model, tokens, cost)  # type: ignore[union-attr]
+    except Exception:
+        pass
 
 
 def run_text_session(

@@ -262,7 +262,7 @@ def run_pipeline(
                     task.filtered_context = cached
                     log.info("resume: reusing filtered context for task %d", i + 1)
                 else:
-                    task.filtered_context = filter_task_context(task, ladder)
+                    task.filtered_context = filter_task_context(task, ladder, session=session)
                     if task.filtered_context:
                         session.write(cache_key, task.filtered_context)
 

@@ -156,6 +156,14 @@ class Session:
         data["input"] = int(data.get("input", 0)) + tokens.get("input", 0)
         data["output"] = int(data.get("output", 0)) + tokens.get("output", 0)
         data["cost"] = float(data.get("cost", 0.0)) + cost
+        # Per-model breakdown
+        models: dict[str, Any] = data.get("models", {})
+        m = models.get(model, {})
+        m["input"] = int(m.get("input", 0)) + tokens.get("input", 0)
+        m["output"] = int(m.get("output", 0)) + tokens.get("output", 0)
+        m["cost"] = float(m.get("cost", 0.0)) + cost
+        models[model] = m
+        data["models"] = models
         self._ensure_dir()
         p.write_text(json.dumps(data))
 

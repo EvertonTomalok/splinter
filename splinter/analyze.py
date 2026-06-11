@@ -354,6 +354,20 @@ def render_overview(session: Session, state: str) -> str:
             bits.append(f"[dim]⏱[/] {_fmt_elapsed(elapsed_str)}")
         lines.append("   [dim]·[/]  ".join(bits))
 
+        # Per-model cost breakdown (pre-run only; run models tracked in trace)
+        models: dict[str, Any] = pre_run.get("models", {})
+        if models:
+            lines.append("")
+            lines.append("[dim]Pre-run by model:[/]")
+            for mname, mdata in sorted(models.items(), key=lambda x: -float(x[1].get("cost", 0))):
+                mcost = float(mdata.get("cost", 0))
+                minp = int(mdata.get("input", 0))
+                mout = int(mdata.get("output", 0))
+                lines.append(
+                    f"  [dim]{mname:<20}[/]  [green]${mcost:.4f}[/]"
+                    f"  [dim]↑[/]{_hnum(minp)} [dim]↓[/]{_hnum(mout)}"
+                )
+
     if status.get("source"):
         lines.append(f"[dim]📄 {os.path.basename(str(status['source']))}[/]")
 
