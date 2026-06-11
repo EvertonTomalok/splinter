@@ -16,6 +16,8 @@ from splinter.agents.runner import Task
 from splinter.memory.session import Session, new_session_id
 from splinter.models.roster import load_ladder
 from splinter.obs.agentic import agentic_scope
+from splinter.providers.base import ProviderGapError
+from splinter.strategies.base import AskUserPause, ManualValidationPause
 from splinter.strategies.registry import available_strategies, get_strategy
 
 DEFAULT_STRATEGY = "cascade"
@@ -339,9 +341,14 @@ def run_pipeline(
 
         from splinter.agents.final_eval import run_all_final_evals
         from splinter.configure import load_config, load_final_eval
-        from splinter.strategies.base import ManualValidationPause
 
-        final_eval_entries = load_final_eval(load_config())
+        _session_fe_path = session.dir / "final_eval.yaml"
+        if _session_fe_path.exists():
+            _fe_config = yaml.safe_load(_session_fe_path.read_text()) or {}
+            final_eval_entries = load_final_eval(_fe_config)
+            log.info("final eval: loaded from session dir (%d entries)", len(final_eval_entries))
+        else:
+            final_eval_entries = load_final_eval(load_config())
         if final_eval_entries:
             session.set_status("running", stage="final_eval")
             log.info("running %d final eval(s)…", len(final_eval_entries))
@@ -362,12 +369,6 @@ def run_pipeline(
             if not all_passed:
                 failed = [r.name for r in fe_results if not r.passed]
                 log.warning("final eval FAILED: %s", ", ".join(failed))
-            session.set_status(
-                "awaiting_validation",
-                stage="final_eval",
-                final_eval_summary=fe_summary,
-                final_eval_passed=all_passed,
-            )
             raise ManualValidationPause(summary=fe_summary, all_passed=all_passed)
 
         session.set_status("completed", stage="done")
@@ -377,20 +378,18 @@ def run_pipeline(
         print(f"  runs: {len(results)}")
         print(f"  cost: ${total:.4f}")
         return 0
-    except Exception as val_exc:
-        from splinter.strategies.base import ManualValidationPause
-
-        if not isinstance(val_exc, ManualValidationPause):
-            raise val_exc from val_exc
+    except ManualValidationPause as val_exc:
+        session.set_status(
+            "awaiting_validation",
+            stage="final_eval",
+            final_eval_summary=val_exc.summary,
+            final_eval_passed=val_exc.all_passed,
+        )
         log.info("run paused — awaiting manual validation")
         print(f"run complete — awaiting manual validation.\n{val_exc.summary}")
         print(f"  validate: splinter resume {session.id}")
         return 4
-    except Exception as ask_exc:
-        from splinter.strategies.base import AskUserPause
-
-        if not isinstance(ask_exc, AskUserPause):
-            raise
+    except AskUserPause as ask_exc:
         session.set_status(
             "awaiting_user",
             ask_reason=ask_exc.reason,
@@ -403,11 +402,7 @@ def run_pipeline(
         print(f"run paused — needs your input.\n  {ask_exc.reason}")
         print(f"  resume: splinter resume {session.id}")
         return 3
-    except Exception as gap_exc:
-        from splinter.providers.base import ProviderGapError
-
-        if not isinstance(gap_exc, ProviderGapError):
-            raise
+    except ProviderGapError as gap_exc:
         session.set_status(
             "paused",
             kind=gap_exc.kind,

@@ -158,7 +158,6 @@ def _resolve_model(entry: FinalEvalEntry, ladder: "Ladder | None") -> tuple[str,
     When entry.provider is set but entry.model is not, picks the default model
     for that provider ("sonnet" for claude, "opencode-go/qwen3-coder" for opencode).
     """
-    from splinter.models.roster import provider_for
 
     _OPENCODE_DEFAULT = "opencode-go/qwen3-coder"
     _CLAUDE_DEFAULT = "sonnet"
