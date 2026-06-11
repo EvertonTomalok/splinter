@@ -990,8 +990,14 @@ class RunApp(App[int]):
         def _run() -> None:
             from splinter.pipeline import run_pipeline
 
+            _pipeline_keys = {
+                "strategy", "prd_path", "task_path", "effort", "budget",
+                "max_iterations", "eval_skill", "eval_model", "eval_effort",
+                "cowabunga", "resume", "session", "claude_runner_fallback",
+                "user_guidance", "jump_premium", "no_ground",
+            }
             kwargs = {
-                **self.run_kwargs,
+                **{k: v for k, v in self.run_kwargs.items() if k in _pipeline_keys},
                 "resume": resume,
                 "user_guidance": user_guidance,
                 "jump_premium": jump_premium,
@@ -1664,6 +1670,10 @@ class PrdSessionApp(App[int | None]):
         self.final_prd = self.session.read("prd.md")
         phase = str(status.get("phase") or "chat")
 
+        prd_for_left = self.final_prd or self._initial_prd
+        if prd_for_left.strip() and phase != "trust":
+            self._mount_draft_editor(prd_for_left)
+
         self._replay_convo()
         self._say(f"[magenta]⟳ resumed {self.session.id} at phase '{phase}'.[/]")
         if not self.claude_session:
@@ -1689,6 +1699,12 @@ class PrdSessionApp(App[int | None]):
             self._say(
                 "Pick a strategy "
                 f"({', '.join(available_strategies())}), or 'cowabunga' to let me decide."
+            )
+            self._say(
+                "[dim]  raphael      - direct:    one task, implement → eval → escalate fast\n"
+                "  leonardo     - cascade:   multi-task, dependency-ordered, checkpointed\n"
+                "  donatello    - adaptive:  routes each task to cheapest capable tier within budget\n"
+                "  michelangelo - sprint:    always starts flash tier, escalates only on eval failure[/]"
             )
             self._render_actions("strategy")
             self._set_busy(False, "strategy name / cowabunga")
@@ -1740,6 +1756,12 @@ class PrdSessionApp(App[int | None]):
         self._say(
             "Pick a strategy "
             f"({', '.join(available_strategies())}), or 'cowabunga' to let me decide & run."
+        )
+        self._say(
+            "[dim]  raphael      - direct:    one task, implement → eval → escalate fast\n"
+            "  leonardo     - cascade:   multi-task, dependency-ordered, checkpointed\n"
+            "  donatello    - adaptive:  routes each task to cheapest capable tier within budget\n"
+            "  michelangelo - sprint:    always starts flash tier, escalates only on eval failure[/]"
         )
         self.phase = "strategy"
         self._save_state()

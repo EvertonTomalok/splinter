@@ -115,4 +115,9 @@ def run_prd(*, description: str = "", strategy: str | None = None, no_ground: bo
 
     print(f"\nPRD saved to {session.dir / 'prd.md'}")
     print(f"Run with: uv run splinter run --prd {session.dir / 'prd.md'}")
+    print("\nStrategies:")
+    print("  raphael   - direct:   one task, implement → eval → escalate fast")
+    print("  leonardo  - cascade:  multi-task, dependency-ordered, checkpointed")
+    print("  donatello - adaptive: routes each task to cheapest capable tier within budget")
+    print("  michelangelo - sprint: always starts flash tier, escalates only on eval failure")
     return 0
