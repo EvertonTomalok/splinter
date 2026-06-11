@@ -143,23 +143,25 @@ def test_claude_run_uses_configured_timeout_when_unset(
 
 
 def test_run_text_routes_by_model_id(monkeypatch: pytest.MonkeyPatch) -> None:
-    """opencode-go/* → opencode CLI; claude aliases → claude -p."""
-    from types import SimpleNamespace
-
+    """opencode-go/* → opencode provider; claude aliases → claude provider."""
     from splinter.providers import dispatch
+    from splinter.providers.base import ProviderResponse
 
     calls: list[str] = []
 
-    def fake_claude(prompt: str, model: str, **kw: object) -> object:
-        calls.append(f"claude:{model}")
-        return SimpleNamespace(text="c")
+    class _FakeProvider:
+        def __init__(self, label: str) -> None:
+            self._label = label
 
-    def fake_opencode(prompt: str, model: str, **kw: object) -> object:
-        calls.append(f"opencode:{model}")
-        return SimpleNamespace(text="o")
+        def run(self, prompt: str, model: str, **kw: object) -> ProviderResponse:
+            calls.append(f"{self._label}:{model}")
+            return ProviderResponse(text="ok", tokens={}, cost=0.0)
 
-    monkeypatch.setattr(dispatch.claude_cli, "run", fake_claude)
-    monkeypatch.setattr(dispatch.opencode, "run", fake_opencode)
+    _providers = {
+        "claude": _FakeProvider("claude"),
+        "opencode": _FakeProvider("opencode"),
+    }
+    monkeypatch.setattr(dispatch, "get_provider", lambda name: _providers[name])
 
     dispatch.run_text("p", "sonnet")
     dispatch.run_text("p", "opus")

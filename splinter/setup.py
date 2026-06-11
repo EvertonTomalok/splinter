@@ -6,7 +6,7 @@ import sys
 from typing import Callable
 
 from splinter.models.roster import load_ladder
-from splinter.providers import claude_cli, opencode
+from splinter.providers import claude_cli, codex, opencode
 
 
 def _check(label: str, fn: Callable[[], tuple[bool, str]]) -> tuple[bool, str]:
@@ -21,6 +21,16 @@ def _check(label: str, fn: Callable[[], tuple[bool, str]]) -> tuple[bool, str]:
     except Exception as e:
         print(f"  {label} {'.' * max(1, 30 - len(label))} FALHA ({e})")
         return False, str(e)
+
+
+def _check_codex() -> tuple[bool, str]:
+    path = shutil.which("codex")
+    if not path:
+        return False, "codex not found in PATH"
+    ok = codex.ping()
+    if not ok:
+        return False, "codex exec did not respond"
+    return True, path
 
 
 def _check_claude() -> tuple[bool, str]:
@@ -84,6 +94,9 @@ def _check_rtk() -> tuple[bool, str]:
 def run_setup() -> int:
     print("checking providers...")
     results: list[bool] = []
+
+    ok, _ = _check("codex exec (gpt-5-codex)", _check_codex)
+    results.append(ok)
 
     ok, _ = _check("claude -p (sonnet)", _check_claude)
     results.append(ok)

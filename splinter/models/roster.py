@@ -12,6 +12,8 @@ def provider_for(model_id: str) -> str:
     """Infer the provider from a model id."""
     if model_id.startswith("opencode-go/") or model_id.startswith("opencode/"):
         return "opencode"
+    if model_id.startswith("codex/"):
+        return "codex"
     return "claude"
 
 

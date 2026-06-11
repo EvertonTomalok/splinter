@@ -12,6 +12,7 @@ models:
   haiku: &haiku haiku
   sonnet: &sonnet sonnet
   opus: &opus opus
+  codex_gpt5: &codex_gpt5 codex/gpt-5-codex
 
 tiers:
   - name: easy

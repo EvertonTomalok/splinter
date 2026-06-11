@@ -88,6 +88,8 @@ Splinter is the conductor, not the models. You bring the two CLIs it drives:
   `claude` CLI, authenticated, with access to `sonnet` and `opus-4.8`
 - **[opencode](https://opencode.ai)** the `opencode` CLI, authenticated on the
   `opencode-go` provider _(not needed if you use `--use-cc-only`, see below)_
+- **[Codex](https://chatgpt.com/codex)** the `codex` CLI, authenticated with
+  your OpenAI account _(optional — only needed for Codex-based runners)_
 
 No extra language toolchains required. The validation tasks are all Python, which
 uv already gives you.
@@ -128,6 +130,13 @@ With a local install, prefix every command with `uv run` (e.g. `uv run splinter 
 ```bash
 claude            # sign in to Claude Code
 opencode auth login
+```
+
+**If you also want Codex runners**, install and sign in:
+
+```bash
+curl -fsSL https://chatgpt.com/codex/install.sh | sh
+codex            # opens browser — sign in with your OpenAI account
 ```
 
 ### Let opencode edit files non-interactively (one time)
