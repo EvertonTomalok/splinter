@@ -13,11 +13,11 @@ import yaml
 from splinter.agents import planner
 from splinter.agents.localizer import CodeAnchor, filter_task_context, localize, rtk_cat_tip
 from splinter.agents.runner import Task
+from splinter.enums import Decision
 from splinter.memory.session import Session, new_session_id
 from splinter.models.roster import bump_effort, load_ladder
 from splinter.obs.agentic import agentic_scope
 from splinter.providers.base import ProviderGapError
-from splinter.enums import Decision
 from splinter.strategies.base import AskUserPause, ManualValidationPause
 from splinter.strategies.registry import available_strategies, get_strategy
 
@@ -448,7 +448,8 @@ def run_pipeline(
                 f"- {r.name}: {'PASS' if r.passed else 'FAIL'} — {r.output[:200]}"
                 for r in fe_results
             )
-            session.write("final_eval.md", f"# Final Eval\n\n{fe_summary}\n")
+            fe_verbatim = "\n\n---\n\n".join(r.output for r in fe_results)
+            session.write("final_eval.md", fe_verbatim + "\n")
             log.info("final eval results:\n%s", fe_summary)
             all_passed = all(r.passed for r in fe_results)
             if not all_passed:
@@ -480,6 +481,12 @@ def run_pipeline(
                     resume_round + 1, next_eff,
                 )
                 return 3
+            session.set_status(
+                "running",
+                stage="final_eval",
+                final_eval_passed=True,
+                final_eval_summary=fe_summary,
+            )
 
         session.set_status("completed", stage="done")
         total = sum(r.cost for r in results)

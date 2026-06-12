@@ -320,6 +320,10 @@ TIER_STEPS: list[tuple[str, str]] = [
         "Run · T5 last-resort",
         "The very last rung: Claude maxed out. Only if `critical` still failed.",
     ),
+    (
+        "Run · T6 codex",
+        "Codex runner (OpenAI). Reached by escalation beyond last-resort.",
+    ),
 ]
 
 
@@ -423,7 +427,7 @@ def load_final_eval(config: dict[str, Any]) -> list[FinalEvalEntry]:
     entries: list[FinalEvalEntry] = []
     for item in raw:
         kind_str = item.get("kind")
-        variant_str = item.get("variant")
+        variant_str = item.get("variant") or item.get("effort")
         kind = FinalEvalKind(kind_str)
         variant = Variant(variant_str) if variant_str else None
 

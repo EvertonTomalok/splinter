@@ -315,6 +315,18 @@ _PALETTE_CSS = """
     CommandPalette > Vertical { width: 55%; }
 """
 
+_SCROLL_LEFT_PANE_CSS = """
+    #nav {
+        height: 1fr;
+        overflow-y: auto;
+        overflow-x: hidden;
+        scrollbar-size-vertical: 1;
+    }
+    #overview-scroll {
+        height: 1fr;
+    }
+"""
+
 _MAXIMIZE_CSS = """
     App.--maximized {
         #nav { display: none; }
@@ -363,6 +375,7 @@ class AnalyzeApp(App[None]):
     #detail { padding: 0 1; }
     """
         + _PALETTE_CSS
+        + _SCROLL_LEFT_PANE_CSS
         + _MAXIMIZE_CSS
     )
 
@@ -428,6 +441,18 @@ class AnalyzeApp(App[None]):
             steps.add_leaf(
                 "plan", data={"kind": "file", "label": "Plan", "file": "knowledge/plan.md"}
             )
+        steps.add_leaf(
+            "eval", data={"kind": "file", "label": "Eval", "file": "eval.md"}
+        )
+        if self.session.read("final_eval.md"):
+            status = self.session.read_status()
+            fe_passed = status.get("final_eval_passed")
+            fe_icon = "✅" if fe_passed else "❌"
+            steps.add_leaf(
+                f"{fe_icon} final_eval",
+                data={"kind": "file", "label": "Final Eval", "file": "final_eval.md"},
+            )
+
         notes = _knowledge_notes(self.session)
         extra = [
             (fn, lbl)
@@ -1105,6 +1130,208 @@ class _AskUserModal(ModalScreen[tuple[str, str] | None]):
             self.dismiss(None)
 
 
+class _FinalEvalModal(ModalScreen[dict[str, str | None] | None]):
+    """Configure the session-scoped final eval gate.
+
+    Dismiss value: dict with keys {kind, name, cmd, skill, provider, model, effort}
+    or None to cancel.
+    """
+
+    DEFAULT_CSS = """
+    _FinalEvalModal {
+        align: center middle;
+        background: $background 60%;
+    }
+    _FinalEvalModal > Vertical#fe-dialog {
+        width: 68;
+        height: 90%;
+        border: round $primary;
+        background: $surface;
+        padding: 0;
+    }
+    _FinalEvalModal #fe-header {
+        padding: 1 2 0 2;
+        height: auto;
+    }
+    _FinalEvalModal #fe-title {
+        text-style: bold;
+        color: $primary;
+        margin-bottom: 1;
+    }
+    _FinalEvalModal #fe-scroll {
+        height: 1fr;
+        padding: 0 2;
+    }
+    _FinalEvalModal #fe-kind-list {
+        height: 5;
+        margin-bottom: 1;
+    }
+    _FinalEvalModal #fe-detail-area {
+        height: auto;
+        margin-bottom: 1;
+    }
+    _FinalEvalModal .fe-label {
+        margin-top: 1;
+    }
+    _FinalEvalModal #fe-provider-list {
+        height: 6;
+    }
+    _FinalEvalModal #fe-model-list {
+        height: 8;
+    }
+    _FinalEvalModal #fe-effort-list {
+        height: 7;
+    }
+    _FinalEvalModal #fe-actions {
+        height: 3;
+        align-horizontal: center;
+        padding: 0 2;
+        margin-top: 1;
+        margin-bottom: 1;
+    }
+    _FinalEvalModal Button {
+        width: 1fr;
+        height: 3;
+        margin: 0 1;
+        border: none;
+        text-style: bold;
+    }
+    """
+
+    BINDINGS = [
+        ("escape", "cancel", "Cancel"),
+        ("enter", "confirm", "Confirm"),
+    ]
+
+    _KINDS = ["User Review (ask_user)", "Run Skill", "Run Command"]
+    _PROVIDERS = ["(default)", "claude", "opencode", "codex"]
+    _EFFORTS = ["(default)", "low", "medium", "high", "max"]
+
+    def __init__(self, current: dict[str, str | None] | None = None) -> None:
+        super().__init__()
+        self._current = current or {}
+        self._all_models: dict[str, list[str]] = {}
+        self._current_model_opts: list[str] = ["(default)"]
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="fe-dialog"):
+            with Vertical(id="fe-header"):
+                yield Static("⚙️  Set Final Eval", id="fe-title")
+                yield Rule()
+            with VerticalScroll(id="fe-scroll"):
+                yield Label("Kind:", classes="fe-label")
+                yield OptionList(*self._KINDS, id="fe-kind-list")
+                with Vertical(id="fe-detail-area"):
+                    yield Label("Skill name / Shell command:", classes="fe-label")
+                    yield Input(placeholder="skill name or shell command", id="fe-input")
+                    yield Label("Provider (optional):", classes="fe-label")
+                    yield OptionList(*self._PROVIDERS, id="fe-provider-list")
+                    yield Label("Model (optional):", classes="fe-label")
+                    yield OptionList("(default)", id="fe-model-list")
+                    yield Label("Effort (optional):", classes="fe-label")
+                    yield OptionList(*self._EFFORTS, id="fe-effort-list")
+            with Horizontal(id="fe-actions"):
+                yield Button("  Confirm  (enter)", id="fe-confirm", variant="success")
+                yield Button("  Cancel  (esc)", id="fe-cancel", variant="error")
+
+    def on_mount(self) -> None:
+        self._all_models = self._load_models()
+        self._rebuild_model_list(["(default)"] + self._all_models.get("(default)", []))
+        self.query_one("#fe-kind-list", OptionList).focus()
+        self._update_detail_visibility()
+
+    def _load_models(self) -> dict[str, list[str]]:
+        try:
+            from splinter.configure import available_models
+            all_m = available_models()
+        except Exception:
+            all_m = ["sonnet", "opus", "codex/gpt-5-codex"]
+        return {
+            "(default)": all_m,
+            "claude": [m for m in all_m if not m.startswith(("opencode", "codex/"))],
+            "opencode": [m for m in all_m if m.startswith(("opencode-go/", "opencode/"))],
+            "codex": [m for m in all_m if m.startswith("codex/")],
+        }
+
+    def _rebuild_model_list(self, options: list[str]) -> None:
+        self._current_model_opts = options
+        model_list = self.query_one("#fe-model-list", OptionList)
+        model_list.clear_options()
+        for opt in options:
+            model_list.add_option(opt)
+
+    def _update_detail_visibility(self) -> None:
+        kind_idx = self.query_one("#fe-kind-list", OptionList).highlighted or 0
+        self.query_one("#fe-detail-area", Vertical).display = kind_idx > 0
+
+    def _update_model_list(self) -> None:
+        provider_idx = self.query_one("#fe-provider-list", OptionList).highlighted
+        raw_provider = self._PROVIDERS[provider_idx] if provider_idx is not None else "(default)"
+        models = self._all_models.get(raw_provider, self._all_models.get("(default)", []))
+        self._rebuild_model_list(["(default)"] + models)
+
+    def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:
+        if event.option_list.id == "fe-kind-list":
+            self._update_detail_visibility()
+        elif event.option_list.id == "fe-provider-list":
+            self._update_model_list()
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    def action_confirm(self) -> None:
+        self.query_one("#fe-confirm", Button).press()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        bid = event.button.id or ""
+        if bid == "fe-cancel":
+            self.dismiss(None)
+            return
+        if bid != "fe-confirm":
+            return
+        kind_idx = self.query_one("#fe-kind-list", OptionList).highlighted or 0
+        detail = self.query_one("#fe-input", Input).value.strip()
+        provider_idx = self.query_one("#fe-provider-list", OptionList).highlighted
+        raw_provider = self._PROVIDERS[provider_idx] if provider_idx is not None else "(default)"
+        provider = None if raw_provider == "(default)" else raw_provider
+        model_idx = self.query_one("#fe-model-list", OptionList).highlighted
+        raw_model = self._current_model_opts[model_idx] if model_idx is not None else "(default)"
+        model = None if raw_model == "(default)" else raw_model
+        effort_idx = self.query_one("#fe-effort-list", OptionList).highlighted
+        raw_effort = self._EFFORTS[effort_idx] if effort_idx is not None else "(default)"
+        effort = None if raw_effort == "(default)" else raw_effort
+        if kind_idx == 0:
+            self.dismiss({
+                "kind": "ask_user",
+                "name": "review",
+                "cmd": None,
+                "skill": None,
+                "provider": None,
+                "model": None,
+                "effort": None,
+            })
+        elif kind_idx == 1:
+            self.dismiss({
+                "kind": "skill",
+                "name": detail or "skill-eval",
+                "cmd": None,
+                "skill": detail or None,
+                "provider": provider,
+                "model": model,
+                "effort": effort,
+            })
+        else:
+            self.dismiss({
+                "kind": "command",
+                "name": detail.split()[0] if detail else "cmd",
+                "cmd": detail or None,
+                "skill": None,
+                "provider": provider,
+                "model": model,
+                "effort": effort,
+            })
+
+
 class _ConfirmStopModal(ModalScreen[str | None]):
     """Confirm before pausing or killing the run.
 
@@ -1240,7 +1467,7 @@ class _ManualValidationModal(ModalScreen[tuple[str, str] | None]):
 
     BINDINGS = [
         ("a", "approve", "Approve"),
-        ("p", "plan_changes", "Plan Changes"),
+        ("f", "plan_changes", "Final Eval"),
         ("r", "reject", "Reject"),
         ("escape", "reject", "Reject"),
     ]
@@ -1261,7 +1488,7 @@ class _ManualValidationModal(ModalScreen[tuple[str, str] | None]):
             yield TextArea("", id="val-response")
             with Horizontal(id="val-actions"):
                 yield Button("  Approve  (a)", id="approve", variant="success")
-                yield Button("  Plan Changes  (p)", id="plan_changes", variant="primary")
+                yield Button("  Final Eval  (f)", id="plan_changes", variant="primary")
                 yield Button("  Reject  (r)", id="reject", variant="error")
 
     def on_mount(self) -> None:
@@ -1293,12 +1520,13 @@ class RunApp(App[int]):
     CSS = (
         """
     #run-left { width: 42%; border-right: solid $primary; }
-    #overview { height: 1fr; padding: 0 1; }
+    #overview { height: auto; padding: 0 1; }
     RichLog {
         padding: 0 1;
     }
     """
         + _PALETTE_CSS
+        + _SCROLL_LEFT_PANE_CSS
         + _MAXIMIZE_CSS
     )
 
@@ -1327,12 +1555,13 @@ class RunApp(App[int]):
         yield Header(show_clock=True)
         with Horizontal():
             with Vertical(id="run-left"):
-                yield VerticalScroll(Static(id="overview"))
+                yield VerticalScroll(Static(id="overview"), id="overview-scroll")
             yield RichLog(id="log", markup=True, wrap=True, highlight=True)
         yield Footer()
 
     def on_mount(self) -> None:
         self._refresh()
+        self.query_one("#overview-scroll", VerticalScroll).focus()
         self._timer = self.set_interval(0.5, self._refresh)
 
         self._handler = _TextualLogHandler(self)
@@ -1764,8 +1993,8 @@ class ConfigureApp(App[bool]):
         lang_choices = [""] + gate_default_languages()
         lang_opts = [(lang or "—", lang) for lang in lang_choices]
         return Horizontal(
-            Label(check["name"], classes="gate-name"),
-            Input(value=check["cmd"], id=f"gate_cmd_{index}", classes="gate-cmd"),
+            Label(check.get("name", ""), classes="gate-name"),
+            Input(value=check.get("cmd", ""), id=f"gate_cmd_{index}", classes="gate-cmd"),
             self._select(
                 when_opts,
                 check.get("when", "always"),
@@ -2484,6 +2713,7 @@ class PrdSessionApp(App[int | None]):
         elif phase == "review":
             btns.append(Button("Accept", id="accept", variant="success"))
             btns.append(Button("Edit", id="edit", variant="primary"))
+            btns.append(Button("Set Final Eval", id="set-final-eval", variant="default"))
             btns.append(Button("Cowabunga", id="cowabunga", variant="warning"))
         elif phase == "trust":
             btns.append(Button("Send PRD", id="accept", variant="success"))
@@ -2720,7 +2950,7 @@ class PrdSessionApp(App[int | None]):
             self._say("[yellow]No US-NNN stories found — the PRD runs as a single task.[/]")
 
     def _show_final_eval_hint(self) -> None:
-        """Show configured final_eval entries if any, so the user knows they'll run."""
+        """Show configured final_eval entries so the user knows what will run."""
         from splinter.configure import load_config, load_final_eval
 
         try:
@@ -2732,12 +2962,13 @@ class PrdSessionApp(App[int | None]):
             else:
                 entries = load_final_eval(load_config())
         except Exception:
-            return
-        if not entries:
-            return
-        self._say("[dim]Final eval will run after tasks complete:[/]")
-        for e in entries:
-            self._say(f"  [dim]• {escape(e.name)} ({e.kind})[/]")
+            entries = []
+        if entries:
+            self._say("[dim]Final eval after tasks:[/]")
+            for e in entries:
+                self._say(f"  [dim]• {escape(e.name)} ({e.kind})[/]")
+        else:
+            self._say("[dim]No final eval set — click 'Set Final Eval' to configure.[/]")
 
     # --- input dispatch ---
     def _on_generate(self) -> None:
@@ -2780,6 +3011,8 @@ class PrdSessionApp(App[int | None]):
             self._submit(bid)
         elif bid.startswith("strat-"):
             self._submit(bid[len("strat-") :])
+        elif bid == "set-final-eval":
+            self._open_final_eval_modal()
 
     def _submit(self, raw: str) -> None:
         if self._busy:
@@ -2852,7 +3085,41 @@ class PrdSessionApp(App[int | None]):
                 self._say("[green]Gate set:[/] " + ", ".join(c["cmd"] for c in checks))
             else:
                 self._say("[yellow]Gate disabled — no mechanical checks this run.[/]")
-            self._set_busy(False, "accept / edit / gate: <cmds> / cowabunga")
+            msg = (
+                "accept / edit / gate: <cmds> / "
+                "final_eval: ask_user|<cmd>|none / cowabunga"
+            )
+            self._set_busy(False, msg)
+            return
+
+        if text.lower().startswith("final_eval:"):
+            import yaml as _yaml
+            spec = text.split(":", 1)[1].strip()
+            fe_path = self.session.dir / "final_eval.yaml"
+            if spec.lower() == "none":
+                fe_path.write_text(_yaml.dump({"final_eval": []}, default_flow_style=False))
+                self._say("[yellow]Final eval disabled for this run.[/]")
+            elif spec.lower() == "ask_user":
+                fe_path.write_text(
+                    _yaml.dump(
+                        {"final_eval": [{"name": "review", "kind": "ask_user"}]},
+                        default_flow_style=False,
+                    )
+                )
+                self._say("[green]Final eval set:[/] ask_user (manual review after run)")
+            else:
+                fe_path.write_text(
+                    _yaml.dump(
+                        {"final_eval": [{"name": spec.split()[0], "kind": "command", "cmd": spec}]},
+                        default_flow_style=False,
+                    )
+                )
+                self._say(f"[green]Final eval set:[/] {spec}")
+            msg = (
+                "accept / edit / gate: <cmds> / "
+                "final_eval: ask_user|<cmd>|none / cowabunga"
+            )
+            self._set_busy(False, msg)
             return
 
         if prd_session.is_cowabunga(text):
@@ -2866,6 +3133,29 @@ class PrdSessionApp(App[int | None]):
             return
         self._set_busy(True, "applying your changes…")
         self._spawn(self._revise_worker, instructions=text)
+
+    def _open_final_eval_modal(self) -> None:
+        """Open the Set Final Eval modal and persist the user's choice."""
+        def _on_result(result: dict[str, str | None] | None) -> None:
+            if result is None:
+                return
+            import yaml as _yaml
+            fe_path = self.session.dir / "final_eval.yaml"
+            entry: dict[str, str | None] = {"name": result["name"], "kind": result["kind"]}
+            for key in ("cmd", "skill", "provider", "model", "effort"):
+                if result.get(key):
+                    entry[key] = result[key]
+            fe_path.write_text(_yaml.dump({"final_eval": [entry]}, default_flow_style=False))
+            kind = result["kind"] or ""
+            kind_label = {
+                "ask_user": "User Review (manual review after run)",
+                "skill": f"Run Skill: {result.get('skill', '')}",
+                "command": f"Run Command: {result.get('cmd', '')}",
+            }.get(kind, kind)
+            self._say(f"[green]Final eval set:[/] {kind_label}")
+            self._show_final_eval_hint()
+
+        self.push_screen(_FinalEvalModal(), _on_result)
 
     def _on_edit(self) -> None:
         """Edit button — return to revising instructions while preserving final_prd."""
@@ -2893,18 +3183,6 @@ class PrdSessionApp(App[int | None]):
         self._say(f"[green]▶ running with strategy '{self.strategy}'…[/]")
         self.phase = "run"
         self._save_state()
-        # Write session-scoped final_eval if not already set (global config or session file).
-        fe_path = self.session.dir / "final_eval.yaml"
-        if not fe_path.exists():
-            from splinter.configure import load_config, load_final_eval
-            import yaml as _yaml
-            if not load_final_eval(load_config()):
-                fe_path.write_text(
-                    _yaml.dump(
-                        {"final_eval": [{"name": "review", "kind": "ask_user"}]},
-                        default_flow_style=False,
-                    )
-                )
         self.exit(0)
 
 
