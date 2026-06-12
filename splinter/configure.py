@@ -320,10 +320,6 @@ TIER_STEPS: list[tuple[str, str]] = [
         "Run · T5 last-resort",
         "The very last rung: Claude maxed out. Only if `critical` still failed.",
     ),
-    (
-        "Run · T6 codex",
-        "Codex runner (OpenAI). Reached by escalation beyond last-resort.",
-    ),
 ]
 
 

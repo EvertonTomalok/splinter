@@ -91,18 +91,27 @@ class Evaluator:
             else:
                 skill_section_text = section("Eval Skill", eval_skill.body)
         gate_text = "PASS" if gate_passed else f"FAIL — {gate_detail or 'mechanical checks failed'}"
-        plan_section_text = section("Implementation Plan", plan) if plan else ""
-        prompt = render(
-            "eval",
-            task_section=section("Task", task.description),
-            acceptance_section=section("Acceptance Criteria", task.acceptance),
-            plan_section=plan_section_text,
-            output_section=section("Implementation Output", run_output),
-            gate_section=section("Mechanical Gate Result", gate_text),
-            previous_evals_section=section("Previous Eval Feedback", previous_evals),
-            skill_section=skill_section_text,
-            standards_section=section("Code Conventions", load_standards()),
-        )
+        if session:
+            # Session already holds task/acceptance/plan/standards — send only the delta.
+            prompt = render(
+                "eval_continue",
+                output_section=section("Updated Implementation Output", run_output),
+                gate_section=section("Mechanical Gate Result", gate_text),
+                previous_evals_section=section("Previous Eval Feedback", previous_evals),
+            )
+        else:
+            plan_section_text = section("Implementation Plan", plan) if plan else ""
+            prompt = render(
+                "eval",
+                task_section=section("Task", task.description),
+                acceptance_section=section("Acceptance Criteria", task.acceptance),
+                plan_section=plan_section_text,
+                output_section=section("Implementation Output", run_output),
+                gate_section=section("Mechanical Gate Result", gate_text),
+                previous_evals_section=section("Previous Eval Feedback", previous_evals),
+                skill_section=skill_section_text,
+                standards_section=section("Code Conventions", load_standards()),
+            )
         response, sid = run_provider_session(
             prompt, model, variant=effort, session=session, timeout=timeout
         )

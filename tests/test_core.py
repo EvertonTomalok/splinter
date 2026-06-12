@@ -61,11 +61,10 @@ def isolated_ladder(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> "objec
 
 def test_ladder_loads(isolated_ladder: "object") -> None:
     ladder = isolated_ladder
-    assert len(ladder.tiers) == 7
+    assert len(ladder.tiers) == 6
     assert ladder.tiers[0].name == "easy"
     assert ladder.tiers[4].name == "critical"
     assert ladder.tiers[5].name == "last-resort"
-    assert ladder.tiers[6].name == "codex"
     assert len(ladder.all_model_ids()) > 0
     # floor is deepseek-v4-pro; workhorse rung (T1) switches to minimax-m3
     assert ladder.tiers[0].models[0] == "opencode-go/deepseek-v4-pro"
@@ -77,14 +76,11 @@ def test_ladder_loads(isolated_ladder: "object") -> None:
     assert ladder.tier_variant(3) == "max"
     assert ladder.tier_variant(4) == "high"
     assert ladder.tier_variant(5) == "max"
-    assert ladder.tier_variant(6) == "high"
-    # T4 critical is the strong open runner (qwen); T5 last-resort is Claude; T6 codex
+    # T4 critical is the strong open runner (qwen); T5 last-resort is Claude
     assert ladder.tier_by_level(4).models[0] == "opencode-go/qwen3.7-plus"
     assert ladder.tier_by_level(4).provider == "opencode"
     assert ladder.tier_by_level(5).models[0] == "sonnet"
     assert ladder.tier_by_level(5).provider == "claude"
-    assert ladder.tier_by_level(6).models[0] == "codex/gpt-5-codex"
-    assert ladder.tier_by_level(6).provider == "codex"
 
 
 def test_ladder_tier_by_level() -> None:
@@ -333,18 +329,9 @@ def test_rewrite_runners_claude(isolated_ladder: "object") -> None:
         assert ladder.tier_variant(level) == Variant.HIGH
 
 
-def test_roster_loads_codex_tiers(isolated_ladder: "object") -> None:
+def test_roster_loads_codex_tiers() -> None:
     from splinter.models.roster import provider_for
 
-    ladder = isolated_ladder
-    codex_tier = ladder.tier_by_name("codex")
-    assert codex_tier is not None
-    assert codex_tier.provider == "codex"
-    assert len(codex_tier.models) > 0
-    assert all(provider_for(m) == "codex" for m in codex_tier.models)
-    codex_ids = ladder.codex_model_ids()
-    assert len(codex_ids) > 0
-    assert codex_ids == codex_tier.models
     assert provider_for("codex/gpt-5-codex") == "codex"
     assert provider_for("opencode/foo") == "opencode"
     assert provider_for("opencode-go/bar") == "opencode"
