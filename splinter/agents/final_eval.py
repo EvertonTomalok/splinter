@@ -156,11 +156,11 @@ def _resolve_model(entry: FinalEvalEntry, ladder: "Ladder | None") -> tuple[str,
 
     Priority: entry.provider+model > entry.model > ladder.eval_model > default.
     When entry.provider is set but entry.model is not, picks the default model
-    for that provider ("sonnet" for claude, "opencode-go/qwen3-coder" for opencode).
+    for that provider (ladder.eval_model for claude, "opencode-go/qwen3-coder" for opencode).
     """
 
     _OPENCODE_DEFAULT = "opencode-go/qwen3-coder"
-    _CLAUDE_DEFAULT = "sonnet"
+    _claude_default = (ladder.eval_model if ladder else None) or _DEFAULT_MODEL
 
     variant = str(entry.variant) if entry.variant else (
         ladder.eval_effort if ladder else _DEFAULT_VARIANT
@@ -175,8 +175,8 @@ def _resolve_model(entry: FinalEvalEntry, ladder: "Ladder | None") -> tuple[str,
             # Codex CLI provider — not yet implemented; falls back to claude default.
             # TODO: wire splinter.providers.codex_cli when available.
             log.warning("codex provider not yet implemented, falling back to claude")
-            return _CLAUDE_DEFAULT, variant
-        return _CLAUDE_DEFAULT, variant
+            return _claude_default, variant
+        return _claude_default, variant
 
     if entry.model:
         return entry.model, variant
@@ -192,8 +192,13 @@ def _skill_prompt(entry: FinalEvalEntry, task: "Task | None", eval_mode: bool) -
     """Build the LLM prompt for skill / review kinds."""
     from splinter.skills import resolve_eval_skill
 
-    skill = resolve_eval_skill(entry.skill or "")
-    skill_text = f"{skill.body}\n\n---\n" if (skill and not skill.missing) else ""
+    skill_name = entry.skill or ""
+    if skill_name.startswith("/"):
+        clean = skill_name.lstrip("/")
+        skill_text = f"/{clean}\n\n---\n"
+    else:
+        skill = resolve_eval_skill(skill_name)
+        skill_text = f"{skill.body}\n\n---\n" if (skill and not skill.missing) else ""
     task_desc = task.description if task else ""
     task_accept = task.acceptance if task else ""
 

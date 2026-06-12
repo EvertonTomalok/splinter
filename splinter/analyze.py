@@ -690,7 +690,7 @@ def render_expand(session: Session, what: str) -> str:
         extra = [
             n
             for n in notes
-            if n[1] not in ("plan", "localization") and not n[1].startswith("plan-")
+            if n[1] not in ("plan", "localization")
         ]
         if extra:
             for filename, label in extra:

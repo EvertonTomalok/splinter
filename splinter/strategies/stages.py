@@ -54,6 +54,7 @@ class IterationContext:
     gate_detail: str = ""
     gate_output: str = ""
     verdict: EvalVerdict | None = None
+    pause_at_stage: str | None = None
     _loop_lines: list[str] = field(default_factory=list)
     _structure_flushed: bool = field(default=False)
 
@@ -72,6 +73,8 @@ class IterationContext:
 class Stage(ABC):
     """A link in the iteration chain."""
 
+    name: str = ""
+
     def __init__(self) -> None:
         self._next: Stage | None = None
 
@@ -80,8 +83,13 @@ class Stage(ABC):
         return nxt
 
     def handle(self, ctx: IterationContext) -> IterationContext:
-        if self.process(ctx) and self._next is not None:
-            return self._next.handle(ctx)
+        if self.process(ctx):
+            if self._next is not None:
+                from splinter import procreg
+                if procreg.stop_requested():
+                    ctx.pause_at_stage = self._next.name
+                    return ctx
+                return self._next.handle(ctx)
         return ctx
 
     @abstractmethod
@@ -94,6 +102,18 @@ def build_chain(*stages: Stage) -> Stage:
     """Link ``stages`` head-to-tail and return the head."""
     for current, nxt in zip(stages, stages[1:]):
         current.set_next(nxt)
+    return stages[0]
+
+
+def build_chain_from(start: str | None, *stages: Stage) -> Stage:
+    """Link stages head-to-tail; return the stage whose name == start (or head if None)."""
+    for current, nxt in zip(stages, stages[1:]):
+        current.set_next(nxt)
+    if start is None:
+        return stages[0]
+    for stage in stages:
+        if stage.name == start:
+            return stage
     return stages[0]
 
 
@@ -121,6 +141,8 @@ def _render_actions(task_index: int, iteration: int, session: Session) -> str:
 
 class RunStage(Stage):
     """Execute the task with the current tier's model, recording the run."""
+
+    name = "run"
 
     def process(self, ctx: IterationContext) -> bool:
         from splinter.agents.runner import resolve_model, resolve_variant
@@ -194,6 +216,8 @@ class GateStage(Stage):
     owns the quality verdict.
     """
 
+    name = "gate"
+
     def process(self, ctx: IterationContext) -> bool:
         with agentic_scope(ctx.session, "gate", ctx.task_index, ctx.iteration):
             try:
@@ -229,6 +253,8 @@ class GateStage(Stage):
 
 class EvalStage(Stage):
     """Judge the run output against acceptance criteria and persist the verdict."""
+
+    name = "eval"
 
     def __init__(
         self,

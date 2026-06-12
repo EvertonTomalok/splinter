@@ -1309,6 +1309,50 @@ def test_analyze_tui_headless(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch")
     asyncio.run(drive())
 
 
+def test_analyze_tui_plan_survives_reload(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
+) -> None:
+    """Regression: after navigating to plan N, the 1s auto-reload must keep
+    rendering plan N — not snap back to the first plan."""
+    import asyncio
+
+    import splinter.tui as tui_mod
+    from splinter.tui import AnalyzeApp
+
+    monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
+    session = Session("ses_plans")
+    _seed_session(session)
+    session.write("knowledge/plan-1.md", "# Plan One\n\n1. first\n")
+    session.write("knowledge/plan-2.md", "# Plan Two\n\n1. second\n")
+
+    rendered: list[str] = []
+    real_file_md = tui_mod._file_md
+    monkeypatch.setattr(
+        tui_mod,
+        "_file_md",
+        lambda s, label, file: (rendered.append(file), real_file_md(s, label, file))[1],
+    )
+
+    async def drive() -> None:
+        app = AnalyzeApp(session)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            tree = app.query_one("#nav", tui_mod.Tree)
+            tree.move_cursor(app._plan_node)
+            await pilot.pause()
+            await pilot.press("right", "right")  # idx -> 2
+            await pilot.pause()
+            assert app._plan_idx == 2
+            rendered.clear()
+            app._do_reload()  # the 1s auto-refresh path
+            await pilot.pause()
+            assert app._plan_idx == 2
+            assert rendered and rendered[-1].endswith("plan-2.md")
+            await pilot.press("q")
+
+    asyncio.run(drive())
+
+
 def test_run_tui_streams_log_and_overview(
     tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
 ) -> None:

@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import asdict, dataclass
+from typing import Any
 
 from splinter import prd_session
 from splinter.agents.evaluator import PREMIUM_TIER, Evaluator
@@ -35,7 +36,7 @@ from splinter.obs.agentic import agentic_scope, record_exchange
 from splinter.obs.trace import Trace
 from splinter.providers.dispatch import run_text
 from splinter.skills import resolve_eval_skill
-from splinter.strategies.base import AskUserPause, Strategy
+from splinter.strategies.base import AskUserPause, EvalVerdict, GracefulPause, Strategy
 from splinter.strategies.registry import register
 from splinter.strategies.stages import (
     EvalStage,
@@ -43,6 +44,7 @@ from splinter.strategies.stages import (
     IterationContext,
     RunStage,
     build_chain,
+    build_chain_from,
 )
 from splinter.templating import render, section
 
@@ -65,6 +67,10 @@ class RunCheckpoint:
     eval_history: list[str]
     reason: str
     gate_output: str
+    stage: str = ""
+    run_result: dict[str, Any] | None = None
+    gate_passed: bool = True
+    verdict: dict[str, Any] | None = None
 
 
 def _save_checkpoint(session: Session, cp: RunCheckpoint) -> None:
@@ -91,6 +97,10 @@ def _load_checkpoint(session: Session) -> RunCheckpoint | None:
         eval_history=[str(x) for x in data.get("eval_history", [])],
         reason=str(data.get("reason", "")),
         gate_output=str(data.get("gate_output", "")),
+        stage=str(data.get("stage", "")),
+        run_result=data.get("run_result") or None,
+        gate_passed=bool(data.get("gate_passed", True)),
+        verdict=data.get("verdict") or None,
     )
 
 
@@ -144,6 +154,97 @@ def _pause_for_user(
     )
 
 
+def _deserialize_run_result(data: dict[str, Any]) -> RunResult:
+    return RunResult(
+        text=str(data.get("text", "")),
+        model=str(data.get("model", "")),
+        tier=int(data.get("tier", 0)),
+        tokens={str(k): int(v) for k, v in (data.get("tokens") or {}).items()},
+        cost=float(data.get("cost", 0.0)),
+        raw=data.get("raw") or {},
+        opencode_session=data.get("opencode_session") or None,
+    )
+
+
+def _deserialize_verdict(data: dict[str, Any]) -> EvalVerdict:
+    return EvalVerdict(
+        decision=str(data.get("decision", "")),
+        reason=str(data.get("reason", "")),
+        corrections=str(data.get("corrections", "")),
+        raw=str(data.get("raw", "")),
+        eval_session=data.get("eval_session") or None,
+        cost=float(data.get("cost", 0.0)),
+        tokens={str(k): int(v) for k, v in (data.get("tokens") or {}).items()},
+    )
+
+
+def _pause_graceful(
+    *,
+    session: Session,
+    knowledge: KnowledgeStore,
+    task_index: int,
+    iteration: int,
+    tier: int,
+    stage: str,
+    corrections: str,
+    gate_output: str,
+    run_result: RunResult | None,
+    gate_passed: bool,
+    verdict: EvalVerdict | None,
+    oc_session: str | None,
+    eval_session: str | None,
+    eval_history: list[str],
+) -> None:
+    reason = f"Paused by user at '{stage}' boundary (iter {iteration}). Resume to continue."
+    log.info("graceful pause requested — pausing at stage '%s' after iter %d", stage, iteration)
+    session.append(
+        "loop.md",
+        f"## Graceful pause (iter {iteration}) — boundary before {stage}\n{reason}\n\n",
+    )
+    knowledge.write_note(f"graceful-pause-iter-{iteration}", reason)
+
+    run_result_dict: dict[str, Any] | None = None
+    if run_result is not None:
+        try:
+            run_result_dict = asdict(run_result)
+        except Exception:
+            pass
+
+    verdict_dict: dict[str, Any] | None = None
+    if verdict is not None:
+        try:
+            verdict_dict = asdict(verdict)
+        except Exception:
+            pass
+
+    _save_checkpoint(
+        session,
+        RunCheckpoint(
+            tier=tier,
+            iteration=iteration,
+            task_index=task_index,
+            oc_session=oc_session,
+            eval_session=eval_session,
+            corrections=corrections,
+            eval_history=list(eval_history),
+            reason=reason,
+            gate_output=gate_output,
+            stage=stage,
+            run_result=run_result_dict,
+            gate_passed=gate_passed,
+            verdict=verdict_dict,
+        ),
+    )
+    raise GracefulPause(
+        reason=reason,
+        corrections=corrections,
+        tier=tier,
+        iteration=iteration,
+        task_index=task_index,
+        stage=stage,
+    )
+
+
 @register
 class DirectStrategy(Strategy):
     name = "direct"
@@ -176,7 +277,7 @@ class DirectStrategy(Strategy):
 
         checkpoint = (
             _load_checkpoint(session)
-            if resume and session.read_status().get("state") == "awaiting_user"
+            if resume and session.read_status().get("state") in {"awaiting_user", "paused"}
             else None
         )
         start_index = (
@@ -332,8 +433,6 @@ class DirectStrategy(Strategy):
                 oc_session = checkpoint.oc_session
                 eval_session = checkpoint.eval_session
             corrections = checkpoint.corrections
-            if user_guidance:
-                corrections = f"{corrections}\n\n## User guidance\n{user_guidance}".strip()
             eval_history = list(checkpoint.eval_history)
             start_iteration = checkpoint.iteration
         else:
@@ -347,6 +446,8 @@ class DirectStrategy(Strategy):
             corrections = ""
             eval_history = []
             start_iteration = 1
+
+        corrections = _merge_guidance(corrections, user_guidance)
 
         # Reuse any existing plan — opus calls are expensive and the plan is
         # deterministic for this task. Always check the task-specific file first.
@@ -375,11 +476,18 @@ class DirectStrategy(Strategy):
             session.write(task_plan_file, f"# Plan\n\n{plan}\n")
 
         resolved = resolve_eval_skill(eval_skill or task.eval_skill)
-        chain = build_chain(RunStage(), GateStage(), EvalStage(resolved_skill=resolved))
         evaluator = Evaluator(ladder)
         last_result: RunResult | None = None
+        resume_stage = checkpoint.stage if checkpoint is not None else ""
 
         for iteration in range(start_iteration, max_iterations + 1):
+            if iteration == start_iteration and resume_stage:
+                chain = build_chain_from(
+                    resume_stage, RunStage(), GateStage(), EvalStage(resolved_skill=resolved)
+                )
+            else:
+                chain = build_chain(RunStage(), GateStage(), EvalStage(resolved_skill=resolved))
+
             ctx = IterationContext(
                 task=task,
                 plan=plan,
@@ -397,6 +505,15 @@ class DirectStrategy(Strategy):
                 eval_history=eval_history,
                 task_index=task_index,
             )
+
+            if iteration == start_iteration and resume_stage and checkpoint is not None:
+                if checkpoint.run_result is not None:
+                    ctx.run_result = _deserialize_run_result(checkpoint.run_result)
+                ctx.gate_passed = checkpoint.gate_passed
+                ctx.gate_output = checkpoint.gate_output
+                if checkpoint.verdict is not None:
+                    ctx.verdict = _deserialize_verdict(checkpoint.verdict)
+
             chain.handle(ctx)
 
             session.write("trace.md", trace.summary())
@@ -405,26 +522,26 @@ class DirectStrategy(Strategy):
             oc_session = ctx.oc_session
             eval_session = ctx.eval_session
 
-            verdict = ctx.verdict
-            assert verdict is not None and ctx.run_result is not None
-
-            # Graceful stop: user pressed 'p' — finish this iteration, then pause.
-            from splinter import procreg as _procreg
-            if _procreg.stop_requested():
-                log.info("graceful stop requested — pausing after iter %d", iteration)
-                _pause_for_user(
+            if ctx.pause_at_stage:
+                _pause_graceful(
                     session=session,
                     knowledge=knowledge,
                     task_index=task_index,
                     iteration=iteration,
                     tier=tier,
-                    reason="Paused by user (graceful stop). Resume to continue.",
-                    corrections=verdict.corrections,
+                    stage=ctx.pause_at_stage,
+                    corrections=corrections,
                     gate_output=ctx.gate_output,
+                    run_result=ctx.run_result,
+                    gate_passed=ctx.gate_passed,
+                    verdict=ctx.verdict,
                     oc_session=oc_session,
                     eval_session=eval_session,
                     eval_history=eval_history,
                 )
+
+            verdict = ctx.verdict
+            assert verdict is not None and ctx.run_result is not None
 
             # The evaluator owns the verdict. A gate failure never short-circuits
             # it and never escalates on its own — it is fed back to the runner as
@@ -591,6 +708,16 @@ def _retry_corrections(corrections: str, gate_output: str) -> str:
     if gate_output:
         parts.append(f"## Gate Output\n{gate_output}")
     return "\n\n".join(parts)
+
+
+def _merge_guidance(corrections: str, guidance: str | None) -> str:
+    g = (guidance or "").strip()
+    if not g:
+        return corrections
+    block = f"## User guidance\n{g}"
+    if block in corrections:
+        return corrections
+    return f"{corrections}\n\n{block}".strip() if corrections else block
 
 
 def _correction_context(knowledge: KnowledgeStore, latest: str) -> str:

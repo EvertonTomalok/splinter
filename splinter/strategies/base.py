@@ -41,6 +41,18 @@ class AskUserPause(Exception):
 
 
 @dataclass
+class GracefulPause(Exception):
+    """Pipeline paused at sub-action boundary — resumable into the in-flight stage."""
+
+    reason: str
+    corrections: str = ""
+    tier: int = 0
+    iteration: int = 0
+    task_index: int = 0
+    stage: str = ""
+
+
+@dataclass
 class ManualValidationPause(Exception):
     """Pipeline complete but requires manual user validation before closing."""
 
