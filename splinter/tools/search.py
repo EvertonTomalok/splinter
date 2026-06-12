@@ -4,6 +4,12 @@ All functions are guaranteed not to raise — errors (including subprocess timeo
 and missing tools) are returned as a SearchResult with exit_code != 0 and an
 ``[unavailable: …]`` message so callers can surface the failure to the LLM without
 crashing the pipeline.
+
+Search is always scoped to the directory where splinter was invoked (CWD).
+When inside a git repo, ``git grep`` / ``git ls-files`` are preferred because
+they automatically respect ``.gitignore`` — skipping node_modules, vendor,
+build artefacts, and other untracked trees that make raw grep impossibly slow
+on large monorepos.
 """
 
 from __future__ import annotations
@@ -13,11 +19,10 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-# Generous timeouts for large monorepos.  grep over a big TS/Go repo can take
-# well over 30 s when searching unindexed files via rtk.
+# Timeouts tuned for large monorepos.
 _GREP_TIMEOUT = 120
 _CAT_TIMEOUT = 30
-_GIT_LOG_TIMEOUT = 30
+_GIT_TIMEOUT = 30
 
 
 @dataclass(frozen=True)
@@ -36,12 +41,49 @@ class SearchResult:
         return self.output.startswith("[unavailable:")
 
 
+# Directories that are never worth searching regardless of language.
+# Used as --exclude-dir for grep and as skip-list for rglob fallback.
+_IGNORED_DIRS: frozenset[str] = frozenset({
+    # JS/TS
+    "node_modules", ".next", ".nuxt", ".svelte-kit", "dist", "build", ".turbo",
+    # Go
+    "vendor",
+    # Python
+    ".venv", "venv", "__pycache__", ".mypy_cache", ".ruff_cache", ".pytest_cache",
+    # Rust
+    "target",
+    # Java/Kotlin/Android
+    ".gradle", "build", "out",
+    # Ruby
+    ".bundle",
+    # General
+    ".git", ".svn", ".hg",
+    "coverage", ".coverage",
+    "tmp", "temp", ".tmp",
+    "logs", ".logs",
+    "cache", ".cache",
+})
+
+
 def _has_rtk() -> bool:
     return shutil.which("rtk") is not None
 
 
+def _is_git_repo(path: str) -> bool:
+    try:
+        r = subprocess.run(
+            ["git", "rev-parse", "--is-inside-work-tree"],
+            capture_output=True,
+            text=True,
+            cwd=path,
+            timeout=5,
+        )
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
 def _error(tool: str, exc: BaseException) -> SearchResult:
-    """Return a graceful error SearchResult that callers can pass to the LLM."""
     kind = type(exc).__name__
     msg = str(exc).split("\n")[0][:120]
     return SearchResult(
@@ -52,18 +94,32 @@ def _error(tool: str, exc: BaseException) -> SearchResult:
 
 
 def grep(pattern: str, path: str = ".", *, flags: str = "", timeout: int = _GREP_TIMEOUT) -> SearchResult:
-    if _has_rtk():
-        cmd = ["rtk", "grep"]
-        if flags:
-            cmd.extend(flags.split())
-        cmd.extend([pattern, path])
-    else:
-        cmd = ["grep", "-rn"]
-        if flags:
-            cmd.extend(flags.split())
-        cmd.extend([pattern, path])
-
+    """Search for pattern, respecting .gitignore when inside a git repo."""
     try:
+        if _is_git_repo(path):
+            # git grep only searches tracked files — skips node_modules, vendor, dist, etc.
+            cmd = ["git", "grep", "-n", "--no-color"]
+            if flags:
+                cmd.extend(flags.split())
+            cmd.append(pattern)
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=path)
+            # exit 1 = no matches (not an error); exit 0 = matches found
+            if proc.returncode in (0, 1):
+                return SearchResult(output=proc.stdout, tool="grep", exit_code=proc.returncode)
+            # git grep failed for another reason — fall through to rtk/grep
+
+        exclude_args = [f"--exclude-dir={d}" for d in _IGNORED_DIRS]
+        if _has_rtk():
+            cmd = ["rtk", "grep"]
+            if flags:
+                cmd.extend(flags.split())
+            cmd.extend([pattern, path])
+        else:
+            cmd = ["grep", "-rn"] + exclude_args
+            if flags:
+                cmd.extend(flags.split())
+            cmd.extend([pattern, path])
+
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         return SearchResult(output=proc.stdout, tool="grep", exit_code=proc.returncode)
     except Exception as exc:
@@ -99,7 +155,7 @@ def read_file(path: str, start: int = 0, end: int | None = None) -> SearchResult
     return SearchResult(output="\n".join(numbered), tool="read", exit_code=0)
 
 
-def git_log(n: int = 10, *, timeout: int = _GIT_LOG_TIMEOUT) -> SearchResult:
+def git_log(n: int = 10, *, timeout: int = _GIT_TIMEOUT) -> SearchResult:
     if _has_rtk():
         cmd = ["rtk", "git", "log", f"-{n}", "--oneline"]
     else:
@@ -111,12 +167,31 @@ def git_log(n: int = 10, *, timeout: int = _GIT_LOG_TIMEOUT) -> SearchResult:
         return _error("git-log", exc)
 
 
-def file_list(path: str = ".", pattern: str = "*", *, timeout: int = _GIT_LOG_TIMEOUT) -> SearchResult:
+def file_list(path: str = ".", pattern: str = "*", *, timeout: int = _GIT_TIMEOUT) -> SearchResult:
+    """List files matching pattern, respecting .gitignore when inside a git repo."""
     p = Path(path)
     if not p.exists():
         return SearchResult(output=f"path not found: {path}", tool="file-list", exit_code=1)
     try:
-        files = sorted(str(f) for f in p.rglob(pattern) if f.is_file())
+        if _is_git_repo(path):
+            # git ls-files only lists tracked files — no node_modules / build artefacts.
+            proc = subprocess.run(
+                ["git", "ls-files", "--", f"*{Path(pattern).suffix}" if "*." in pattern else pattern],
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                cwd=path,
+            )
+            if proc.returncode == 0:
+                files = sorted(proc.stdout.splitlines())
+                return SearchResult(output="\n".join(files), tool="file-list", exit_code=0)
+            # fall through to rglob on git failure
+
+        files = sorted(
+            str(f.relative_to(p))
+            for f in p.rglob(pattern)
+            if f.is_file() and not any(part in _IGNORED_DIRS for part in f.parts)
+        )
         return SearchResult(output="\n".join(files), tool="file-list", exit_code=0)
     except Exception as exc:
         return _error("file-list", exc)
