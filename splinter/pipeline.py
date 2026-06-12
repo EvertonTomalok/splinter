@@ -450,6 +450,10 @@ def run_pipeline(
             )
             fe_verbatim = "\n\n---\n\n".join(r.output for r in fe_results)
             session.write("final_eval.md", fe_verbatim + "\n")
+            session.write(
+                f"knowledge/final-eval-{resume_round}.md",
+                f"# Final Eval — Round {resume_round + 1}\n\n{fe_verbatim}\n",
+            )
             log.info("final eval results:\n%s", fe_summary)
             all_passed = all(r.passed for r in fe_results)
             if not all_passed:
