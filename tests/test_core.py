@@ -255,14 +255,23 @@ def test_configure_tui_saves_models_and_efforts(
 
     from textual.widgets import Select
 
+    from splinter.providers import opencode
     from splinter.tui import ConfigureApp
 
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        opencode,
+        "list_models",
+        lambda timeout=30: ["opencode-go/test-model"],
+    )
 
     async def drive() -> None:
         app = ConfigureApp()
         async with app.run_test() as pilot:
             await pilot.pause()
+            await pilot.pause()
+            assert app._models_by_provider
+            assert set(app._models_by_provider.keys()) == {"claude", "opencode", "codex"}
             app.query_one("#planner__eff", Select).value = "max"
             await pilot.pause()
             await pilot.press("s")
@@ -700,6 +709,79 @@ def test_available_models_includes_codex() -> None:
     assert isinstance(models, list)
     for codex_model in CODEX_MODELS:
         assert codex_model in models, f"codex model {codex_model} not in available_models()"
+
+
+def test_configure_provider_catalogs_include_all_static_models() -> None:
+    from splinter.configure import CLAUDE_MODELS, CODEX_MODELS, EFFORT_CHOICES
+    from splinter.enums import Variant
+    from splinter.models.roster import CODEX_MODELS as ROSTER_CODEX_MODELS
+
+    assert "fable" in CLAUDE_MODELS
+    assert "claude-fable-5" in CLAUDE_MODELS
+    assert set(CODEX_MODELS) == set(ROSTER_CODEX_MODELS.values())
+    assert EFFORT_CHOICES == [str(v) for v in Variant]
+    assert "auto" in EFFORT_CHOICES
+
+
+def test_available_models_by_provider_keys(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
+) -> None:
+    from splinter.configure import CLAUDE_MODELS, CODEX_MODELS, available_models_by_provider
+    from splinter.providers import opencode
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        opencode,
+        "list_models",
+        lambda timeout=30: ["opencode-go/foo", "opencode/bar", "other/baz"],
+    )
+    result = available_models_by_provider()
+    assert set(result.keys()) == {"claude", "opencode", "codex"}
+    assert result["codex"] == sorted(CODEX_MODELS)
+    assert "sonnet" in result["claude"]
+    assert "opus" in result["claude"]
+    assert "fable" in result["claude"]
+    assert result["claude"] == sorted(set(CLAUDE_MODELS))
+    for m in result["claude"]:
+        assert not m.startswith("opencode") and not m.startswith("codex/")
+    assert "opencode-go/foo" in result["opencode"]
+    assert "opencode/bar" in result["opencode"]
+    assert "other/baz" not in result["opencode"]
+
+def test_available_models_by_provider_isolates_failure(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
+) -> None:
+    from splinter.configure import CODEX_MODELS, available_models_by_provider
+    from splinter.providers import opencode
+
+    monkeypatch.chdir(tmp_path)
+
+    def _raise(*args: object, **kwargs: object) -> list[str]:
+        raise RuntimeError("fail")
+
+    monkeypatch.setattr(opencode, "list_models", _raise)
+    result = available_models_by_provider()
+    assert isinstance(result["opencode"], list)
+    assert "sonnet" in result["claude"]
+    assert result["codex"] == sorted(CODEX_MODELS)
+
+
+def test_available_models_by_provider_union(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
+) -> None:
+    from splinter.configure import available_models, available_models_by_provider
+    from splinter.providers import opencode
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        opencode,
+        "list_models",
+        lambda timeout=30: ["opencode-go/test-model"],
+    )
+    by_provider = available_models_by_provider()
+    union = sorted({m for models in by_provider.values() for m in models})
+    flat = available_models()
+    assert union == flat
 
 
 def test_provider_for_codex() -> None:
@@ -2543,6 +2625,349 @@ def test_configure_tui_delete_all_gates(
     assert config["gate_checks"] == []
 
 
+# --- US-002: _model_opts_for composition ------------------------------------
+
+
+def test_model_opts_for_claude_only(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
+    from splinter.models.roster import CODEX_MODELS as ROSTER_CODEX_MODELS
+    from splinter.tui import ConfigureApp
+
+    monkeypatch.chdir(tmp_path)
+    app = ConfigureApp()
+    app._models_by_provider = {
+        "claude": ["opus", "sonnet"],
+        "opencode": ["opencode-go/deepseek-v4-flash-free", "opencode-go/minimax-m3"],
+        "codex": sorted(ROSTER_CODEX_MODELS.values()),
+    }
+
+    opts = app._model_opts_for("claude", "")
+
+    opt_ids = {v for _label, v in opts}
+    assert "sonnet" in opt_ids
+    assert "opus" in opt_ids
+    assert "opencode-go/deepseek-v4-flash-free" not in opt_ids
+    assert "opencode-go/minimax-m3" not in opt_ids
+    for codex_id in ROSTER_CODEX_MODELS.values():
+        assert codex_id not in opt_ids
+
+
+def test_model_opts_for_opencode_only(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
+    from splinter.models.roster import CODEX_MODELS as ROSTER_CODEX_MODELS
+    from splinter.tui import ConfigureApp
+
+    monkeypatch.chdir(tmp_path)
+    app = ConfigureApp()
+    app._models_by_provider = {
+        "claude": ["opus", "sonnet"],
+        "opencode": ["opencode-go/deepseek-v4-flash-free", "opencode-go/minimax-m3"],
+        "codex": sorted(ROSTER_CODEX_MODELS.values()),
+    }
+    opts = app._model_opts_for("opencode", "")
+
+    opt_ids = {v for _label, v in opts}
+    assert "sonnet" not in opt_ids
+    assert "opus" not in opt_ids
+    assert "opencode-go/deepseek-v4-flash-free" in opt_ids
+    assert "opencode-go/minimax-m3" in opt_ids
+    for codex_id in ROSTER_CODEX_MODELS.values():
+        assert codex_id not in opt_ids
+
+
+def test_model_opts_for_filter_narrows(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
+    from splinter.tui import ConfigureApp
+
+    monkeypatch.chdir(tmp_path)
+    app = ConfigureApp()
+    app._models_by_provider = {
+        "opencode": [
+            "opencode-go/deepseek-v4-flash-free",
+            "opencode-go/deepseek-v4-pro",
+            "opencode-go/minimax-m3",
+        ],
+    }
+
+    all_opencode = app._model_opts_for("opencode", "")
+    assert len(all_opencode) == 3
+
+    flash_opts = app._model_opts_for("opencode", "flash")
+    assert len(flash_opts) == 1
+    assert flash_opts[0][1] == "opencode-go/deepseek-v4-flash-free"
+
+    deepseek_opts = app._model_opts_for("opencode", "deepseek")
+    assert len(deepseek_opts) == 2
+    assert {v for _label, v in deepseek_opts} == {
+        "opencode-go/deepseek-v4-flash-free",
+        "opencode-go/deepseek-v4-pro",
+    }
+
+    empty = app._model_opts_for("opencode", "nonexistent")
+    assert len(empty) == 0
+
+
+def test_model_opts_for_codex_includes_roster_ids(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch",
+) -> None:
+    from splinter.models.roster import CODEX_MODELS as ROSTER_CODEX_MODELS
+    from splinter.tui import ConfigureApp
+
+    monkeypatch.chdir(tmp_path)
+    app = ConfigureApp()
+    app._models_by_provider = {"codex": sorted(ROSTER_CODEX_MODELS.values())}
+
+    opts = app._model_opts_for("codex", "")
+    expected = sorted(ROSTER_CODEX_MODELS.values())
+    assert len(opts) == len(expected)
+    for (label, value), expected_id in zip(opts, expected):
+        assert label == expected_id
+        assert value == expected_id
+    assert {v for _label, v in opts} == set(expected)
+
+
+def test_model_opts_for_default_shows_all(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch",
+) -> None:
+    from splinter.tui import ConfigureApp
+
+    monkeypatch.chdir(tmp_path)
+    app = ConfigureApp()
+    app._models_by_provider = {
+        "claude": ["opus", "sonnet"],
+        "opencode": ["opencode-go/deepseek-v4-flash-free", "opencode-go/minimax-m3"],
+        "codex": ["codex/gpt-5-codex"],
+    }
+    opts = app._model_opts_for("(default)", "")
+    opt_ids = {v for _label, v in opts}
+    assert "sonnet" in opt_ids
+    assert "opencode-go/deepseek-v4-flash-free" in opt_ids
+    assert "codex/gpt-5-codex" in opt_ids
+    assert len(opts) == 5
+
+
+def test_model_opts_for_default_filter_narrows(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch",
+) -> None:
+    from splinter.tui import ConfigureApp
+
+    monkeypatch.chdir(tmp_path)
+    app = ConfigureApp()
+    app._models_by_provider = {
+        "claude": ["sonnet"],
+        "opencode": ["opencode-go/deepseek-v4-flash-free", "opencode-go/minimax-m3"],
+    }
+    opts = app._model_opts_for("(default)", "flash")
+    assert len(opts) == 1
+    assert opts[0][1] == "opencode-go/deepseek-v4-flash-free"
+
+
+def test_current_model_selections_returns_providers_block(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch",
+) -> None:
+    from splinter.configure import current_model_selections
+    from splinter.models.roster import provider_for
+
+    monkeypatch.chdir(tmp_path)
+    current = current_model_selections()
+    assert "providers" in current
+    providers = current["providers"]
+    assert "localizer_recall" in providers
+    assert "localizer_recall_large" in providers
+    assert "localizer_precision" in providers
+    assert "planner" in providers
+    assert "eval" in providers
+    assert "tiers" in providers
+    assert isinstance(providers["tiers"], list)
+    assert len(providers["tiers"]) == 6
+    for p in providers["tiers"]:
+        assert p in {"claude", "opencode", "codex"}
+    ladder = load_ladder()
+    assert providers["planner"] == provider_for(ladder.planner_model)
+    assert providers["eval"] == provider_for(ladder.eval_model)
+
+
+def test_write_model_config_providers_roundtrip(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch",
+) -> None:
+    from splinter.configure import load_config, write_model_config
+
+    monkeypatch.chdir(tmp_path)
+    providers = {
+        "planner": "claude",
+        "eval": "opencode",
+        "tiers": ["opencode", "opencode", "claude", "opencode", "opencode", "claude"],
+    }
+    write_model_config(
+        {"planner": "sonnet", "tiers": ["deepseek-v4-pro"]},
+        providers=providers,
+    )
+    config = load_config()
+    assert "providers" in config
+    assert config["providers"] == providers
+
+
+def test_write_model_config_providers_none_preserves_existing(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch",
+) -> None:
+    from splinter.configure import load_config, write_model_config
+
+    monkeypatch.chdir(tmp_path)
+    existing = {"planner": "claude", "tiers": ["opencode"]}
+    write_model_config({"planner": "sonnet", "tiers": ["haiku"]}, providers=existing)
+    write_model_config({"planner": "opus", "tiers": ["sonnet"]}, providers=None)
+    config = load_config()
+    assert config["providers"] == existing
+
+
+def test_configure_tui_model_trigger_toggles_overlay(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch",
+) -> None:
+    import asyncio
+
+    from textual.widgets import Button
+
+    from splinter.providers import opencode
+    from splinter.tui import ConfigureApp
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        opencode,
+        "list_models",
+        lambda timeout=30: ["opencode-go/test-a", "opencode-go/test-b"],
+    )
+
+    async def drive() -> None:
+        app = ConfigureApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            app.query_one("#tier_5__trigger", Button).press()
+            await pilot.pause()
+            assert len(app.query("#tier_5__overlay")) == 1
+            app.query_one("#tier_5__trigger", Button).press()
+            await pilot.pause()
+            assert len(app.query("#tier_5__overlay")) == 0
+
+    asyncio.run(drive())
+
+
+def test_configure_tui_rows_use_compact_height() -> None:
+    from splinter.tui import ConfigureApp
+
+    assert "min-height: 4;" in ConfigureApp.CSS
+    assert "min-height: 12;" not in ConfigureApp.CSS
+    assert ".step-desc { color: $text-muted; height: 1; }" in ConfigureApp.CSS
+
+
+def test_configure_tui_row_description_tooltips(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch",
+) -> None:
+    import asyncio
+
+    from textual.widgets import Label
+
+    from splinter.configure import MODEL_STEPS, TIER_STEPS
+    from splinter.providers import opencode
+    from splinter.tui import ConfigureApp
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(opencode, "list_models", lambda timeout=30: [])
+
+    async def drive() -> None:
+        app = ConfigureApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            expected = {desc for _key, _label, desc in MODEL_STEPS}
+            expected.update(desc for _label, desc in TIER_STEPS)
+            names = list(app.query(".step-name").results(Label))
+            descs = list(app.query(".step-desc").results(Label))
+            infos = list(app.query(".step-info").results())
+            assert len(names) == len(descs) == len(infos) == len(expected)
+            for widget in [*names, *descs, *infos]:
+                assert widget.tooltip in expected
+
+    asyncio.run(drive())
+
+
+def test_configure_tui_provider_change_repopulates_model_list(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch",
+) -> None:
+    import asyncio
+
+    from textual.widgets import OptionList, Select
+
+    from splinter.providers import opencode
+    from splinter.tui import ConfigureApp
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        opencode,
+        "list_models",
+        lambda timeout=30: ["opencode-go/test-a", "opencode-go/test-b"],
+    )
+
+    async def drive() -> None:
+        app = ConfigureApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            model_widget = app.query_one("#planner", OptionList)
+            provider_widget = app.query_one("#planner__prov", Select)
+            provider_widget.value = "opencode"
+            await pilot.pause()
+            opt_ids = {str(o.prompt) for o in model_widget._options}
+            assert "sonnet" not in opt_ids
+            assert "opus" not in opt_ids
+            assert "opencode-go/test-a" in opt_ids
+            provider_widget.value = "claude"
+            await pilot.pause()
+            claude_ids = {str(o.prompt) for o in model_widget._options}
+            assert "sonnet" in claude_ids
+            assert "opus" in claude_ids
+            assert "opencode-go/test-a" not in claude_ids
+
+    asyncio.run(drive())
+
+
+def test_configure_tui_provider_filter_persists_across_switch(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch",
+) -> None:
+    import asyncio
+
+    from textual.widgets import Input, OptionList, Select
+
+    from splinter.providers import opencode
+    from splinter.tui import ConfigureApp
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        opencode,
+        "list_models",
+        lambda timeout=30: ["opencode-go/deepseek-v4-flash-free", "opencode-go/minimax-m3"],
+    )
+
+    async def drive() -> None:
+        app = ConfigureApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            provider_widget = app.query_one("#planner__prov", Select)
+            filter_widget = app.query_one("#planner__filter", Input)
+            model_widget = app.query_one("#planner", OptionList)
+            provider_widget.value = "opencode"
+            await pilot.pause()
+            filter_widget.value = "flash"
+            await pilot.pause()
+            opt_ids = {str(o.prompt) for o in model_widget._options}
+            assert "opencode-go/deepseek-v4-flash-free" in opt_ids
+            assert "opencode-go/minimax-m3" not in opt_ids
+            provider_widget.value = "claude"
+            await pilot.pause()
+            assert filter_widget.value == "flash"
+            claude_ids = {str(o.prompt) for o in model_widget._options}
+            assert len(claude_ids) < 3
+
+    asyncio.run(drive())
+
+
 # --- US-002: gate language survives save/load --------------------------------
 
 
@@ -2874,3 +3299,103 @@ def test_dispatch_no_if_else_branching() -> None:
                 if any(alias.name.endswith(m) for m in ("claude_cli", "opencode", "codex")):
                     direct_imports.append(alias.name)
     assert direct_imports == [], f"dispatch.py imports provider modules directly: {direct_imports}"
+
+
+def test_save_writes_selected_models_per_row(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
+) -> None:
+    from splinter.configure import TIER_STEPS, load_config, write_model_config
+
+    monkeypatch.chdir(tmp_path)
+    models: dict[str, object] = {
+        "localizer_recall": "haiku",
+        "localizer_recall_large": "sonnet",
+        "localizer_precision": "haiku",
+        "planner": "opus",
+        "eval": "sonnet",
+        "tiers": ["haiku", "sonnet", "sonnet", "opus", "opus", "opus"],
+    }
+    efforts: dict[str, object] = {
+        "localizer_recall": "low",
+        "localizer_recall_large": "low",
+        "localizer_precision": "low",
+        "planner": "high",
+        "eval": "high",
+        "tiers": ["medium", "high", "high", "max", "xhigh", "max"],
+    }
+    timeouts: dict[str, object] = {
+        "localizer_recall": 120,
+        "localizer_recall_large": 120,
+        "localizer_precision": 120,
+        "planner": 600,
+        "eval": 600,
+        "tiers": [300, 300, 600, 600, 900, 900],
+    }
+    write_model_config(models, efforts, timeouts=timeouts)
+    config = load_config()
+    assert config["models"] == models
+    assert config["efforts"] == efforts
+    assert config["timeouts"] == timeouts
+    assert len(config["models"]["tiers"]) == len(TIER_STEPS)
+    assert len(config["efforts"]["tiers"]) == len(TIER_STEPS)
+    assert len(config["timeouts"]["tiers"]) == len(TIER_STEPS)
+
+
+def test_blank_model_omitted(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
+) -> None:
+    from splinter.configure import current_model_selections, load_config, write_model_config
+
+    monkeypatch.chdir(tmp_path)
+    models = {
+        "localizer_recall_large": "sonnet",
+        "localizer_precision": "haiku",
+        "eval": "sonnet",
+        "tiers": ["haiku"],
+    }
+    write_model_config(models)
+    config = load_config()
+    assert "localizer_recall" not in config["models"]
+    assert "planner" not in config["models"]
+    assert config["models"]["localizer_recall_large"] == "sonnet"
+    assert config["models"]["tiers"][0] == "haiku"
+    selections = current_model_selections()
+    assert selections["models"]["localizer_recall"] != ""
+    assert selections["models"]["planner"] != ""
+
+
+def test_save_load_roundtrip(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
+) -> None:
+    from splinter.configure import current_model_selections, write_model_config
+
+    monkeypatch.chdir(tmp_path)
+    models = {
+        "localizer_recall": "haiku",
+        "localizer_recall_large": "sonnet",
+        "localizer_precision": "haiku",
+        "planner": "opus",
+        "eval": "sonnet",
+        "tiers": ["haiku", "sonnet", "sonnet", "opus", "opus", "opus"],
+    }
+    efforts = {
+        "localizer_recall": "low",
+        "localizer_recall_large": "low",
+        "localizer_precision": "low",
+        "planner": "high",
+        "eval": "high",
+        "tiers": ["low", "high", "high", "max", "high", "max"],
+    }
+    timeouts = {
+        "localizer_recall": 120,
+        "localizer_recall_large": 120,
+        "localizer_precision": 120,
+        "planner": 600,
+        "eval": 600,
+        "tiers": [300, 300, 600, 600, 900, 900],
+    }
+    write_model_config(models, efforts, timeouts=timeouts)
+    selections = current_model_selections()
+    assert selections["models"] == models
+    assert selections["efforts"] == efforts
+    assert selections["timeouts"] == timeouts

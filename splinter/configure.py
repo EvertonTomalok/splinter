@@ -339,8 +339,25 @@ def gate_default_languages() -> list[str]:
     return sorted(LANGUAGE_GATE_DEFAULTS)
 
 
+CLAUDE_MODELS: list[str] = [
+    "fable",
+    "opus",
+    "sonnet",
+    "haiku",
+    "claude-fable-5",
+    "claude-opus-4-8",
+    "claude-sonnet-4-6",
+    "claude-haiku-4-5",
+]
+
 CODEX_MODELS: list[str] = [
+    "codex/gpt-5.5",
+    "codex/gpt-5.4",
+    "codex/gpt-5.4-mini",
+    "codex/gpt-5.3-codex",
+    "codex/gpt-5.2",
     "codex/gpt-5-codex",
+    "codex/codex-auto-review",
 ]
 
 
@@ -348,7 +365,7 @@ def available_models() -> list[str]:
     """All selectable model ids: claude + opencode + ladder + codex."""
     from splinter.models.roster import load_ladder
 
-    models: set[str] = {"sonnet", "opus"}
+    models: set[str] = set(CLAUDE_MODELS)
     try:
         from splinter.providers import opencode
 
@@ -364,13 +381,49 @@ def available_models() -> list[str]:
     return sorted(models)
 
 
-# Reasoning-effort levels accepted by both claude (--effort) and opencode (--variant).
-EFFORT_CHOICES = ["minimal", "low", "medium", "high", "xhigh", "max"]
+def available_models_by_provider() -> dict[str, list[str]]:
+    """Model ids grouped by provider. Each provider fetch is independent."""
+    from splinter.models.roster import load_ladder, provider_for
+
+    claude: set[str] = set()
+    opencode_set: set[str] = set()
+    try:
+        ladder = load_ladder()
+        claude = set(CLAUDE_MODELS)
+        for m in ladder.all_model_ids():
+            p = provider_for(m)
+            if p == "claude":
+                claude.add(m)
+            elif p == "opencode":
+                opencode_set.add(m)
+    except Exception:
+        claude = set()
+
+    try:
+        from splinter.providers import opencode
+
+        opencode_set.update(
+            m
+            for m in opencode.list_models()
+            if m.startswith("opencode-go/") or m.startswith("opencode/")
+        )
+    except Exception:
+        pass
+
+    return {
+        "claude": sorted(claude),
+        "codex": sorted(CODEX_MODELS),
+        "opencode": sorted(opencode_set),
+    }
+
+
+# Reasoning-effort variants Splinter accepts and normalizes per provider.
+EFFORT_CHOICES = [str(v) for v in Variant]
 
 
 def current_model_selections() -> dict[str, Any]:
     """Current per-step model + effort picks (ladder + any existing config override)."""
-    from splinter.models.roster import load_ladder
+    from splinter.models.roster import load_ladder, provider_for
 
     ladder = load_ladder()
     tiers = sorted(ladder.tiers, key=lambda t: t.level)
@@ -398,6 +451,14 @@ def current_model_selections() -> dict[str, Any]:
             "planner": ladder.planner_timeout,
             "eval": ladder.eval_timeout,
             "tiers": [ladder.tier_timeout(t.level) for t in tiers],
+        },
+        "providers": {
+            "localizer_recall": provider_for(ladder.localizer_recall_model),
+            "localizer_recall_large": provider_for(ladder.localizer_recall_large_model),
+            "localizer_precision": provider_for(ladder.localizer_precision_model),
+            "planner": provider_for(ladder.planner_model),
+            "eval": provider_for(ladder.eval_model),
+            "tiers": [t.provider for t in tiers],
         },
     }
 
@@ -467,6 +528,7 @@ def write_model_config(
     timeout: int | None = None,
     timeouts: dict[str, Any] | None = None,
     gate_checks: list[dict[str, str]] | None = None,
+    providers: dict[str, Any] | None = None,
 ) -> Path:
     """Merge ``models`` (and optional ``efforts``/``timeouts``/``gate_checks``) into config.yaml.
 
@@ -488,6 +550,8 @@ def write_model_config(
         config["timeouts"] = timeouts
     if timeout is not None:
         config["defaults"]["timeout"] = timeout
+    if providers is not None:
+        config["providers"] = providers
 
     p = _config_path("project")
     p.parent.mkdir(parents=True, exist_ok=True)

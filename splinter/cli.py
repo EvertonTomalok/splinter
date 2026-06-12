@@ -65,6 +65,7 @@ def prd(
         "max_iterations": 5,
         "cowabunga": False,
         "no_ground": no_ground,
+        "phased": False,
     }
     raise typer.Exit(run_prd_interactive(run_kwargs))
 
@@ -106,6 +107,41 @@ def run(
             help="Swap to Claude-only runners (haiku/sonnet/opus) before running",
         ),
     ] = False,
+    phased: Annotated[
+        bool,
+        typer.Option(
+            "--phased",
+            help="Enter multi-phase mode: after the run, keep asking for next changes.",
+        ),
+    ] = False,
+    phase_plan_model: Annotated[
+        str | None,
+        typer.Option(
+            "-pm", "--plan-model",
+            help="Model for phase planning (e.g. opus, sonnet, deepseek-v4-pro)",
+        ),
+    ] = None,
+    phase_plan_effort: Annotated[
+        str | None,
+        typer.Option(
+            "-pe", "--plan-effort",
+            help="Reasoning effort for phase planner (low, medium, high, max, auto)",
+        ),
+    ] = None,
+    phase_run_model: Annotated[
+        str | None,
+        typer.Option(
+            "-rm", "--run-model",
+            help="Model for phase execution (e.g. haiku, deepseek-v4-flash-free)",
+        ),
+    ] = None,
+    phase_run_effort: Annotated[
+        str | None,
+        typer.Option(
+            "-re", "--run-effort",
+            help="Reasoning effort for phase runner (low, medium, high, max, auto)",
+        ),
+    ] = None,
 ) -> None:
     """Run a task or PRD through a strategy."""
     import os
@@ -130,6 +166,11 @@ def run(
         "eval_effort": eval_effort,
         "cowabunga": cowabunga,
         "no_ground": no_ground,
+        "phased": phased,
+        "phase_plan_model": phase_plan_model,
+        "phase_plan_effort": phase_plan_effort,
+        "phase_run_model": phase_run_model,
+        "phase_run_effort": phase_run_effort,
     }
 
     tty = sys.stdin.isatty() and sys.stdout.isatty()

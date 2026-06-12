@@ -297,6 +297,7 @@ class EvalStage(Stage):
                     cost=verdict.cost,
                     latency_s=0.0,
                     task=ctx.task_index,
+                    role="eval",
                 )
             )
         log.info(
