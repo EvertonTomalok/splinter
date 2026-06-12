@@ -18,7 +18,7 @@ from splinter.memory.session import Session, new_session_id
 from splinter.models.roster import bump_effort, load_ladder
 from splinter.obs.agentic import agentic_scope
 from splinter.providers.base import ProviderGapError
-from splinter.strategies.base import AskUserPause, ManualValidationPause
+from splinter.strategies.base import AskUserPause, GracefulPause, ManualValidationPause
 from splinter.strategies.registry import available_strategies, get_strategy
 
 DEFAULT_STRATEGY = "cascade"
@@ -456,31 +456,11 @@ def run_pipeline(
                 failed = [r.name for r in fe_results if not r.passed]
                 log.warning("final eval FAILED: %s", ", ".join(failed))
                 fe_fail_text = "\n".join(r.output for r in fe_results if not r.passed)
-                # ask_user / review kinds → manual validation modal (rc=4), not ask_user modal.
-                needs_manual = any(
-                    r.verdict is not None and r.verdict.decision == Decision.ASK_USER
-                    for r in fe_results
-                )
-                if needs_manual:
-                    raise ManualValidationPause(summary=fe_summary, all_passed=False)
                 session.write(
                     f"knowledge/round-eval-{resume_round}.md",
                     f"# Round {resume_round} Eval\n\n{fe_fail_text}\n",
                 )
-                task_effort = tasks[0].effort if tasks else "normal"
-                cur_effort = effective_effort or task_effort or "normal"
-                next_eff = bump_effort(cur_effort)
-                session.set_status(
-                    "awaiting_user",
-                    round_index=resume_round + 1,
-                    next_effort=next_eff,
-                    ask_corrections=fe_fail_text,
-                )
-                log.info(
-                    "final eval failed — pausing for round %d (effort: %s)",
-                    resume_round + 1, next_eff,
-                )
-                return 3
+                raise ManualValidationPause(summary=fe_summary, all_passed=False)
             session.set_status(
                 "running",
                 stage="final_eval",
@@ -501,11 +481,26 @@ def run_pipeline(
             stage="final_eval",
             final_eval_summary=val_exc.summary,
             final_eval_passed=val_exc.all_passed,
+            round_index=resume_round + 1,
         )
         log.info("run paused — awaiting manual validation")
         print(f"run complete — awaiting manual validation.\n{val_exc.summary}")
         print(f"  validate: splinter resume {session.id}")
         return 4
+    except GracefulPause as gp:
+        session.set_status(
+            "paused",
+            ask_reason=gp.reason,
+            ask_corrections=gp.corrections,
+            ask_tier=gp.tier,
+            ask_iteration=gp.iteration,
+            task_index=gp.task_index,
+            stage=gp.stage,
+        )
+        log.warning("run paused gracefully at stage '%s' — iter %d", gp.stage, gp.iteration)
+        print(f"run paused — graceful stop at stage '{gp.stage}'.\n  {gp.reason}")
+        print(f"  resume: splinter resume {session.id}")
+        return 3
     except AskUserPause as ask_exc:
         session.set_status(
             "awaiting_user",

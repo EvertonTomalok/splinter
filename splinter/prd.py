@@ -45,6 +45,12 @@ def run_prd(*, description: str = "", strategy: str | None = None, no_ground: bo
 def _run_prd(
     session: Session, *, description: str = "", strategy: str | None = None, no_ground: bool = False
 ) -> int:
+    from splinter.models.roster import load_ladder
+
+    ladder = load_ladder()
+    prd_model = ladder.planner_model
+    prd_effort = ladder.planner_effort
+
     skill_text = _load_prd_skill()
 
     if not description:
@@ -60,9 +66,8 @@ def _run_prd(
     grounding = ""
     if not no_ground:
         from splinter import prd_session
-        from splinter.models.roster import load_ladder
 
-        grounding = prd_session.ground_localization(session, load_ladder(), description)
+        grounding = prd_session.ground_localization(session, ladder, description)
     ground_section = f"## Codebase Localization (grounding)\n{grounding}\n\n" if grounding else ""
 
     turn1_prompt = (
@@ -75,13 +80,13 @@ def _run_prd(
         "Output ONLY the questions, no preamble."
     )
 
-    result1 = claude_cli.run(turn1_prompt, "sonnet", effort="high")
+    result1 = claude_cli.run(turn1_prompt, prd_model, effort=prd_effort)
     questions = result1.text
     session_id = result1.raw.get("_session_id", "")
-    session.log_llm_usage("sonnet", {
+    session.log_llm_usage(prd_model, {
         "input": result1.usage.get("input_tokens", 0) or 0,
         "output": result1.usage.get("output_tokens", 0) or 0,
-    }, claude_cli._calc_cost("sonnet", result1.usage))
+    }, claude_cli._calc_cost(prd_model, result1.usage))
 
     print("\n" + questions + "\n")
     print("answer with e.g. 1A,2C,3B (or type full answers):")
@@ -98,12 +103,12 @@ def _run_prd(
     )
 
     resume = session_id if session_id else None
-    result2 = claude_cli.run(turn2_prompt, "sonnet", effort="high", resume=resume)
+    result2 = claude_cli.run(turn2_prompt, prd_model, effort=prd_effort, resume=resume)
     prd_text = result2.text
-    session.log_llm_usage("sonnet", {
+    session.log_llm_usage(prd_model, {
         "input": result2.usage.get("input_tokens", 0) or 0,
         "output": result2.usage.get("output_tokens", 0) or 0,
-    }, claude_cli._calc_cost("sonnet", result2.usage))
+    }, claude_cli._calc_cost(prd_model, result2.usage))
 
     if not prd_text.startswith("---"):
         fm_strategy = strategy or "cascade"

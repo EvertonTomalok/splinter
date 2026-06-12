@@ -95,6 +95,15 @@ def _cap_payload(text: str, limit: int = 20_000) -> str:
     return f"{head}\n\n…[truncated {dropped} chars]…\n\n{tail}"
 
 
+_SPLINTER = """\
+```
+        🐀   ~ Master Splinter ~
+
+      🐢 🐢 🐢 🐢   cowabunga!
+```\
+"""
+
+
 def _overview_md(session: Session, state: str) -> str:
     status = session.read_status()
     metrics = _trace_metrics(session.read("trace.md"))
@@ -105,6 +114,7 @@ def _overview_md(session: Session, state: str) -> str:
     anchors_count = _count_anchors(session.read("knowledge/localization.md"))
 
     lines = [
+        _SPLINTER,
         f"# {session.id}",
         f"{_STATE_EMOJI.get(state, '⚪')} **{state}** · "
         f"strategy `{status.get('strategy', '?')}` · tasks {status.get('tasks', '?')}",
@@ -216,6 +226,44 @@ def _file_md(session: Session, label: str, filename: str) -> str:
             return f"# {label}\n\n_run in progress — no iterations finished yet._"
         return f"# {label}\n\n_empty_"
     return f"# {label}\n\n{_cap_payload(content)}"
+
+
+def _build_plan_label(idx: int, total: int) -> str:
+    """Tree label for the single paginated plan node. ``idx`` 0 = overview,
+    1..N = plan-N; ◂/▸ hints appear only when there is somewhere to page to."""
+    if total <= 1:
+        return "plan"
+    name = "plans" if idx == 0 else f"plan-{idx}"
+    return f"◂ {name} ▸ ({idx}/{total})"
+
+
+def _plan_overview_md(session: Session) -> str:
+    """Summary screen shown when the plan node is first selected (before
+    paginating). Renders a table of every plan; ◂/▸ switch between them."""
+    plans = _plan_files(session)
+    if not plans:
+        content = session.read("knowledge/plan.md").strip()
+        if content:
+            return _file_md(session, "Plan", "knowledge/plan.md")
+        return "# Plans\n\n_no plan yet._"
+    lines = [
+        "# Plans",
+        "",
+        f"{len(plans)} plan(s) · use ◂ / ▸ to page through them",
+        "",
+        "| # | Plan | Steps | Title |",
+        "|---|------|-------|-------|",
+    ]
+    for i, (filename, label) in enumerate(plans, 1):
+        content = session.read(filename).strip()
+        steps_n = len(re.findall(r"^\s*\d+\.", content, re.MULTILINE))
+        steps = str(steps_n) if content else "—"
+        title_m = re.search(
+            r"^##\s+(?:Implementation Plan\s+[—-]+\s+)?(.+)$", content, re.MULTILINE
+        )
+        title = title_m.group(1).strip() if title_m else ("pending" if not content else label)
+        lines.append(f"| {i} | {label} | {steps} | {title} |")
+    return "\n".join(lines)
 
 
 def _trace_md(session: Session) -> str:
@@ -399,6 +447,8 @@ class AnalyzeApp(App[None]):
         self._kn_labels: set[str] = set()
         self._timer: Any = None
         self._expanded_tasks: set[int] = set()
+        self._plan_node: TreeNode[Any] | None = None
+        self._plan_idx: int = 0  # 0 = overview, 1..N = plan-N.md
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -434,13 +484,10 @@ class AnalyzeApp(App[None]):
             data={"kind": "file", "label": "Localization", "file": "knowledge/localization.md"},
         )
         plans = _plan_files(self.session)
-        if plans:
-            for filename, label in plans:
-                steps.add_leaf(label, data={"kind": "file", "label": label, "file": filename})
-        else:
-            steps.add_leaf(
-                "plan", data={"kind": "file", "label": "Plan", "file": "knowledge/plan.md"}
-            )
+        self._plan_node = steps.add_leaf(
+            _build_plan_label(self._plan_idx, len(plans)),
+            data={"kind": "file", "label": "Plan", "file": "knowledge/plan.md"},
+        )
         steps.add_leaf(
             "eval", data={"kind": "file", "label": "Eval", "file": "eval.md"}
         )
@@ -539,9 +586,52 @@ class AnalyzeApp(App[None]):
         elif kind == "trace":
             self._detail().update(_trace_md(self.session))
         elif kind == "file":
-            self._detail().update(_file_md(self.session, data["label"], data["file"]))
+            if data.get("file") == "knowledge/plan.md":
+                self._render_plan()
+            else:
+                self._detail().update(_file_md(self.session, data["label"], data["file"]))
         else:
             self._show_overview()
+
+    def _render_plan(self) -> None:
+        """Render the plan pane for the current ``_plan_idx`` (0 = overview,
+        1..N = plan-N.md). Shared by ◂/▸ pagination and auto-reload so a refresh
+        never snaps the visible plan back to the first one."""
+        plans = _plan_files(self.session)
+        total = len(plans)
+        if self._plan_idx > total:  # plan count shrank between reloads
+            self._plan_idx = total
+        if self._plan_node is not None:
+            self._plan_node.label = _build_plan_label(self._plan_idx, total)
+        if self._plan_idx == 0:
+            self._detail().update(_plan_overview_md(self.session))
+        else:
+            file = plans[self._plan_idx - 1][0]
+            self._detail().update(_file_md(self.session, f"Plan {self._plan_idx}", file))
+
+    def _is_plan_node_focused(self) -> bool:
+        try:
+            node = self.query_one("#nav", Tree).cursor_node
+            return node is not None and node is self._plan_node
+        except Exception:
+            return False
+
+    def on_key(self, event: events.Key) -> None:
+        # ◂/▸ paginate through plans while the plan node is focused.
+        if not self._is_plan_node_focused():
+            return
+        total = len(_plan_files(self.session))
+        if total == 0:
+            return
+        if event.key == "right":  # wraps: last ▸ back to plans overview
+            event.prevent_default()
+            self._plan_idx = 0 if self._plan_idx >= total else self._plan_idx + 1
+        elif event.key == "left":  # wraps: overview ◂ to last plan
+            event.prevent_default()
+            self._plan_idx = total if self._plan_idx <= 0 else self._plan_idx - 1
+        else:
+            return
+        self._render_plan()
 
     def on_tree_node_highlighted(self, event: Tree.NodeHighlighted[Any]) -> None:
         self._render_data(event.node.data)
@@ -1373,8 +1463,7 @@ class _ConfirmStopModal(ModalScreen[str | None]):
     """
 
     BINDINGS = [
-        ("p", "do_pause", "Pause"),
-        ("k", "do_kill", "Kill"),
+        ("p", "do_pause", "Pause/Chat"),
         ("escape", "do_cancel", "Cancel"),
     ]
 
@@ -1384,7 +1473,7 @@ class _ConfirmStopModal(ModalScreen[str | None]):
 
     def compose(self) -> ComposeResult:
         if self._action == "pause":
-            title = "⏸  Pause after current iteration?"
+            title = "⏸  Pause/Chat after current iteration?"
             detail = "Current step finishes, then run pauses. Resume with 'splinter resume'."
         else:
             title = "🛑  Kill process now?"
@@ -1401,9 +1490,6 @@ class _ConfirmStopModal(ModalScreen[str | None]):
 
     def action_do_pause(self) -> None:
         self.dismiss("pause")
-
-    def action_do_kill(self) -> None:
-        self.dismiss("kill")
 
     def action_do_cancel(self) -> None:
         self.dismiss(None)
@@ -1535,8 +1621,8 @@ class RunApp(App[int]):
     BINDINGS = [
         ("q", "quit", "Quit"),
         ("ctrl+c", "quit", "Quit"),
-        ("p", "pause_graceful", "Pause"),
-        ("k", "pause_kill", "Kill"),
+        ("p", "pause_graceful", "Pause/Chat"),
+        ("escape", "pause_kill", "Kill"),
     ]
 
     _maximized: reactive[bool] = reactive(False)
@@ -1723,7 +1809,7 @@ class RunApp(App[int]):
         self.push_screen(_ConfirmStopModal("pause"), callback=_on_choice)
 
     async def action_pause_kill(self) -> None:
-        """k — kill subprocesses immediately and pause."""
+        """ESC — kill subprocesses immediately and pause."""
         def _on_choice(result: str | None) -> None:
             if result != "kill":
                 return
@@ -2728,7 +2814,7 @@ class PrdSessionApp(App[int | None]):
             await bar.remove_children()
             await bar.mount(*btns)
 
-        self.run_worker(_swap(), name="actions")
+        self.run_worker(_swap, name="actions")  # type: ignore[arg-type]
 
     def _set_preview(self, md: str) -> None:
         if not md.strip():

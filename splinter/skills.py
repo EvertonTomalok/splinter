@@ -24,9 +24,10 @@ class ResolvedSkill:
 
 
 def _skill_paths(name: str) -> list[Path]:
+    clean = name.lstrip("/")
     return [
-        Path(f"skills/{name}/SKILL.md"),
-        Path(f"splinter/skills/{name}/SKILL.md"),
+        Path(f"skills/{clean}/SKILL.md"),
+        Path(f"splinter/skills/{clean}/SKILL.md"),
     ]
 
 
