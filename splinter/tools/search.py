@@ -41,29 +41,6 @@ class SearchResult:
         return self.output.startswith("[unavailable:")
 
 
-# Directories that are never worth searching regardless of language.
-# Used as --exclude-dir for grep and as skip-list for rglob fallback.
-_IGNORED_DIRS: frozenset[str] = frozenset({
-    # JS/TS
-    "node_modules", ".next", ".nuxt", ".svelte-kit", "dist", "build", ".turbo",
-    # Go
-    "vendor",
-    # Python
-    ".venv", "venv", "__pycache__", ".mypy_cache", ".ruff_cache", ".pytest_cache",
-    # Rust
-    "target",
-    # Java/Kotlin/Android
-    ".gradle", "build", "out",
-    # Ruby
-    ".bundle",
-    # General
-    ".git", ".svn", ".hg",
-    "coverage", ".coverage",
-    "tmp", "temp", ".tmp",
-    "logs", ".logs",
-    "cache", ".cache",
-})
-
 
 def _has_rtk() -> bool:
     return shutil.which("rtk") is not None
@@ -108,14 +85,13 @@ def grep(pattern: str, path: str = ".", *, flags: str = "", timeout: int = _GREP
                 return SearchResult(output=proc.stdout, tool="grep", exit_code=proc.returncode)
             # git grep failed for another reason — fall through to rtk/grep
 
-        exclude_args = [f"--exclude-dir={d}" for d in _IGNORED_DIRS]
         if _has_rtk():
             cmd = ["rtk", "grep"]
             if flags:
                 cmd.extend(flags.split())
             cmd.extend([pattern, path])
         else:
-            cmd = ["grep", "-rn"] + exclude_args
+            cmd = ["grep", "-rn"]
             if flags:
                 cmd.extend(flags.split())
             cmd.extend([pattern, path])
@@ -190,7 +166,7 @@ def file_list(path: str = ".", pattern: str = "*", *, timeout: int = _GIT_TIMEOU
         files = sorted(
             str(f.relative_to(p))
             for f in p.rglob(pattern)
-            if f.is_file() and not any(part in _IGNORED_DIRS for part in f.parts)
+            if f.is_file()
         )
         return SearchResult(output="\n".join(files), tool="file-list", exit_code=0)
     except Exception as exc:

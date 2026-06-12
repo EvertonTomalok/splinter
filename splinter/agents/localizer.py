@@ -70,31 +70,6 @@ def _strip_frontmatter(text: str) -> str:
     return text.strip()
 
 
-def _extract_search_terms(prd_text: str) -> list[str]:
-    """Extract likely search terms from the PRD."""
-    text = _strip_frontmatter(prd_text)
-    # Extract keywords from the description and acceptance
-    words = re.findall(r"[A-Za-z][A-Za-z0-9_]+(?:\.[A-Za-z][A-Za-z0-9_]*)*", text)
-    # Filter out common stop words and short words
-    stop_words = (
-        "the and for are but not you all can had her was one our out day get "
-        "has him his how its may new now old see two way who boy did she use "
-        "than them well were with have from they know want been good much "
-        "some time very when come here just like long make many over such "
-        "take will"
-    )
-    stop = set(stop_words.split())
-    terms = [w for w in words if w.lower() not in stop and len(w) > 2]
-    # Deduplicate while preserving order
-    seen: set[str] = set()
-    unique: list[str] = []
-    for w in terms:
-        key = w.lower()
-        if key not in seen:
-            seen.add(key)
-            unique.append(w)
-    return unique[:10]
-
 
 def _parse_anchors(text: str, *, hot: float = 0.8, medium: float = 0.4) -> list[CodeAnchor]:
     anchors: list[CodeAnchor] = []
@@ -208,12 +183,17 @@ def _find_meta_files(repo_path: str = ".") -> list[str]:
     return found
 
 
-def _run_search_tools(prd_text: str, repo_path: str = ".") -> str:
-    """Run deterministic search tools and return a structured report."""
-    from pathlib import Path as _Path
+_LS_MAX_LINES = 3000   # file listing cap passed to recall model
 
-    text = _strip_frontmatter(prd_text)
-    terms = _extract_search_terms(text)
+
+def _run_search_tools(prd_text: str, repo_path: str = ".") -> str:
+    """Gather fast, deterministic signals: meta files + full tracked file listing.
+
+    No grep here — the recall LLM reads the file listing and picks relevant
+    paths directly.  Grep would require a prior LLM call to scope it, which is
+    exactly what the recall model does.
+    """
+    from pathlib import Path as _Path
 
     lines: list[str] = []
     lines.append("# Search Tool Results\n")
@@ -236,24 +216,20 @@ def _run_search_tools(prd_text: str, repo_path: str = ".") -> str:
             lines.append(f"### {mf}{note}\n```\n{snippet}\n```")
         lines.append("")
 
-    # List all Python files
-    fl_result = search_tools.file_list(repo_path, "*.py")
+    # Full tracked file listing — git ls-files respects .gitignore so node_modules,
+    # vendor, dist, __pycache__ etc. are already excluded automatically.
+    fl_result = search_tools.file_list(repo_path)
     if fl_result.unavailable:
-        lines.append(f"## Python Files\n{fl_result.output}\n")
-    elif fl_result.output:
-        lines.append("## Python Files")
-        lines.append(fl_result.output[:2000])
+        lines.append(f"## File Listing\n{fl_result.output}\n")
+    else:
+        listing_lines = fl_result.output.splitlines()
+        truncated = len(listing_lines) > _LS_MAX_LINES
+        listing = "\n".join(listing_lines[:_LS_MAX_LINES])
+        if truncated:
+            listing += f"\n... ({len(listing_lines) - _LS_MAX_LINES} more files — use file name patterns to infer)"
+        lines.append("## Tracked Files (git ls-files)")
+        lines.append(listing)
         lines.append("")
-
-    # Grep for each key term
-    for term in terms:
-        g_result = search_tools.grep(term, repo_path)
-        if g_result.unavailable:
-            lines.append(f"## grep for '{term}'\n{g_result.output}\n")
-        elif g_result.output and g_result.exit_code == 0:
-            lines.append(f"## grep for '{term}'")
-            lines.append(g_result.output[:1500])
-            lines.append("")
 
     return "\n".join(lines)
 
@@ -270,21 +246,23 @@ def _recall_phase(
     """Cheap model filters the raw search results to a candidate list."""
     text = _strip_frontmatter(prd_text)
     prompt = (
-        "You are a code search assistant. Given a feature description and raw search "
-        "tool results, identify all relevant files, functions, classes, and symbols.\n\n"
+        "You are a code localization assistant. Given a feature description and a "
+        "listing of all tracked files in the repo (from git ls-files), identify the "
+        "files, functions, classes, and symbols that are most likely to need changes "
+        "or be relevant context for the feature.\n\n"
         f"## Feature Description\n{text}\n\n"
-        f"## Raw Search Results\n{search_results}\n\n"
+        f"## Repository Contents\n{search_results}\n\n"
         "Return a JSON array of candidate locations. Each item MUST have keys: "
         '"file" (path), "symbol" (function/class/symbol name, or "" if file-level), '
         '"reason" (why it is relevant — include the feature keywords it relates to), '
         '"confidence" (0.0–1.0), '
-        '"line_start" (integer line number where the symbol starts, or null if unknown), '
-        '"line_end" (integer line number where the symbol ends, or null if unknown). '
-        "Use grep output lines (format: file:line:content) to populate line_start/line_end. "
-        "Be thorough — coverage over precision. "
+        '"line_start" (null — line numbers unknown until file is read), '
+        '"line_end" (null — line numbers unknown until file is read). '
+        "Use directory structure, file names, and project conventions to infer relevance. "
+        "Be thorough — coverage over precision. Include both implementation files AND tests. "
         "IMPORTANT: always include any AGENTS.md, CLAUDE.md, or skills/*/SKILL.md files "
-        "listed in the search results — they describe project conventions, agent behaviour, "
-        "and available skills that the runner MUST follow. "
+        "listed — they describe project conventions, agent behaviour, and available skills "
+        "that the runner MUST follow. "
         "Output ONLY the JSON array, no prose."
     )
     text = run_text(
