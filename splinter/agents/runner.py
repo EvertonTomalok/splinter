@@ -82,10 +82,23 @@ def resolve_model(tier_level: int, ladder: Ladder) -> tuple[str, str]:
     return tier.models[0], tier.provider
 
 
-def _build_prompt(task: Task, plan: str, localization: str, corrections: str) -> str:
+def _build_prompt(
+    task: Task,
+    plan: str,
+    localization: str,
+    corrections: str,
+    *,
+    is_continuation: bool = False,
+) -> str:
     # code_ctx is pre-filtered by the harness (localize → filter_task_context).
     code_ctx = localization
     if corrections:
+        if is_continuation:
+            # Session already holds task/plan/context — send only the delta.
+            return render(
+                "run_fix_continue",
+                corrections_section=section("Corrections from Evaluator", corrections),
+            )
         return render(
             "run_fix",
             task_section=section("Original Task", task.description),
@@ -118,7 +131,9 @@ def run_task(
     variant = resolve_variant(task, effort_override, ladder, tier_level)
     if timeout is None:
         timeout = ladder.tier_timeout(tier_level)
-    prompt = _build_prompt(task, plan, localization, corrections)
+    prompt = _build_prompt(
+        task, plan, localization, corrections, is_continuation=opencode_session is not None
+    )
 
     provider = get_provider(provider_name)
     response = None

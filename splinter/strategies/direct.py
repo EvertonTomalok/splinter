@@ -53,6 +53,9 @@ log = logging.getLogger("splinter.loop")
 #: Ceiling tier — ``last-resort`` (sonnet @ max); the loop stops escalating here.
 MAX_TIER = 5
 
+#: Max iterations on the same model tier before forcing escalation.
+MAX_TRIES_PER_MODEL = 3
+
 _CHECKPOINT_FILE = "run_checkpoint.json"
 
 
@@ -479,8 +482,10 @@ class DirectStrategy(Strategy):
         evaluator = Evaluator(ladder)
         last_result: RunResult | None = None
         resume_stage = checkpoint.stage if checkpoint is not None else ""
+        tier_tries = 0
 
         for iteration in range(start_iteration, max_iterations + 1):
+            tier_tries += 1
             if iteration == start_iteration and resume_stage:
                 chain = build_chain_from(
                     resume_stage, RunStage(), GateStage(), EvalStage(resolved_skill=resolved)
@@ -633,6 +638,7 @@ class DirectStrategy(Strategy):
                     # eval sessions: the new model gets a clean slate and the quality
                     # eval re-judges its output from scratch.
                     tier = action.next_tier
+                    tier_tries = 0
                     log.info("escalating to T%d (eval changed the runner; fresh sessions)", tier)
                     session.append(
                         "loop.md", f"## Escalate to tier {tier} (eval changed the runner)\n\n"
@@ -640,6 +646,28 @@ class DirectStrategy(Strategy):
                     oc_session = None
                     eval_session = None
                     corrections = _correction_context(knowledge, retry_notes)
+            elif (
+                tier_tries >= MAX_TRIES_PER_MODEL
+                and tier < MAX_TIER
+                and not (over_budget and soft_budget)
+            ):
+                # Per-model try limit reached — force escalate regardless of eval verdict.
+                tier += 1
+                tier_tries = 0
+                log.info(
+                    "max tries/model (%d) at T%d — forcing escalation to T%d",
+                    MAX_TRIES_PER_MODEL,
+                    tier - 1,
+                    tier,
+                )
+                session.append(
+                    "loop.md",
+                    f"## Max tries/model ({MAX_TRIES_PER_MODEL}) at T{tier - 1}"
+                    f" — escalating to T{tier}\n\n",
+                )
+                oc_session = None
+                eval_session = None
+                corrections = _correction_context(knowledge, retry_notes)
             else:
                 # Same runner, same session — let it understand and fix what's wrong.
                 corrections = retry_notes

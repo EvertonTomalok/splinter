@@ -1950,7 +1950,7 @@ def test_run_prd_abort_after_ground_localization_cleans_up(
     the localization file, but prd_session_is_resumable correctly returns False.
     """
     from splinter.memory.session import Session, list_sessions, new_session_id
-    from splinter.prd import _abort, _prune_prd_session
+    from splinter.prd import _prune_prd_session
 
     monkeypatch.chdir(tmp_path)
 

@@ -292,8 +292,6 @@ def _final_eval_rounds_md(session: Session) -> str:
     if round_files:
         parts = ["# Final Eval"]
         for rf in round_files:
-            m = re.match(r"final-eval-(\d+)", rf.stem)
-            n = int(m.group(1)) if m else 0
             content = rf.read_text().strip()
             parts.append(f"\n\n---\n\n{content}")
         return "\n".join(parts)
@@ -2025,7 +2023,7 @@ class RunApp(App[int]):
             self.call_after_refresh(self._show_error_modal, err_msg)
 
     def _show_error_modal(self, error: str) -> None:
-        def _on_choice(resume: bool) -> None:
+        def _on_choice(resume: bool | None) -> None:
             if resume:
                 if self._timer is None:
                     self._timer = self.set_interval(0.5, self._refresh)

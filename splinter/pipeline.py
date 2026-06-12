@@ -13,9 +13,8 @@ import yaml
 from splinter.agents import planner
 from splinter.agents.localizer import CodeAnchor, filter_task_context, localize, rtk_cat_tip
 from splinter.agents.runner import Task
-from splinter.enums import Decision
 from splinter.memory.session import Session, new_session_id
-from splinter.models.roster import bump_effort, load_ladder
+from splinter.models.roster import load_ladder
 from splinter.obs.agentic import agentic_scope
 from splinter.providers.base import ProviderGapError
 from splinter.strategies.base import AskUserPause, GracefulPause, ManualValidationPause
