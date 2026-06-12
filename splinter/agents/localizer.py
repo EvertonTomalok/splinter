@@ -238,7 +238,9 @@ def _run_search_tools(prd_text: str, repo_path: str = ".") -> str:
 
     # List all Python files
     fl_result = search_tools.file_list(repo_path, "*.py")
-    if fl_result.output:
+    if fl_result.unavailable:
+        lines.append(f"## Python Files\n{fl_result.output}\n")
+    elif fl_result.output:
         lines.append("## Python Files")
         lines.append(fl_result.output[:2000])
         lines.append("")
@@ -246,7 +248,9 @@ def _run_search_tools(prd_text: str, repo_path: str = ".") -> str:
     # Grep for each key term
     for term in terms:
         g_result = search_tools.grep(term, repo_path)
-        if g_result.output and g_result.exit_code == 0:
+        if g_result.unavailable:
+            lines.append(f"## grep for '{term}'\n{g_result.output}\n")
+        elif g_result.output and g_result.exit_code == 0:
             lines.append(f"## grep for '{term}'")
             lines.append(g_result.output[:1500])
             lines.append("")

@@ -531,7 +531,8 @@ def run_pipeline(
         return 2
     except BaseException as exc:
         fail_class = _classify_failure(exc)
-        session.set_status("failed", fail_class=fail_class)
+        err_msg = f"{type(exc).__name__}: {str(exc).split(chr(10))[0][:200]}"
+        session.set_status("failed", fail_class=fail_class, error=err_msg)
         log.error("pipeline failed (%s): %s", fail_class, exc)
         raise
     finally:
