@@ -9,7 +9,8 @@ Dispatch table:
 Provider routing (skill / review):
   entry.provider overrides; otherwise derived from entry.model via provider_for().
   "claude"   → Claude CLI  (model ids: sonnet, opus, haiku, …)
-  "opencode" → OpenCode    (model ids: opencode-go/*, opencode/*, codex-*, …)
+  "opencode" → OpenCode    (model ids: opencode-go/*, opencode/*)
+  "codex"    → Codex CLI   (model ids: codex/*)
 """
 
 from __future__ import annotations
@@ -33,10 +34,6 @@ _DEFAULT_TIMEOUT = 120
 _DEFAULT_MODEL = "sonnet"
 _DEFAULT_VARIANT = "high"
 _OUTPUT_CAP = 2000
-
-# Models that belong to opencode by prefix — everything else routes to claude.
-# NOTE: "codex" is a separate CLI provider (not opencode). Use provider="codex" explicitly.
-_OPENCODE_PREFIXES = ("opencode-go/", "opencode/", "gpt-", "o1-", "o3-")
 
 
 @dataclass(frozen=True)
@@ -156,10 +153,11 @@ def _resolve_model(entry: FinalEvalEntry, ladder: "Ladder | None") -> tuple[str,
 
     Priority: entry.provider+model > entry.model > ladder.eval_model > default.
     When entry.provider is set but entry.model is not, picks the default model
-    for that provider (ladder.eval_model for claude, "opencode-go/qwen3-coder" for opencode).
+    for that provider.
     """
 
     _OPENCODE_DEFAULT = "opencode-go/qwen3-coder"
+    _CODEX_DEFAULT = "codex/gpt-5-codex"
     _claude_default = (ladder.eval_model if ladder else None) or _DEFAULT_MODEL
 
     variant = str(entry.variant) if entry.variant else (
@@ -172,19 +170,13 @@ def _resolve_model(entry: FinalEvalEntry, ladder: "Ladder | None") -> tuple[str,
         if entry.provider == "opencode":
             return _OPENCODE_DEFAULT, variant
         if entry.provider == "codex":
-            # Codex CLI provider — not yet implemented; falls back to claude default.
-            # TODO: wire splinter.providers.codex_cli when available.
-            log.warning("codex provider not yet implemented, falling back to claude")
-            return _claude_default, variant
+            return _CODEX_DEFAULT, variant
         return _claude_default, variant
 
     if entry.model:
         return entry.model, variant
 
     base = ladder.eval_model if ladder else _DEFAULT_MODEL
-    # Respect explicit provider prefix on ladder eval model too.
-    if any(base.startswith(p) for p in _OPENCODE_PREFIXES):
-        return base, variant
     return base, variant
 
 

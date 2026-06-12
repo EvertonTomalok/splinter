@@ -18,6 +18,7 @@ class RunEntry:
     cost: float
     latency_s: float
     task: int = 0
+    role: str = "run"
 
 
 class Trace:
@@ -70,9 +71,11 @@ class Trace:
         lines.append("## Runs\n")
         for e in self.entries:
             task_prefix = f"task {e.task} " if e.task else ""
+            role_label = "eval" if e.role == "eval" else f"T{e.tier}"
             lines.append(
-                f"- {task_prefix}iter {e.iteration}: {e.model} (T{e.tier}) "
-                f"tokens={e.tokens} cost=${e.cost:.4f} {e.latency_s:.1f}s"
+                f"- {task_prefix}iter {e.iteration}: {e.model} "
+                f"({role_label}) tokens={e.tokens} "
+                f"cost=${e.cost:.4f} {e.latency_s:.1f}s"
             )
         return "\n".join(lines) + "\n"
 
@@ -80,14 +83,19 @@ class Trace:
     def from_markdown(cls, md: str) -> Trace:
         trace = cls()
         run_pattern = re.compile(
-            r"- (?:task (\d+) )?iter (\d+): (.+?) \(T(\d+)\) "
+            r"- (?:task (\d+) )?iter (\d+): (.+?) \((?:T(\d+)|eval)\) "
             r"tokens=\{([^}]*)\} cost=\$([\d.]+) ([\d.]+)s"
         )
         for m in run_pattern.finditer(md):
             task = int(m.group(1)) if m.group(1) else 0
             iteration = int(m.group(2))
             model = m.group(3)
-            tier = int(m.group(4))
+            if m.group(4) is not None:
+                tier = int(m.group(4))
+                role = "run"
+            else:
+                tier = 0
+                role = "eval"
             tokens: dict[str, int] = {}
             for tm in re.finditer(r"'(\w+)':\s*(\d+)", m.group(5)):
                 tokens[tm.group(1)] = int(tm.group(2))
@@ -102,6 +110,7 @@ class Trace:
                     cost=cost,
                     latency_s=latency,
                     task=task,
+                    role=role,
                 )
             )
         return trace

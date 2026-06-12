@@ -319,7 +319,9 @@ def _trajectory_lines(session: Session, iters: list[tuple[int, str, str]]) -> li
     has_final_eval = bool(
         (session.dir / "final_eval.yaml").exists() or final_eval_md
     )
-    if not (phases or iters or has_final_eval):
+    phase_md = session.read("phases.md")
+    has_phases = bool(phase_md.strip())
+    if not (phases or iters or has_final_eval or has_phases):
         return []
 
     lines = ["", "[bold]TRAJECTORY[/]"]
@@ -363,6 +365,18 @@ def _trajectory_lines(session: Session, iters: list[tuple[int, str, str]]) -> li
             for i in range(0, len(iter_cells), 3):
                 lines.append(indent + "  ".join(iter_cells[i : i + 3]))
 
+    if has_phases:
+        phase_entries = _phase_entries(phase_md)
+        if phase_entries:
+            lines.append(f"  [dim]phases[/]  [dim]{len(phase_entries)}[/]")
+            for entry in phase_entries:
+                pnum, pstatus, pmodel, pcost = entry
+                glyph, color = ("✓", "green") if pstatus == "PASS" else ("✗", "red")
+                lines.append(
+                    f"    [dim]phase {pnum}[/]  [{color}]{glyph}[/]  "
+                    f"[dim]{pmodel}  ${pcost}[/]"
+                )
+
     if has_final_eval:
         raw_state = str(status.get("state", ""))
         fe_passed = status.get("final_eval_passed")
@@ -378,6 +392,21 @@ def _trajectory_lines(session: Session, iters: list[tuple[int, str, str]]) -> li
         lines.append(f"  [dim]final_eval[/]  {fe_label}")
 
     return lines
+
+
+def _phase_entries(phase_md: str) -> list[tuple[int, str, str, str]]:
+    """Parse phases.md into (phase_number, status, model, cost) tuples."""
+    import re
+
+    out: list[tuple[int, str, str, str]] = []
+    for line in phase_md.splitlines():
+        m = re.match(
+            r"- Phase (\d+) · (PASS|FAIL) · (\S+) · \$(\S+) ·",
+            line.strip(),
+        )
+        if m:
+            out.append((int(m.group(1)), m.group(2), m.group(3), m.group(4)))
+    return out
 
 
 def format_run_completion(session: Session) -> str:
@@ -598,7 +627,9 @@ def render_trajectory(session: Session) -> str:
     iters = _iterations(loop)
     final_eval_md = session.read("final_eval.md")
     has_final_eval = bool((session.dir / "final_eval.yaml").exists() or final_eval_md)
-    if not phases and not iters and not has_final_eval:
+    phase_md = session.read("phases.md")
+    has_phases = bool(phase_md.strip())
+    if not phases and not iters and not has_final_eval and not has_phases:
         return "no iterations yet."
     lines = ["Trajectory:"]
     for i, (phase, detail) in enumerate(phases, 1):
@@ -610,6 +641,10 @@ def render_trajectory(session: Session) -> str:
             lines.append(f"  Task {task_no}:")
         for idx, tier, verdict in task_iters:
             lines.append(f"  {idx}. {tier} · {verdict}")
+    if has_phases:
+        phase_entries = _phase_entries(phase_md)
+        for pnum, pstatus, pmodel, pcost in phase_entries:
+            lines.append(f"  Phase {pnum}. {pstatus} · {pmodel} · ${pcost}")
     if has_final_eval:
         status = session.read_status()
         raw_state = str(status.get("state", ""))

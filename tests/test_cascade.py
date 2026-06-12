@@ -186,7 +186,11 @@ class TestExecuteResume:
         with patch.object(strategy, "_run_plan_phase", return_value=None):
             with patch.object(strategy, "_run_task_loop", side_effect=fake_loop):
                 with patch.object(strategy, "_start_tier", return_value=0):
-                    with patch.object(CascadeStrategy, "_save_checkpoint", staticmethod(tracking_save)):
+                    with patch.object(
+                        CascadeStrategy,
+                        "_save_checkpoint",
+                        staticmethod(tracking_save),
+                    ):
                         strategy.execute([t1, t2], session, fake_ladder, cowabunga=True)
 
         assert call_order == ["US-001", "US-002"]

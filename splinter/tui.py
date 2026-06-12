@@ -180,14 +180,21 @@ def _overview_md(session: Session, state: str) -> str:
 
 
 def _iteration_md(session: Session, task_no: int, n: int) -> str:
-    """Render iteration detail for a specific task."""
+    """Render iteration detail for a specific task.
+
+    Checks ``runs/phase-{n}.md`` for phase runs before falling back to
+    ``runs/iter-{n}.md`` for main-loop iterations.
+    """
     tasks = _tasks(session.read("loop.md"))
     if task_no < 1 or task_no > len(tasks):
         return f"_task {task_no} not found_"
 
     _, _, task_body = tasks[task_no - 1]
     summary = _loop_block(task_body, n)
-    run_out = session.read(f"runs/iter-{n}.md").strip()
+    run_out = (
+        session.read(f"runs/phase-{n}.md").strip()
+        or session.read(f"runs/iter-{n}.md").strip()
+    )
 
     eval_segments = _eval_segments(session.read("eval.md"), len(tasks))
     eval_block = ""
@@ -434,6 +441,13 @@ def _find_shortcuts_cmd(screen: Any, app: Any) -> SystemCommand:
     )
 
 
+def _filter_models(models: list[str], text: str) -> list[str]:
+    q = text.strip().lower()
+    if not q:
+        return models
+    return [m for m in models if q in m.lower()]
+
+
 class _OrderedCommandsProvider(SystemCommandsProvider):
     """Preserves get_system_commands insertion order (no alphabetical sort)."""
 
@@ -613,6 +627,17 @@ class AnalyzeApp(App[None]):
                     data={"kind": "iter", "task": 1, "n": n},
                 )
 
+        from splinter.analyze import _phase_entries
+
+        phase_md = self.session.read("phases.md")
+        if phase_md.strip():
+            for pnum, pstatus, pmodel, pcost in _phase_entries(phase_md):
+                glyph = "✓" if pstatus == "PASS" else "✗"
+                self._traj_node.add_leaf(
+                    f"Phase {pnum} · {pstatus} · {glyph} · {pmodel} · ${pcost}",
+                    data={"kind": "phase", "n": pnum},
+                )
+
     # --- detail ---
     def _detail(self) -> Markdown:
         return self.query_one("#detail", Markdown)
@@ -632,6 +657,8 @@ class AnalyzeApp(App[None]):
             self._detail().update(_task_md(self.session, data["n"], data.get("title", "")))
         elif kind == "prd_phase":
             self._detail().update(_prd_phase_md(self.session, data["phase"], data["detail"]))
+        elif kind == "phase":
+            self._detail().update(_phase_detail_md(self.session, data["n"]))
         elif kind == "trace":
             self._detail().update(_trace_md(self.session))
         elif kind == "file":
@@ -1319,6 +1346,10 @@ class _FinalEvalModal(ModalScreen[dict[str, str | None] | None]):
     _FinalEvalModal #fe-provider-list {
         height: 6;
     }
+    _FinalEvalModal .fe-model-filter {
+        width: 1fr;
+        height: 3;
+    }
     _FinalEvalModal #fe-model-list {
         height: 8;
     }
@@ -1355,6 +1386,8 @@ class _FinalEvalModal(ModalScreen[dict[str, str | None] | None]):
         self._current = current or {}
         self._all_models: dict[str, list[str]] = {}
         self._current_model_opts: list[str] = ["(default)"]
+        self._fe_filter: str = ""
+        self._fe_full_models: list[str] = []
 
     def compose(self) -> ComposeResult:
         with Vertical(id="fe-dialog"):
@@ -1370,6 +1403,11 @@ class _FinalEvalModal(ModalScreen[dict[str, str | None] | None]):
                     yield Label("Provider (optional):", classes="fe-label")
                     yield OptionList(*self._PROVIDERS, id="fe-provider-list")
                     yield Label("Model (optional):", classes="fe-label")
+                    yield Input(
+                        placeholder="filter models…",
+                        id="fe-model-filter",
+                        classes="fe-model-filter",
+                    )
                     yield OptionList("(default)", id="fe-model-list")
                     yield Label("Effort (optional):", classes="fe-label")
                     yield OptionList(*self._EFFORTS, id="fe-effort-list")
@@ -1379,29 +1417,46 @@ class _FinalEvalModal(ModalScreen[dict[str, str | None] | None]):
 
     def on_mount(self) -> None:
         self._all_models = self._load_models()
-        self._rebuild_model_list(["(default)"] + self._all_models.get("(default)", []))
+        full_list = self._all_models.get("(default)", [])
+        self._fe_full_models = full_list
+        self._rebuild_model_list(["(default)"] + full_list)
         self.query_one("#fe-kind-list", OptionList).focus()
         self._update_detail_visibility()
 
     def _load_models(self) -> dict[str, list[str]]:
         try:
-            from splinter.configure import available_models
-            all_m = available_models()
+            from splinter.configure import available_models_by_provider
+
+            by_provider = available_models_by_provider()
         except Exception:
-            all_m = ["sonnet", "opus", "codex/gpt-5-codex"]
+            by_provider = {
+                "claude": ["sonnet", "opus"],
+                "opencode": [],
+                "codex": ["codex/gpt-5-codex"],
+            }
+        all_m = sorted({m for models in by_provider.values() for m in models})
         return {
             "(default)": all_m,
-            "claude": [m for m in all_m if not m.startswith(("opencode", "codex/"))],
-            "opencode": [m for m in all_m if m.startswith(("opencode-go/", "opencode/"))],
-            "codex": [m for m in all_m if m.startswith("codex/")],
+            "claude": by_provider.get("claude", []),
+            "opencode": by_provider.get("opencode", []),
+            "codex": by_provider.get("codex", []),
         }
 
     def _rebuild_model_list(self, options: list[str]) -> None:
-        self._current_model_opts = options
         model_list = self.query_one("#fe-model-list", OptionList)
+        current_idx: Any = model_list.highlighted
+        current: str = ""
+        if current_idx is not None and current_idx < len(self._current_model_opts):
+            current = self._current_model_opts[current_idx]
+        self._current_model_opts = options
         model_list.clear_options()
         for opt in options:
             model_list.add_option(opt)
+        if current and current in options:
+            for i, opt in enumerate(options):
+                if opt == current:
+                    model_list.highlighted = i
+                    break
 
     def _update_detail_visibility(self) -> None:
         kind_idx = self.query_one("#fe-kind-list", OptionList).highlighted or 0
@@ -1411,13 +1466,21 @@ class _FinalEvalModal(ModalScreen[dict[str, str | None] | None]):
         provider_idx = self.query_one("#fe-provider-list", OptionList).highlighted
         raw_provider = self._PROVIDERS[provider_idx] if provider_idx is not None else "(default)"
         models = self._all_models.get(raw_provider, self._all_models.get("(default)", []))
-        self._rebuild_model_list(["(default)"] + models)
+        self._fe_full_models = models
+        opts = _filter_models(models, self._fe_filter)
+        self._rebuild_model_list(["(default)"] + opts)
 
     def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:
         if event.option_list.id == "fe-kind-list":
             self._update_detail_visibility()
         elif event.option_list.id == "fe-provider-list":
             self._update_model_list()
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id == "fe-model-filter":
+            self._fe_filter = event.value
+            opts = _filter_models(self._fe_full_models, self._fe_filter)
+            self._rebuild_model_list(["(default)"] + opts)
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -1679,15 +1742,22 @@ class _ManualValidationModal(ModalScreen[tuple[str, str] | None]):
 
     BINDINGS = [
         ("a", "approve", "Approve"),
+        ("n", "next_phase", "Next Phase"),
         ("f", "plan_changes", "Final Eval"),
         ("r", "reject", "Reject"),
         ("escape", "reject", "Reject"),
     ]
 
-    def __init__(self, summary: str = "", all_passed: bool = True) -> None:
+    def __init__(
+        self,
+        summary: str = "",
+        all_passed: bool = True,
+        show_phase: bool = False,
+    ) -> None:
         super().__init__()
         self._summary = summary
         self._all_passed = all_passed
+        self._show_phase = show_phase
 
     def compose(self) -> ComposeResult:
         status = "✅ checks passed" if self._all_passed else "⚠️  some checks failed"
@@ -1700,6 +1770,8 @@ class _ManualValidationModal(ModalScreen[tuple[str, str] | None]):
             yield TextArea("", id="val-response")
             with Horizontal(id="val-actions"):
                 yield Button("  Approve  (a)", id="approve", variant="success")
+                if self._show_phase:
+                    yield Button("  Next Phase  (n)", id="next_phase", variant="primary")
                 yield Button("  Final Eval  (f)", id="plan_changes", variant="primary")
                 yield Button("  Reject  (r)", id="reject", variant="error")
 
@@ -1708,6 +1780,9 @@ class _ManualValidationModal(ModalScreen[tuple[str, str] | None]):
 
     def action_approve(self) -> None:
         self.query_one("#approve", Button).press()
+
+    def action_next_phase(self) -> None:
+        self.query_one("#next_phase", Button).press()
 
     def action_plan_changes(self) -> None:
         self.query_one("#plan_changes", Button).press()
@@ -1720,8 +1795,216 @@ class _ManualValidationModal(ModalScreen[tuple[str, str] | None]):
         text = self.query_one("#val-response", TextArea).text.strip()
         if bid == "approve":
             self.dismiss(("approve", text))
+        elif bid == "next_phase":
+            self.dismiss(("next_phase", text))
         elif bid == "plan_changes":
             self.dismiss(("changes", text))
+        else:
+            self.dismiss(None)
+
+
+def _phase_detail_md(session: Session, n: int) -> str:
+    """Render phase detail: plan, runner output, and gate status."""
+    plan = session.read(f"knowledge/phase-plan-{n}.md").strip()
+    run_out = session.read(f"runs/phase-{n}.md").strip()
+    phase_loop = session.read("phase_loop.md")
+    from splinter.analyze import _phase_entries
+
+    phases_data = _phase_entries(session.read("phases.md"))
+    phase_info = next((p for p in phases_data if p[0] == n), None)
+
+    lines = [f"# Phase {n}"]
+    if phase_info:
+        _, pstatus, pmodel, pcost = phase_info
+        lines.append(f"- status: **{pstatus}** · model: {pmodel} · cost: ${pcost}")
+
+    if plan:
+        lines.append("## Plan")
+        lines.append(plan)
+    if run_out:
+        lines.append("## Runner output")
+        lines.append(f"```\n{_cap_payload(run_out)}\n```")
+
+    phase_loop_lines: list[str] = []
+    for line in phase_loop.splitlines():
+        if line.startswith(f"## Phase {n}"):
+            phase_loop_lines.append(line)
+        elif phase_loop_lines and line.startswith("## Phase "):
+            break
+        elif phase_loop_lines:
+            phase_loop_lines.append(line)
+    if phase_loop_lines:
+        lines.append("## Loop")
+        lines.extend(phase_loop_lines[1:])
+
+    return "\n\n".join(lines)
+
+
+class _PhaseConfigModal(ModalScreen[dict[str, str] | None]):
+    """Configure and launch the next development phase.
+
+    Dismiss value: dict with keys {description, plan_model, plan_effort, run_model, run_effort}
+    or None to finish.
+    """
+
+    DEFAULT_CSS = """
+    _PhaseConfigModal {
+        align: center middle;
+        background: $background 60%;
+    }
+    _PhaseConfigModal > Vertical#phase-dialog {
+        width: 72;
+        height: auto;
+        max-height: 94%;
+        border: round $primary;
+        background: $surface;
+        padding: 1 2;
+    }
+    _PhaseConfigModal #phase-title {
+        text-style: bold;
+        color: $primary;
+        margin-bottom: 1;
+    }
+    _PhaseConfigModal #phase-desc {
+        height: 4;
+        margin-bottom: 1;
+    }
+    _PhaseConfigModal .phase-label {
+        margin-top: 1;
+        margin-bottom: 0;
+    }
+    _PhaseConfigModal .phase-row {
+        height: auto;
+        margin-bottom: 0;
+    }
+    _PhaseConfigModal .phase-row Select {
+        width: 1fr;
+        margin-right: 1;
+    }
+    _PhaseConfigModal #phase-actions {
+        height: 3;
+        align-horizontal: center;
+        margin-top: 1;
+    }
+    _PhaseConfigModal Button {
+        width: 1fr;
+        height: 3;
+        margin: 0 1;
+        border: none;
+        text-style: bold;
+    }
+    """
+
+    BINDINGS = [
+        ("escape", "done", "Done"),
+    ]
+
+    _PLAN_MODELS: list[str] = []
+    _RUN_MODELS: list[str] = []
+    _EFFORTS = ["(default)", "auto", "low", "medium", "high", "max"]
+
+    def __init__(
+        self,
+        phase_num: int,
+        default_plan_model: str = "",
+        default_plan_effort: str = "",
+        default_run_model: str = "",
+        default_run_effort: str = "",
+    ) -> None:
+        super().__init__()
+        self._phase_num = phase_num
+        self._default_plan_model = default_plan_model
+        self._default_plan_effort = default_plan_effort
+        self._default_run_model = default_run_model
+        self._default_run_effort = default_run_effort
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="phase-dialog"):
+            yield Static(
+                f"Phase {self._phase_num} · What would you like to implement?",
+                id="phase-title",
+            )
+            yield Label("Description:")
+            yield TextArea("", id="phase-desc")
+
+            yield Label("Plan model:", classes="phase-label")
+            with Horizontal(classes="phase-row"):
+                plan_opts = [(m, m) for m in self._PLAN_MODELS] or [("opus", "opus")]
+                yield Select(
+                    plan_opts,
+                    id="phase-plan-model",
+                    value=self._default_plan_model or plan_opts[0][0],
+                )
+                yield Select(
+                    [(e, e) for e in self._EFFORTS],
+                    id="phase-plan-effort",
+                    value=self._default_plan_effort or "(default)",
+                )
+
+            yield Label("Run model:", classes="phase-label")
+            with Horizontal(classes="phase-row"):
+                run_opts = [(m, m) for m in self._RUN_MODELS] or [("haiku", "haiku")]
+                run_defaults = [
+                    m for m in (self._PLAN_MODELS or ["opus"])
+                    if "flash" in m.lower() or "haiku" in m.lower()
+                ]
+                run_def = self._default_run_model or (
+                    run_defaults[0] if run_defaults else run_opts[0][0]
+                )
+                run_val = run_def if run_def in {m for m, _ in run_opts} else run_opts[0][0]
+                yield Select(
+                    run_opts,
+                    id="phase-run-model",
+                    value=run_val,
+                )
+                yield Select(
+                    [(e, e) for e in self._EFFORTS],
+                    id="phase-run-effort",
+                    value=self._default_run_effort or "auto",
+                )
+
+            with Horizontal(id="phase-actions"):
+                yield Button("  Go  (Enter)", id="phase-go", variant="success")
+                yield Button("  Done  (Esc)", id="phase-done", variant="primary")
+
+    def on_mount(self) -> None:
+        self.query_one("#phase-desc", TextArea).focus()
+
+    def action_done(self) -> None:
+        self.dismiss(None)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        bid = event.button.id or "phase-done"
+        if bid == "phase-go":
+            desc = self.query_one("#phase-desc", TextArea).text.strip()
+            if not desc:
+                self.dismiss(None)
+                return
+            try:
+                plan_model = self.query_one("#phase-plan-model", Select).value
+            except Exception:
+                plan_model = self._default_plan_model
+            try:
+                plan_effort = self.query_one("#phase-plan-effort", Select).value
+            except Exception:
+                plan_effort = self._default_plan_effort
+            try:
+                run_model = self.query_one("#phase-run-model", Select).value
+            except Exception:
+                run_model = self._default_run_model
+            try:
+                run_effort = self.query_one("#phase-run-effort", Select).value
+            except Exception:
+                run_effort = self._default_run_effort
+
+            result: dict[str, str] = {
+                "description": desc,
+                "plan_model": str(plan_model),
+                "plan_effort": str(plan_effort) if plan_effort != "(default)" else "",
+                "run_model": str(run_model),
+                "run_effort": str(run_effort) if run_effort != "(default)" else "auto",
+            }
+            self.dismiss(result)
         else:
             self.dismiss(None)
 
@@ -1868,7 +2151,10 @@ class RunApp(App[int]):
                 self.write_log("— validated ✅ — run accepted —", logging.INFO)
                 _append_decision("Approved")
                 self.session.set_status("completed", stage="done")
-                self._write_run_complete()
+                if self._phased:
+                    self.call_after_refresh(self._show_phase_modal)
+                else:
+                    self._write_run_complete()
             elif action == "changes":
                 guidance = text or summary
                 _append_decision("Requested Changes", guidance)
@@ -1878,8 +2164,23 @@ class RunApp(App[int]):
                 if self._timer is None:
                     self._timer = self.set_interval(0.5, self._refresh)
                 self._run_pipeline_worker(resume=True, user_guidance=guidance)
+            elif action == "next_phase":
+                _append_decision("Approved (next phase)", text)
+                self.session.set_status("completed", stage="done")
+                if self._timer is None:
+                    self._timer = self.set_interval(0.5, self._refresh)
+                self.call_after_refresh(self._show_phase_modal)
 
-        self.push_screen(_ManualValidationModal(summary, all_passed), callback=_on_choice)
+        self.push_screen(
+            _ManualValidationModal(
+                summary, all_passed, show_phase=self._phased
+            ),
+            callback=_on_choice,
+        )
+
+    @property
+    def _phased(self) -> bool:
+        return bool(self.run_kwargs.get("phased", False))
 
     def _run_pipeline_worker(
         self,
@@ -1897,7 +2198,9 @@ class RunApp(App[int]):
                 "strategy", "prd_path", "task_path", "effort", "budget",
                 "max_iterations", "eval_skill", "eval_model", "eval_effort",
                 "cowabunga", "resume", "session", "claude_runner_fallback",
-                "user_guidance", "jump_premium", "no_ground",
+                "user_guidance", "jump_premium", "no_ground", "phased",
+                "phase_plan_model", "phase_plan_effort",
+                "phase_run_model", "phase_run_effort",
             }
             kwargs = {
                 **{k: v for k, v in self.run_kwargs.items() if k in _pipeline_keys},
@@ -1986,54 +2289,6 @@ class RunApp(App[int]):
         self.sub_title = f"{_STATE_EMOJI.get(state, '⚪')} {state}"
         self.query_one("#overview", Static).update(render_overview(self.session, state))
 
-    def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
-        if event.worker.name != "pipeline":
-            return
-        if event.state not in (WorkerState.SUCCESS, WorkerState.ERROR):
-            return
-
-        self._refresh()
-        if self._timer is not None:
-            self._timer.stop()
-            self._timer = None
-
-        if self.rc == 0:
-            self._write_run_complete()
-        elif self.rc == 2:
-            self.write_log("— run PAUSED (provider gap) —", logging.WARNING)
-            st = self.session.read_status()
-            kind = str(st.get("kind", ""))
-            provider = str(st.get("provider", ""))
-            retry_after = st.get("retry_after")
-            self.call_after_refresh(self._show_gap_modal, kind, provider, retry_after)
-        elif self.rc == 3:
-            self.write_log("— run PAUSED (needs your input) —", logging.WARNING)
-            self.call_after_refresh(self._show_ask_user_modal)
-        elif self.rc == 4:
-            self.write_log("— final eval complete — awaiting manual validation —", logging.INFO)
-            self.call_after_refresh(self._show_manual_validation_modal)
-        else:
-            # Unexpected failure — kill children then ask the user.
-            from splinter import procreg
-
-            procreg.terminate_all()
-            st = self.session.read_status()
-            err_msg = str(st.get("error", "") or f"rc={self.rc}")
-            self.write_log(f"— run failed: {err_msg} —", logging.ERROR)
-            self.call_after_refresh(self._show_error_modal, err_msg)
-
-    def _show_error_modal(self, error: str) -> None:
-        def _on_choice(resume: bool | None) -> None:
-            if resume:
-                if self._timer is None:
-                    self._timer = self.set_interval(0.5, self._refresh)
-                self.write_log("— resuming from last checkpoint… —", logging.WARNING)
-                self._run_pipeline_worker(resume=True)
-            else:
-                self.exit(self.rc)
-
-        self.push_screen(_RunErrorModal(error), callback=_on_choice)
-
     def _show_gap_modal(self, kind: str, provider: str = "", retry_after: object = None) -> None:
         try:
             ra: int | None = (
@@ -2055,6 +2310,161 @@ class RunApp(App[int]):
                 self.exit(2)
 
         self.push_screen(_GapModal(kind, provider, ra), callback=_on_choice)
+
+    def _show_phase_modal(self) -> None:
+        from splinter.models.roster import load_ladder
+        from splinter.phases import phase_count
+
+        ladder = load_ladder()
+        plan_models = sorted(
+            set(
+                [ladder.planner_model]
+                + [t.models[0] for t in ladder.tiers]
+            )
+        )
+        run_models = sorted(set(t.models[0] for t in ladder.tiers))
+        next_num = phase_count(self.session) + 1
+
+        _PhaseConfigModal._PLAN_MODELS = plan_models
+        _PhaseConfigModal._RUN_MODELS = run_models
+
+        def _on_choice(result: dict[str, str] | None) -> None:
+            if result is None:
+                self.write_log("— phase mode ended —", logging.INFO)
+                self._write_run_complete()
+                return
+
+            if self._timer is None:
+                self._timer = self.set_interval(0.5, self._refresh)
+
+            self.write_log(
+                f"— phase {next_num}: {result['description'][:80]}… —",
+                logging.INFO,
+            )
+            self._run_phase_worker(result)
+
+        self.push_screen(
+            _PhaseConfigModal(
+                next_num,
+                default_plan_model=ladder.planner_model,
+                default_plan_effort=ladder.planner_effort,
+                default_run_model=ladder.tiers[0].models[0] if ladder.tiers else "",
+                default_run_effort="auto",
+            ),
+            callback=_on_choice,
+        )
+
+    def _run_phase_worker(self, cfg: dict[str, str]) -> None:
+        from splinter.models.roster import load_ladder
+        from splinter.phases import PhaseConfig, run_phase
+
+        def _run() -> None:
+            ladder = load_ladder()
+            phase_cfg = PhaseConfig(
+                description=cfg["description"],
+                plan_model=cfg["plan_model"] or ladder.planner_model,
+                plan_effort=cfg["plan_effort"] or ladder.planner_effort,
+                run_model=cfg["run_model"] or (
+                    ladder.tiers[0].models[0] if ladder.tiers else "haiku"
+                ),
+                run_effort=cfg["run_effort"] or "auto",
+            )
+            try:
+                result = run_phase(phase_cfg, self.session, ladder)
+                self.rc = 0
+                try:
+                    self.call_from_thread(
+                        self.write_log,
+                        f"— phase {result.phase_number} · "
+                        f"{'PASS' if result.gate_passed else 'FAIL'} · "
+                        f"{result.run_result.model} · "
+                        f"${result.run_result.cost:.4f} —",
+                        logging.INFO,
+                    )
+                except Exception:
+                    pass
+            except BaseException as exc:  # noqa: BLE001
+                self.rc = 1
+                self.error = str(exc)
+                try:
+                    self.call_from_thread(self.write_log, f"ERROR: {exc}", logging.ERROR)
+                except Exception:
+                    pass
+
+        def _on_phase_done() -> None:
+            self._refresh()
+            if self._timer is not None:
+                self._timer.stop()
+                self._timer = None
+            if self.rc == 0:
+                self.call_after_refresh(self._show_phase_modal)
+            else:
+                self.write_log(
+                    f"— phase failed: {self.error[:120]} —",
+                    logging.ERROR,
+                )
+                self.call_after_refresh(self._show_phase_modal)
+
+        self.run_worker(_run, thread=True, name="phase", exclusive=True)
+        self._phase_callback = _on_phase_done
+
+    def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
+        if event.worker.name == "phase":
+            if event.state in (WorkerState.SUCCESS, WorkerState.ERROR):
+                if hasattr(self, "_phase_callback"):
+                    self._phase_callback()
+                    del self._phase_callback
+            return
+        if event.worker.name != "pipeline":
+            return
+        if event.state not in (WorkerState.SUCCESS, WorkerState.ERROR):
+            return
+
+        self._refresh()
+        if self._timer is not None:
+            self._timer.stop()
+            self._timer = None
+
+        # --- original dispatch (moved here from previous on_worker_state_changed) ---
+        if self.rc == 0:
+            if self._phased:
+                self.write_log("— run complete — entering phase mode —", logging.INFO)
+                self.call_after_refresh(self._show_phase_modal)
+            else:
+                self._write_run_complete()
+        elif self.rc == 2:
+            self.write_log("— run PAUSED (provider gap) —", logging.WARNING)
+            st = self.session.read_status()
+            kind = str(st.get("kind", ""))
+            provider = str(st.get("provider", ""))
+            retry_after = st.get("retry_after")
+            self.call_after_refresh(self._show_gap_modal, kind, provider, retry_after)
+        elif self.rc == 3:
+            self.write_log("— run PAUSED (needs your input) —", logging.WARNING)
+            self.call_after_refresh(self._show_ask_user_modal)
+        elif self.rc == 4:
+            self.write_log("— final eval complete — awaiting manual validation —", logging.INFO)
+            self.call_after_refresh(self._show_manual_validation_modal)
+        else:
+            from splinter import procreg
+
+            procreg.terminate_all()
+            st = self.session.read_status()
+            err_msg = str(st.get("error", "") or f"rc={self.rc}")
+            self.write_log(f"— run failed: {err_msg} —", logging.ERROR)
+            self.call_after_refresh(self._show_error_modal, err_msg)
+
+    def _show_error_modal(self, error: str) -> None:
+        def _on_choice(resume: bool | None) -> None:
+            if resume:
+                if self._timer is None:
+                    self._timer = self.set_interval(0.5, self._refresh)
+                self.write_log("— resuming from last checkpoint… —", logging.WARNING)
+                self._run_pipeline_worker(resume=True)
+            else:
+                self.exit(self.rc)
+
+        self.push_screen(_RunErrorModal(error), callback=_on_choice)
 
     def get_system_commands(self, screen: Any) -> Iterable[SystemCommand]:
         yield _find_shortcuts_cmd(screen, self)
@@ -2107,16 +2517,30 @@ class ConfigureApp(App[bool]):
     #rows { padding: 0 1; height: 1fr; }
     .step {
         height: auto;
-        min-height: 3;
+        min-height: 4;
         border-left: thick $primary;
         padding-left: 1;
         margin-bottom: 1;
+        align: left middle;
     }
     .step.run { border-left: thick $success; }
     .step-info { width: 44; height: 100%; align: left middle; }
     .step-name { text-style: bold; height: 1; }
-    .step-desc { color: $text-muted; height: auto; }
-    .model-sel { width: 1fr; height: 3; }
+    .step-desc { color: $text-muted; height: 1; }
+    .provider-sel { width: 16; height: 3; margin-right: 1; }
+    .model-panel { width: 1fr; height: auto; }
+    .model-trigger { width: 1fr; height: 3; }
+    .model-state { display: none; }
+    .model-float {
+        width: 60%;
+        height: auto;
+        background: $surface;
+        border: solid $accent;
+        margin: 2 8;
+        padding: 1;
+    }
+    .model-float-filter { width: 1fr; height: 3; }
+    .model-float-list { width: 1fr; height: 6; }
     .effort-sel { width: 14; height: 3; margin-left: 1; }
     .timeout-inp { width: 14; height: 3; margin-left: 1; }
     Select > SelectCurrent { height: 3; }
@@ -2151,18 +2575,24 @@ class ConfigureApp(App[bool]):
         super().__init__()
         from splinter.configure import (
             DEFAULT_CONFIG,
-            available_models,
             current_model_selections,
             load_config,
         )
 
         self.saved = False
         self.saved_path = ""
-        self._models = available_models()
+        self._models_by_provider: dict[str, list[str]] = {}
+        self._models: list[str] = []
+        self._row_filters: dict[str, str] = {}
+        self._row_models: dict[str, list[str]] = {}
         current = current_model_selections()
         self._cur_models = current["models"]
         self._cur_efforts = current["efforts"]
         self._cur_timeouts = current["timeouts"]
+        self._cur_providers = dict(current.get("providers", {}))
+        tier_prov_list = self._cur_providers.get("tiers", [])
+        for i, p in enumerate(tier_prov_list):
+            self._cur_providers[f"tier_{i}"] = p
         self._gate_checks: list[dict[str, str]] = copy.deepcopy(
             load_config().get("gate_checks") or DEFAULT_CONFIG["gate_checks"]
         )
@@ -2189,15 +2619,40 @@ class ConfigureApp(App[bool]):
     ) -> Horizontal:
         from splinter.configure import EFFORT_CHOICES
 
-        model_opts = [(m, m) for m in self._models]
+        cur_prov = self._cur_providers.get(sid)
+        if isinstance(cur_prov, str) and cur_prov in self._PROVIDER_CHOICES:
+            prov = cur_prov
+        else:
+            prov = "(default)"
+        prov_opts = [(p, p) for p in self._PROVIDER_CHOICES]
         effort_opts = [(e, e) for e in EFFORT_CHOICES]
-        info = Vertical(
-            Label(name, classes="step-name"),
-            classes="step-info",
+        name_label = Label(name, classes="step-name")
+        desc_label = Label(desc, classes="step-desc")
+        name_label.tooltip = desc
+        desc_label.tooltip = desc
+        info = Vertical(name_label, desc_label, classes="step-info")
+        info.tooltip = desc
+        provider_sel = self._select(
+            prov_opts, prov, self._PROVIDER_CHOICES,
+            id=f"{sid}__prov", classes="provider-sel", tooltip="provider",
         )
-        model_sel = self._select(
-            model_opts, model, self._models, id=sid, tooltip=desc, classes="model-sel"
+        trigger_label = str(model) if isinstance(model, str) and model else ""
+        trigger = Button(trigger_label, id=f"{sid}__trigger", classes="model-trigger")
+        hidden_filter = Input(
+            value=self._row_filters.get(sid, ""),
+            id=f"{sid}__filter", classes="model-state",
         )
+        model_opts = self._model_opts_for(prov, "")
+        model_list = OptionList(
+            *[opt[0] for opt in model_opts],
+            id=sid, classes="model-state",
+        )
+        if model and isinstance(model, str):
+            for i, (label, _value) in enumerate(model_opts):
+                if label == model:
+                    model_list.highlighted = i
+                    break
+        model_panel = Vertical(trigger, hidden_filter, model_list, classes="model-panel")
         effort_sel = self._select(
             effort_opts,
             effort,
@@ -2217,13 +2672,30 @@ class ConfigureApp(App[bool]):
         )
         return Horizontal(
             info,
-            model_sel,
+            provider_sel,
+            model_panel,
             effort_sel,
             timeout_inp,
             classes="step run" if run else "step",
         )
 
     _WHEN_CHOICES: list[str] = ["always", "tests_exist", "proto_changed"]
+    _PROVIDER_CHOICES: list[str] = ["(default)", "claude", "opencode", "codex"]
+
+    def _model_opts_for(self, provider: str, flt: str) -> list[tuple[str, str]]:
+        if not self._models_by_provider:
+            return []
+        candidates: set[str] = set()
+        if provider == "(default)":
+            for models in self._models_by_provider.values():
+                candidates.update(models)
+        else:
+            candidates.update(self._models_by_provider.get(provider, []))
+        return [
+            (m, m)
+            for m in sorted(candidates)
+            if flt.lower() in m.lower()
+        ]
 
     def _gate_row(self, index: int, check: dict[str, str]) -> Horizontal:
         from splinter.configure import gate_default_languages
@@ -2331,6 +2803,16 @@ class ConfigureApp(App[bool]):
             index = int(bid[len("gate_del_"):])
             self._gate_checks = [c for j, c in enumerate(self._gate_checks) if j != index]
             self._rebuild_gates()
+        elif bid.endswith("__trigger"):
+            sid = bid[:-9]
+            oid = f"{sid}__overlay"
+            if self.query(f"#{oid}"):
+                try:
+                    self.query_one(f"#{oid}").remove()
+                except Exception:
+                    pass
+                return
+            self._show_model_overlay(sid)
 
     def _on_lang_picked(self, language: str | None) -> None:
         if language is None:
@@ -2379,6 +2861,214 @@ class ConfigureApp(App[bool]):
     def on_mount(self) -> None:
         self.title = "splinter · configure"
         self.sub_title = "model · effort · timeout per step — s: save · q: cancel"
+        self.query_one("#rows", VerticalScroll).loading = True
+        self.run_worker(self._fetch_models, thread=True, name="fetch-models", exclusive=True)
+
+    def _repopulate_model(self, sid: str) -> None:
+        try:
+            model_widget = self.query_one(f"#{sid}", OptionList)
+        except Exception:
+            return
+        current_idx: Any = model_widget.highlighted
+        current: str = ""
+        if current_idx is not None:
+            opt: Any = model_widget.get_option_at_index(current_idx)
+            if opt is not None:
+                current = str(getattr(opt, "prompt", ""))
+        flt = self._row_filters.get(sid, "")
+        full = self._row_models.get(sid, [])
+        if not full:
+            try:
+                provider_widget = self.query_one(f"#{sid}__prov", Select)
+                provider_val: Any = provider_widget.value
+                provider = provider_val if isinstance(provider_val, str) else "(default)"
+                full = [opt[0] for opt in self._model_opts_for(provider, "")]
+                self._row_models[sid] = full
+            except Exception:
+                return
+        opts = _filter_models(full, flt)
+        model_widget.clear_options()
+        for label in opts:
+            model_widget.add_option(label)
+        if current and current in opts:
+            for i, label in enumerate(opts):
+                if label == current:
+                    model_widget.highlighted = i
+                    break
+
+    def on_select_changed(self, event: Select.Changed) -> None:
+        if event.select.id and event.select.id.endswith("__prov"):
+            sid = event.select.id[:-6]
+            provider_val: Any = event.select.value
+            provider = provider_val if isinstance(provider_val, str) else "(default)"
+            full = [opt[0] for opt in self._model_opts_for(provider, "")]
+            self._row_models[sid] = full
+            self._repopulate_model(sid)
+            self._sync_trigger(sid)
+
+    def _sync_trigger(self, sid: str) -> None:
+        try:
+            trigger = self.query_one(f"#{sid}__trigger", Button)
+            st = self.query_one(f"#{sid}", OptionList)
+            idx = st.highlighted
+            if idx is not None:
+                opt = st.get_option_at_index(idx)
+                if opt is not None:
+                    trigger.label = str(getattr(opt, "prompt", ""))
+                    return
+            trigger.label = ""
+        except Exception:
+            pass
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        oid = event.option_list.id or ""
+        if not oid.endswith("__overlay_list"):
+            return
+        sid = oid[:-14]
+        opt = event.option_list.get_option_at_index(event.option_index)
+        label = str(getattr(opt, "prompt", "")) if opt is not None else ""
+        try:
+            trigger = self.query_one(f"#{sid}__trigger", Button)
+            trigger.label = label
+        except Exception:
+            pass
+        if label:
+            try:
+                st = self.query_one(f"#{sid}", OptionList)
+                for i in range(st.option_count):
+                    so = st.get_option_at_index(i)
+                    if so is not None and str(getattr(so, "prompt", "")) == label:
+                        st.highlighted = i
+                        break
+            except Exception:
+                pass
+        self._dismiss_model_overlay(sid)
+
+    def _show_model_overlay(self, sid: str) -> None:
+        full = self._row_models.get(sid, [])
+        if not full:
+            try:
+                provider_widget = self.query_one(f"#{sid}__prov", Select)
+                provider_val: Any = provider_widget.value
+                provider = provider_val if isinstance(provider_val, str) else "(default)"
+                full = [opt[0] for opt in self._model_opts_for(provider, "")]
+                self._row_models[sid] = full
+            except Exception:
+                pass
+        flt = self._row_filters.get(sid, "")
+        opts = _filter_models(full, flt)
+        try:
+            st = self.query_one(f"#{sid}", OptionList)
+            current_idx: Any = st.highlighted
+        except Exception:
+            current_idx = None
+        current: str = ""
+        if current_idx is not None:
+            opt = st.get_option_at_index(current_idx)
+            if opt is not None:
+                current = str(getattr(opt, "prompt", ""))
+        filter_inp = Input(
+            value=flt,
+            id=f"{sid}__overlay_filter", placeholder="filter…",
+            classes="model-float-filter",
+        )
+        ol = OptionList(*opts, id=f"{sid}__overlay_list", classes="model-float-list")
+        if current and current in opts:
+            for i, label in enumerate(opts):
+                if label == current:
+                    ol.highlighted = i
+                    break
+        overlay = Vertical(
+            filter_inp, ol,
+            id=f"{sid}__overlay", classes="model-float",
+        )
+        overlay.styles.layer = "above"
+        self.mount(overlay)
+        try:
+            filter_inp.focus()
+        except Exception:
+            pass
+
+    def _dismiss_model_overlay(self, sid: str) -> None:
+        try:
+            self.query_one(f"#{sid}__overlay").remove()
+        except Exception:
+            pass
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        eid = event.input.id or ""
+        if eid.endswith("__filter") and not eid.endswith("__overlay_filter"):
+            sid = eid[:-8]
+            self._row_filters[sid] = event.value
+            self._repopulate_model(sid)
+        elif eid.endswith("__overlay_filter"):
+            sid = eid[:-16]
+            flt = event.value.lower()
+            full = self._row_models.get(sid, [])
+            opts = [m for m in full if flt in m.lower()]
+            self._row_filters[sid] = event.value
+            try:
+                ol = self.query_one(f"#{sid}__overlay_list", OptionList)
+                ol.clear_options()
+                for label in opts:
+                    ol.add_option(label)
+            except Exception:
+                pass
+
+    def on_key(self, event: events.Key) -> None:
+        if event.key == "escape":
+            overlays = list(self.query(".model-float"))
+            if overlays:
+                for w in overlays:
+                    w.remove()
+                event.stop()
+
+    def _fetch_models(self) -> None:
+        from splinter.configure import available_models_by_provider
+
+        self._models_by_provider = available_models_by_provider()
+        self._models = sorted(
+            {m for models in self._models_by_provider.values() for m in models}
+        )
+        self.call_from_thread(self._rebuild_rows)
+
+    def _rebuild_rows(self) -> None:
+        from splinter.configure import MODEL_STEPS, TIER_STEPS
+
+        rows_container = self.query_one("#rows", VerticalScroll)
+        for child in rows_container.children:
+            if child.id != "gates":
+                child.remove()
+        gates_widget = self.query_one("#gates", Vertical)
+        rows: list[Horizontal] = [
+            self._row(
+                key,
+                label,
+                desc,
+                self._cur_models.get(key),
+                self._cur_efforts.get(key),
+                self._cur_timeouts.get(key),
+            )
+            for key, label, desc in MODEL_STEPS
+        ]
+        tier_models = self._cur_models.get("tiers", [])
+        tier_efforts = self._cur_efforts.get("tiers", [])
+        tier_timeouts = self._cur_timeouts.get("tiers", [])
+        for i, (label, desc) in enumerate(TIER_STEPS):
+            rows.append(
+                self._row(
+                    f"tier_{i}",
+                    label,
+                    desc,
+                    tier_models[i] if i < len(tier_models) else None,
+                    tier_efforts[i] if i < len(tier_efforts) else None,
+                    tier_timeouts[i] if i < len(tier_timeouts) else None,
+                    run=True,
+                )
+            )
+        for row in reversed(rows):
+            rows_container.mount(row, before=gates_widget)
+        rows_container.loading = False
 
     def action_save(self) -> None:
         from splinter.configure import (
@@ -2390,9 +3080,25 @@ class ConfigureApp(App[bool]):
         self._capture_gates()
 
         def sel_value(sid: str) -> str:
-            value = self.query_one(f"#{sid}", Select).value
-            # A blank Select yields the BLANK sentinel (not a str) — treat as "".
-            return value if isinstance(value, str) else ""
+            try:
+                widget = self.query_one(f"#{sid}", OptionList)
+                idx = widget.highlighted
+                opt: Any = widget.get_option_at_index(idx) if idx is not None else None
+                if opt is not None:
+                    return str(getattr(opt, "id", None) or getattr(opt, "prompt", ""))
+                return ""
+            except Exception:
+                try:
+                    value = self.query_one(f"#{sid}", Select).value
+                    return value if isinstance(value, str) else ""
+                except Exception:
+                    return ""
+
+        def prov_value(sid: str) -> str | None:
+            value = self.query_one(f"#{sid}__prov", Select).value
+            if not isinstance(value, str) or value == "(default)":
+                return None
+            return value
 
         def to_value(sid: str) -> int | None:
             raw = self.query_one(f"#{sid}", Input).value.strip()
@@ -2401,27 +3107,33 @@ class ConfigureApp(App[bool]):
         models: dict[str, Any] = {}
         efforts: dict[str, Any] = {}
         timeouts: dict[str, Any] = {}
+        providers: dict[str, Any] = {}
         for key, _, _ in MODEL_STEPS:
             if sel_value(key):
                 models[key] = sel_value(key)
             efforts[key] = sel_value(f"{key}__eff")
             timeouts[key] = to_value(f"{key}__to")
+            providers[key] = prov_value(key)
 
         tier_models: list[str] = []
         tier_efforts: list[str] = []
         tier_timeouts: list[int | None] = []
+        tier_providers: list[str | None] = []
         for i in range(len(TIER_STEPS)):
             model = sel_value(f"tier_{i}") or self._cur_models["tiers"][i]
             tier_models.append(model)
             tier_efforts.append(sel_value(f"tier_{i}__eff"))
             tier_timeouts.append(to_value(f"tier_{i}__to"))
+            tier_providers.append(prov_value(f"tier_{i}"))
         models["tiers"] = tier_models
         efforts["tiers"] = tier_efforts
         timeouts["tiers"] = tier_timeouts
+        providers["tiers"] = tier_providers
 
         self.saved_path = str(
             write_model_config(
-                models, efforts, timeouts=timeouts, gate_checks=self._gate_checks
+                models, efforts, timeouts=timeouts, gate_checks=self._gate_checks,
+                providers=providers,
             )
         )
         self.saved = True

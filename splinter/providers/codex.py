@@ -22,12 +22,11 @@ class CodexResult:
     session_id: str | None
 
 
-_CLI_EFFORTS = {"low", "medium", "high"}
+_CLI_EFFORTS = {"low", "medium", "high", "xhigh"}
 _EFFORT_ALIASES: dict[str, str | None] = {
     "minimal": "low",
     "auto": None,
-    "xhigh": "high",
-    "max": "high",
+    "max": "xhigh",
 }
 
 # $/1M tokens — input, output (confirmed model id: gpt-5-codex; rates for US-005)

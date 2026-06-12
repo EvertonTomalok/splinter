@@ -8,6 +8,8 @@ uv run ruff check && uv run mypy splinter && uv run pytest
 
 All three must pass with zero errors.
 
+# IMPORTANT: it's forbidden create tests that call real external models or spawn real subprocesses. This is not negotiable.
+
 ## Unit Tests (pytest gate)
 
 The pytest gate must finish in seconds. **No real external calls** — unit tests never spawn CLIs or hit live models.

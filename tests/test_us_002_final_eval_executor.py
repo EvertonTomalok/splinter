@@ -164,6 +164,19 @@ class TestSkillDispatch:
             run_final_eval(entry, task=_task())
         assert calls[0][1] == "opus"
 
+    def test_codex_provider_without_model_uses_codex_default(self) -> None:
+        entry = _entry(FinalEvalKind.SKILL, skill="review", provider="codex")
+        calls: list[tuple] = []
+
+        def fake_run(prompt, model, **kw):
+            calls.append((prompt, model, kw))
+            return self._mock_response("VERDICT: PASS")
+
+        with patch("splinter.skills.resolve_eval_skill", return_value=None), \
+             patch("splinter.providers.dispatch.run_provider_session", side_effect=fake_run):
+            run_final_eval(entry, task=_task())
+        assert calls[0][1] == "codex/gpt-5-codex"
+
 
 # ── review kind ───────────────────────────────────────────────────────────────
 

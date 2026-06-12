@@ -14,7 +14,7 @@ from splinter.agents import planner
 from splinter.agents.localizer import CodeAnchor, filter_task_context, localize, rtk_cat_tip
 from splinter.agents.runner import Task
 from splinter.memory.session import Session, new_session_id
-from splinter.models.roster import load_ladder
+from splinter.models.roster import Ladder, load_ladder
 from splinter.obs.agentic import agentic_scope
 from splinter.providers.base import ProviderGapError
 from splinter.strategies.base import AskUserPause, GracefulPause, ManualValidationPause
@@ -173,6 +173,89 @@ def _load_tasks_from_prd(prd_path: str) -> tuple[list[Task], str | None]:
     return tasks, strategy
 
 
+def _run_phase_loop_stdin(
+    session: Session,
+    ladder: Ladder,
+    effort: str | None,
+    plan_model: str | None = None,
+    plan_effort: str | None = None,
+    run_model: str | None = None,
+    run_effort: str | None = None,
+) -> int:
+    """Interactive phase loop for non-TTY ``--phased`` mode (stdin/stdout)."""
+    from splinter.phases import PhaseConfig, run_phase
+
+    print("\n=== Entering phase mode ===\n")
+    print("Describe what to implement next, or type 'done' to finish.")
+    print()
+
+    default_plan_model = plan_model or ladder.planner_model
+    default_plan_effort = plan_effort or ladder.planner_effort
+    default_run_model = run_model or (ladder.tiers[0].models[0] if ladder.tiers else "haiku")
+    default_run_effort = run_effort or effort or "auto"
+
+    if not plan_model or not run_model:
+        print("Model/effort overrides: use -pm/-pe/-rm/-re flags or answer prompts below.")
+        print()
+
+    while True:
+        try:
+            desc = input("Phase description (or 'done'): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\ndone.")
+            break
+        if not desc or desc.lower() in ("done", "quit", "exit"):
+            break
+
+        pm = default_plan_model
+        pe = default_plan_effort
+        rm = default_run_model
+        re = default_run_effort
+
+        if not plan_model:
+            pm_in = input(f"  Plan model [{pm}]: ").strip()
+            if pm_in:
+                pm = pm_in
+        if not plan_effort:
+            pe_in = input(f"  Plan effort [{pe}]: ").strip()
+            if pe_in:
+                pe = pe_in
+        if not run_model:
+            rm_in = input(f"  Run model [{rm}]: ").strip()
+            if rm_in:
+                rm = rm_in
+        if not run_effort:
+            re_in = input(f"  Run effort [{re}]: ").strip()
+            if re_in:
+                re = re_in
+
+        cfg = PhaseConfig(
+            description=desc,
+            plan_model=pm,
+            plan_effort=pe,
+            run_model=rm,
+            run_effort=re,
+        )
+
+        try:
+            result = run_phase(cfg, session, ladder)
+        except Exception as exc:
+            print(f"Phase failed: {exc}")
+            continue
+
+        verdict = "PASS" if result.gate_passed else "FAIL"
+        print(
+            f"\nPhase {result.phase_number} · {verdict} · "
+            f"{result.run_result.model} · ${result.run_result.cost:.4f}\n"
+        )
+        if not result.gate_passed:
+            print(f"Gate output:\n{result.gate_output[:500]}")
+        print()
+
+    session.set_status("completed", stage="done")
+    return 0
+
+
 def _clear_round_caches(session: Session) -> None:
     """Remove stale plan/filter/per-task-localization files before a new round."""
     import re as _re
@@ -229,6 +312,11 @@ def run_pipeline(
     user_guidance: str | None = None,
     jump_premium: bool = False,
     no_ground: bool = False,
+    phased: bool = False,
+    phase_plan_model: str | None = None,
+    phase_plan_effort: str | None = None,
+    phase_run_model: str | None = None,
+    phase_run_effort: str | None = None,
 ) -> int:
     from splinter import procreg as _procreg
     _procreg.clear_stop()
@@ -477,6 +565,18 @@ def run_pipeline(
         print(f"pipeline complete. session: {session.id}")
         print(f"  runs: {len(results)}")
         print(f"  cost: ${total:.4f}")
+
+        if phased:
+            return _run_phase_loop_stdin(
+                session,
+                ladder,
+                effort,
+                plan_model=phase_plan_model,
+                plan_effort=phase_plan_effort,
+                run_model=phase_run_model,
+                run_effort=phase_run_effort,
+            )
+
         return 0
     except ManualValidationPause as val_exc:
         from splinter.models.roster import bump_effort

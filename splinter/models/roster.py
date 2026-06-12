@@ -8,7 +8,13 @@ from typing import Any
 import yaml
 
 CODEX_MODELS: dict[str, str] = {
+    "gpt55": "codex/gpt-5.5",
+    "gpt54": "codex/gpt-5.4",
+    "gpt54_mini": "codex/gpt-5.4-mini",
+    "gpt53_codex": "codex/gpt-5.3-codex",
+    "gpt52": "codex/gpt-5.2",
     "gpt5_codex": "codex/gpt-5-codex",
+    "codex_auto_review": "codex/codex-auto-review",
 }
 
 
