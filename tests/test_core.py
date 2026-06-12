@@ -1942,6 +1942,45 @@ def test_run_prd_keyboardinterrupt_cleans_up_empty_session(
     assert list_sessions() == [], "interrupted PRD run must not litter an empty session"
 
 
+def test_run_prd_abort_after_ground_localization_cleans_up(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
+) -> None:
+    """Aborting after ground_localization (which creates knowledge/localization.md)
+    must still garbage-collect the session — is_empty() would return False due to
+    the localization file, but prd_session_is_resumable correctly returns False.
+    """
+    from splinter.memory.session import Session, list_sessions, new_session_id
+    from splinter.prd import _abort, _prune_prd_session
+
+    monkeypatch.chdir(tmp_path)
+
+    # Simulate a session that had localization written (ground_localization side-effect)
+    # but no real PRD content.
+    sid = new_session_id()
+    s = Session(sid)
+    s.write("knowledge/localization.md", "# Localization\nfile: foo.py\nsymbol: bar\n")
+
+    assert not s.is_empty(), "sanity: localization.md makes is_empty() return False"
+
+    _prune_prd_session(s)
+
+    assert list_sessions() == [], "session with only localization.md must be cleaned up"
+
+
+def test_run_configure_no_interactive_creates_no_session(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
+) -> None:
+    """configure (non-interactive) must never create a session directory."""
+    from splinter.configure import run_configure
+    from splinter.memory.session import list_sessions
+
+    monkeypatch.chdir(tmp_path)
+
+    rc = run_configure(gate_checks="ruff check .", interactive=False)
+    assert rc == 0
+    assert list_sessions() == [], "configure must not create sessions"
+
+
 _STUB_PRD = "---\nstrategy: cascade\n---\n# Test"
 _REAL_PRD = "---\nstrategy: cascade\n---\n### US-001: Login\n**Description:** d\n"
 

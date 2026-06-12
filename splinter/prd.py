@@ -13,9 +13,21 @@ from splinter.providers import claude_cli
 def _abort(session: Session, message: str) -> int:
     """Print error, garbage-collect the session if nothing real was written."""
     print(message)
-    if session.is_empty():
-        delete_session(session.id)
+    _prune_prd_session(session)
     return 1
+
+
+def _prune_prd_session(session: Session) -> None:
+    """Delete session if it has no runnable PRD and no run trace.
+
+    Uses prd_session_is_resumable so that sessions created by ground_localization
+    (which writes knowledge/localization.md, making is_empty() return False) are
+    still cleaned up when the PRD flow aborted before producing real content.
+    """
+    from splinter.prd_session import prd_session_is_resumable
+
+    if session.dir.exists() and not prd_session_is_resumable(session):
+        delete_session(session.id)
 
 
 def _load_prd_skill() -> str:
@@ -34,12 +46,15 @@ def run_prd(*, description: str = "", strategy: str | None = None, no_ground: bo
     # (or resurrected) a prior session and left empties on abort.
     session = Session(new_session_id())
     try:
-        return _run_prd(session, description=description, strategy=strategy, no_ground=no_ground)
+        rc = _run_prd(session, description=description, strategy=strategy, no_ground=no_ground)
     except BaseException:
         # Ctrl+C at a prompt or a provider crash must not litter an empty session.
-        if session.is_empty():
-            delete_session(session.id)
+        _prune_prd_session(session)
         raise
+    # Non-zero return means the PRD flow aborted; clean up if nothing runnable was produced.
+    if rc != 0:
+        _prune_prd_session(session)
+    return rc
 
 
 def _run_prd(

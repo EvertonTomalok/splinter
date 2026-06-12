@@ -602,6 +602,21 @@ def _swap_config(source: str) -> int:
     return 0
 
 
+def _prune_accidental_sessions(before: set[str]) -> None:
+    """Remove any empty sessions created as a side effect of a non-run/prd command.
+
+    ``before`` is the set of session ids that existed before the command ran.
+    Any new id that is still empty is deleted.
+    """
+    from splinter.memory.session import Session, delete_session, list_sessions
+
+    after = set(list_sessions())
+    for sid in after - before:
+        s = Session(sid)
+        if s.is_empty():
+            delete_session(sid)
+
+
 def run_configure(
     *,
     gate_checks: str | None = None,
@@ -619,46 +634,53 @@ def run_configure(
 
     import sys
 
+    from splinter.memory.session import list_sessions
+
+    _before = set(list_sessions())
+
     if interactive is None:
         interactive = sys.stdin.isatty() and sys.stdout.isatty()
 
-    # Interactive with no direct flags → open the model-selection TUI, which
-    # writes config.yaml itself on save.
-    if interactive and not gate_checks and not init_prompts and timeout is None:
-        from splinter.tui import run_configure_tui
+    try:
+        # Interactive with no direct flags → open the model-selection TUI, which
+        # writes config.yaml itself on save.
+        if interactive and not gate_checks and not init_prompts and timeout is None:
+            from splinter.tui import run_configure_tui
 
-        return run_configure_tui()
+            return run_configure_tui()
 
-    config = load_config()
+        config = load_config()
 
-    if timeout is not None:
-        config.setdefault("defaults", DEFAULT_CONFIG["defaults"].copy())
-        config["defaults"]["timeout"] = timeout
+        if timeout is not None:
+            config.setdefault("defaults", DEFAULT_CONFIG["defaults"].copy())
+            config["defaults"]["timeout"] = timeout
 
-    if gate_checks:
-        checks = []
-        for cmd in gate_checks.split(","):
-            cmd = cmd.strip()
-            if cmd:
-                name = cmd.split()[0] if cmd else "check"
-                checks.append({"name": name, "cmd": cmd, "when": "always", "language": "all"})
-        config["gate_checks"] = checks
+        if gate_checks:
+            checks = []
+            for cmd in gate_checks.split(","):
+                cmd = cmd.strip()
+                if cmd:
+                    name = cmd.split()[0] if cmd else "check"
+                    checks.append({"name": name, "cmd": cmd, "when": "always", "language": "all"})
+            config["gate_checks"] = checks
 
-    p = _config_path("project")
-    p.parent.mkdir(parents=True, exist_ok=True)
-    with open(p, "w") as f:
-        yaml.dump(config, f, default_flow_style=False)
-    print(f"config written to {p}")
+        p = _config_path("project")
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with open(p, "w") as f:
+            yaml.dump(config, f, default_flow_style=False)
+        print(f"config written to {p}")
 
-    if init_prompts:
-        written = init_prompt_templates(overwrite=force)
-        if written:
-            print(f"prompt templates written to {_prompts_dir()}/ (edit to customize):")
-            for path in written:
-                print(f"  {path.name}")
-        else:
-            print(
-                f"prompt templates already present in {_prompts_dir()}/ (use --force to overwrite)"
-            )
+        if init_prompts:
+            written = init_prompt_templates(overwrite=force)
+            if written:
+                print(f"prompt templates written to {_prompts_dir()}/ (edit to customize):")
+                for path in written:
+                    print(f"  {path.name}")
+            else:
+                print(
+                    f"prompt templates already present in {_prompts_dir()}/ (use --force to overwrite)"
+                )
 
-    return 0
+        return 0
+    finally:
+        _prune_accidental_sessions(_before)
