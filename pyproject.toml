@@ -22,6 +22,7 @@ dev = [
     "ruff>=0.9",
     "mypy>=1.14",
     "types-PyYAML>=6.0",
+    "pytest-timeout>=2.4.0",
 ]
 
 [tool.ruff]
