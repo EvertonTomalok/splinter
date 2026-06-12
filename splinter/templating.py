@@ -30,6 +30,7 @@ TEMPLATE_NAMES = (
     "plan",
     "run",
     "run_fix",
+    "run_fix_continue",
     "eval",
     "localize_recall",
     "localize_precision",

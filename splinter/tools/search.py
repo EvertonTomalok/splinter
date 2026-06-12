@@ -70,7 +70,9 @@ def _error(tool: str, exc: BaseException) -> SearchResult:
     )
 
 
-def grep(pattern: str, path: str = ".", *, flags: str = "", timeout: int = _GREP_TIMEOUT) -> SearchResult:
+def grep(
+    pattern: str, path: str = ".", *, flags: str = "", timeout: int = _GREP_TIMEOUT
+) -> SearchResult:
     """Search for pattern, respecting .gitignore when inside a git repo."""
     try:
         if _is_git_repo(path):
@@ -152,7 +154,8 @@ def file_list(path: str = ".", pattern: str = "*", *, timeout: int = _GIT_TIMEOU
         if _is_git_repo(path):
             # git ls-files only lists tracked files — no node_modules / build artefacts.
             proc = subprocess.run(
-                ["git", "ls-files", "--", f"*{Path(pattern).suffix}" if "*." in pattern else pattern],
+                ["git", "ls-files", "--",
+                 f"*{Path(pattern).suffix}" if "*." in pattern else pattern],
                 capture_output=True,
                 text=True,
                 timeout=timeout,

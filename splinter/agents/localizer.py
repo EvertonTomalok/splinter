@@ -226,7 +226,8 @@ def _run_search_tools(prd_text: str, repo_path: str = ".") -> str:
         truncated = len(listing_lines) > _LS_MAX_LINES
         listing = "\n".join(listing_lines[:_LS_MAX_LINES])
         if truncated:
-            listing += f"\n... ({len(listing_lines) - _LS_MAX_LINES} more files — use file name patterns to infer)"
+            extra = len(listing_lines) - _LS_MAX_LINES
+            listing += f"\n... ({extra} more files — use file name patterns to infer)"
         lines.append("## Tracked Files (git ls-files)")
         lines.append(listing)
         lines.append("")

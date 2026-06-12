@@ -678,7 +678,8 @@ def run_configure(
                     print(f"  {path.name}")
             else:
                 print(
-                    f"prompt templates already present in {_prompts_dir()}/ (use --force to overwrite)"
+                    f"prompt templates already present in {_prompts_dir()}/"
+                    " (use --force to overwrite)"
                 )
 
         return 0
