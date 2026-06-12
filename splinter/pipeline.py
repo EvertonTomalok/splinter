@@ -479,17 +479,22 @@ def run_pipeline(
         print(f"  cost: ${total:.4f}")
         return 0
     except ManualValidationPause as val_exc:
+        from splinter.models.roster import bump_effort
+
+        cur_effort = effective_effort or "normal"
         session.set_status(
-            "awaiting_validation",
+            "awaiting_user",
             stage="final_eval",
             final_eval_summary=val_exc.summary,
             final_eval_passed=val_exc.all_passed,
             round_index=resume_round + 1,
+            next_effort=bump_effort(cur_effort),
+            ask_corrections=val_exc.summary,
         )
         log.info("run paused — awaiting manual validation")
         print(f"run complete — awaiting manual validation.\n{val_exc.summary}")
         print(f"  validate: splinter resume {session.id}")
-        return 4
+        return 3
     except GracefulPause as gp:
         session.set_status(
             "paused",
