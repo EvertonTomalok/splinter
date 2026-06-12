@@ -149,15 +149,16 @@ class TestExecuteResume:
             ran.append(task.id)
             return _fake_result()
 
-        with patch.object(strategy, "_run_task_loop", side_effect=fake_loop):
-            with patch.object(strategy, "_start_tier", return_value=0):
-                strategy.execute(
-                    [t1, t2],
-                    session,
-                    fake_ladder,
-                    resume=True,
-                    cowabunga=True,
-                )
+        with patch.object(strategy, "_run_plan_phase", return_value=None):
+            with patch.object(strategy, "_run_task_loop", side_effect=fake_loop):
+                with patch.object(strategy, "_start_tier", return_value=0):
+                    strategy.execute(
+                        [t1, t2],
+                        session,
+                        fake_ladder,
+                        resume=True,
+                        cowabunga=True,
+                    )
 
         assert ran == ["US-002"]
 
@@ -182,10 +183,11 @@ class TestExecuteResume:
             checkpoints_after.append(set(done))
             original_save(s, done)
 
-        with patch.object(strategy, "_run_task_loop", side_effect=fake_loop):
-            with patch.object(strategy, "_start_tier", return_value=0):
-                with patch.object(CascadeStrategy, "_save_checkpoint", staticmethod(tracking_save)):
-                    strategy.execute([t1, t2], session, fake_ladder, cowabunga=True)
+        with patch.object(strategy, "_run_plan_phase", return_value=None):
+            with patch.object(strategy, "_run_task_loop", side_effect=fake_loop):
+                with patch.object(strategy, "_start_tier", return_value=0):
+                    with patch.object(CascadeStrategy, "_save_checkpoint", staticmethod(tracking_save)):
+                        strategy.execute([t1, t2], session, fake_ladder, cowabunga=True)
 
         assert call_order == ["US-001", "US-002"]
         assert "US-001" in checkpoints_after[0]
@@ -222,15 +224,16 @@ class TestBudgetShortCircuit:
         fake_trace.summary.return_value = ""
 
         with patch("splinter.strategies.cascade.Trace", return_value=fake_trace):
-            with patch.object(strategy, "_run_task_loop", side_effect=fake_loop):
-                with patch.object(strategy, "_start_tier", return_value=0):
-                    strategy.execute(
-                        [t1, t2],
-                        session,
-                        fake_ladder,
-                        budget=5.0,
-                        cowabunga=True,
-                    )
+            with patch.object(strategy, "_run_plan_phase", return_value=None):
+                with patch.object(strategy, "_run_task_loop", side_effect=fake_loop):
+                    with patch.object(strategy, "_start_tier", return_value=0):
+                        strategy.execute(
+                            [t1, t2],
+                            session,
+                            fake_ladder,
+                            budget=5.0,
+                            cowabunga=True,
+                        )
 
         assert call_count == 1  # stopped after first task
 
@@ -281,16 +284,17 @@ class TestResumeBudgetContinuity:
             ran.append(task.id)
             return _fake_result()
 
-        with patch.object(strategy, "_run_task_loop", side_effect=fake_loop):
-            with patch.object(strategy, "_start_tier", return_value=0):
-                strategy.execute(
-                    [t1, t2],
-                    session,
-                    fake_ladder,
-                    budget=5.0,
-                    resume=True,
-                    cowabunga=True,
-                )
+        with patch.object(strategy, "_run_plan_phase", return_value=None):
+            with patch.object(strategy, "_run_task_loop", side_effect=fake_loop):
+                with patch.object(strategy, "_start_tier", return_value=0):
+                    strategy.execute(
+                        [t1, t2],
+                        session,
+                        fake_ladder,
+                        budget=5.0,
+                        resume=True,
+                        cowabunga=True,
+                    )
 
         # $4 from prior + $0 fake run = $4 < $5 budget; first task runs.
         # After first task budget check: $4 still < $5, so second task runs too.

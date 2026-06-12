@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 from splinter.agents.evaluator import Evaluator
 from splinter.agents.runner import Task
@@ -10,12 +13,14 @@ from splinter.providers.base import ProviderResponse
 from splinter.strategies.base import EvalVerdict
 
 
-def _ladder() -> Ladder:
+@pytest.fixture
+def isolated_ladder(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Ladder:
+    monkeypatch.chdir(tmp_path)
     return load_ladder()
 
 
-def _evaluator(ladder: Ladder | None = None) -> Evaluator:
-    return Evaluator(ladder or _ladder())
+def _evaluator(ladder: Ladder) -> Evaluator:
+    return Evaluator(ladder)
 
 
 # --- _parse_verdict: each of the 5 decisions --------------------------------
@@ -100,28 +105,27 @@ def test_parse_no_verdict_line_does_not_escalate_from_prose() -> None:
 # --- eval_effort_for --------------------------------------------------------
 
 
-def test_eval_effort_for_below_premium() -> None:
-    ladder = _ladder()
-    ev = _evaluator(ladder)
-    assert ev.eval_effort_for(0) == ladder.eval_effort
-    assert ev.eval_effort_for(2) == ladder.eval_effort
+def test_eval_effort_for_below_premium(isolated_ladder: Ladder) -> None:
+    ev = _evaluator(isolated_ladder)
+    assert ev.eval_effort_for(0) == isolated_ladder.eval_effort
+    assert ev.eval_effort_for(2) == isolated_ladder.eval_effort
 
 
-def test_eval_effort_for_at_premium() -> None:
-    ev = _evaluator()
+def test_eval_effort_for_at_premium(isolated_ladder: Ladder) -> None:
+    ev = _evaluator(isolated_ladder)
     assert ev.eval_effort_for(3) == "high"
 
 
-def test_eval_effort_for_above_premium() -> None:
-    ev = _evaluator()
+def test_eval_effort_for_above_premium(isolated_ladder: Ladder) -> None:
+    ev = _evaluator(isolated_ladder)
     assert ev.eval_effort_for(4) == "high"
 
 
 # --- next_action: tier-climb logic ------------------------------------------
 
 
-def test_next_action_pass() -> None:
-    ev = _evaluator()
+def test_next_action_pass(isolated_ladder: Ladder) -> None:
+    ev = _evaluator(isolated_ladder)
     v = EvalVerdict(decision=Decision.PASS, reason="ok")
     action = ev.next_action(v, tier=1, max_tier=4)
     assert action.decision == Decision.PASS
@@ -129,8 +133,8 @@ def test_next_action_pass() -> None:
     assert action.next_tier == 1
 
 
-def test_next_action_retry_same_tier() -> None:
-    ev = _evaluator()
+def test_next_action_retry_same_tier(isolated_ladder: Ladder) -> None:
+    ev = _evaluator(isolated_ladder)
     v = EvalVerdict(decision=Decision.RETRY, reason="fix it", corrections="add import")
     action = ev.next_action(v, tier=1, max_tier=4)
     assert action.decision == Decision.RETRY
@@ -138,8 +142,8 @@ def test_next_action_retry_same_tier() -> None:
     assert not action.stop
 
 
-def test_next_action_escalate_advances_tier() -> None:
-    ev = _evaluator()
+def test_next_action_escalate_advances_tier(isolated_ladder: Ladder) -> None:
+    ev = _evaluator(isolated_ladder)
     v = EvalVerdict(decision=Decision.ESCALATE, reason="too hard", corrections="rewrite")
     action = ev.next_action(v, tier=1, max_tier=4)
     assert action.decision == Decision.ESCALATE
@@ -147,8 +151,8 @@ def test_next_action_escalate_advances_tier() -> None:
     assert not action.stop
 
 
-def test_next_action_escalate_at_max_tier_asks_user() -> None:
-    ev = _evaluator()
+def test_next_action_escalate_at_max_tier_asks_user(isolated_ladder: Ladder) -> None:
+    ev = _evaluator(isolated_ladder)
     v = EvalVerdict(decision=Decision.ESCALATE, reason="too hard", corrections="rewrite")
     action = ev.next_action(v, tier=4, max_tier=4, cowabunga=False)
     assert action.decision == Decision.ASK_USER
@@ -156,8 +160,8 @@ def test_next_action_escalate_at_max_tier_asks_user() -> None:
     assert action.stop
 
 
-def test_next_action_escalate_at_max_tier_cowabunga_stops() -> None:
-    ev = _evaluator()
+def test_next_action_escalate_at_max_tier_cowabunga_stops(isolated_ladder: Ladder) -> None:
+    ev = _evaluator(isolated_ladder)
     v = EvalVerdict(decision=Decision.ESCALATE, reason="too hard", corrections="rewrite")
     action = ev.next_action(v, tier=4, max_tier=4, cowabunga=True)
     assert action.decision == Decision.ESCALATE
@@ -165,8 +169,8 @@ def test_next_action_escalate_at_max_tier_cowabunga_stops() -> None:
     assert not action.ask_user
 
 
-def test_next_action_jump_premium() -> None:
-    ev = _evaluator()
+def test_next_action_jump_premium(isolated_ladder: Ladder) -> None:
+    ev = _evaluator(isolated_ladder)
     v = EvalVerdict(decision=Decision.JUMP_PREMIUM, reason="needs premium")
     action = ev.next_action(v, tier=0, max_tier=4)
     assert action.decision == Decision.JUMP_PREMIUM
@@ -174,23 +178,23 @@ def test_next_action_jump_premium() -> None:
     assert not action.stop
 
 
-def test_next_action_jump_premium_already_at_premium() -> None:
-    ev = _evaluator()
+def test_next_action_jump_premium_already_at_premium(isolated_ladder: Ladder) -> None:
+    ev = _evaluator(isolated_ladder)
     v = EvalVerdict(decision=Decision.JUMP_PREMIUM, reason="needs premium")
     action = ev.next_action(v, tier=3, max_tier=4)
     assert action.next_tier == 3
 
 
-def test_next_action_jump_premium_clamped_to_max_tier() -> None:
-    ev = Evaluator(_ladder(), premium_tier=5)
+def test_next_action_jump_premium_clamped_to_max_tier(isolated_ladder: Ladder) -> None:
+    ev = Evaluator(isolated_ladder, premium_tier=5)
     v = EvalVerdict(decision=Decision.JUMP_PREMIUM, reason="needs premium")
     action = ev.next_action(v, tier=1, max_tier=4)
     assert action.decision == Decision.JUMP_PREMIUM
     assert action.next_tier == 4
 
 
-def test_next_action_ask_user_surfaces() -> None:
-    ev = _evaluator()
+def test_next_action_ask_user_surfaces(isolated_ladder: Ladder) -> None:
+    ev = _evaluator(isolated_ladder)
     v = EvalVerdict(decision=Decision.ASK_USER, reason="ambiguous")
     action = ev.next_action(v, tier=1, max_tier=4, cowabunga=False)
     assert action.decision == Decision.ASK_USER
@@ -198,8 +202,8 @@ def test_next_action_ask_user_surfaces() -> None:
     assert action.stop
 
 
-def test_next_action_ask_user_cowabunga_stops() -> None:
-    ev = _evaluator()
+def test_next_action_ask_user_cowabunga_stops(isolated_ladder: Ladder) -> None:
+    ev = _evaluator(isolated_ladder)
     v = EvalVerdict(decision=Decision.ASK_USER, reason="ambiguous")
     action = ev.next_action(v, tier=1, max_tier=4, cowabunga=True)
     assert action.decision == Decision.ASK_USER
@@ -210,9 +214,8 @@ def test_next_action_ask_user_cowabunga_stops() -> None:
 # --- judge: cross-family (provider-agnostic) --------------------------------
 
 
-def test_judge_calls_run_text_with_injected_model() -> None:
-    ladder = _ladder()
-    ev = Evaluator(ladder)
+def test_judge_calls_run_text_with_injected_model(isolated_ladder: Ladder) -> None:
+    ev = Evaluator(isolated_ladder)
     task = Task(description="test task", acceptance="must work")
 
     with patch(
@@ -237,9 +240,8 @@ def test_judge_calls_run_text_with_injected_model() -> None:
     assert call_args.kwargs["variant"] == "low"
 
 
-def test_judge_uses_ladder_defaults() -> None:
-    ladder = _ladder()
-    ev = Evaluator(ladder)
+def test_judge_uses_ladder_defaults(isolated_ladder: Ladder) -> None:
+    ev = Evaluator(isolated_ladder)
     task = Task(description="test task", acceptance="must work")
 
     with patch(
@@ -253,8 +255,8 @@ def test_judge_uses_ladder_defaults() -> None:
 
     mock_run.assert_called_once()
     call_args = mock_run.call_args
-    assert call_args.args[1] == ladder.eval_model
-    assert call_args.kwargs["variant"] == ladder.eval_effort
+    assert call_args.args[1] == isolated_ladder.eval_model
+    assert call_args.kwargs["variant"] == isolated_ladder.eval_effort
 
 
 # --- back-compat shim -------------------------------------------------------
