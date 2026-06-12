@@ -246,24 +246,23 @@ def _recall_phase(
     """Cheap model filters the raw search results to a candidate list."""
     text = _strip_frontmatter(prd_text)
     prompt = (
-        "You are a code localization assistant. Given a feature description and a "
-        "listing of all tracked files in the repo (from git ls-files), identify the "
-        "files, functions, classes, and symbols that are most likely to need changes "
-        "or be relevant context for the feature.\n\n"
-        f"## Feature Description\n{text}\n\n"
-        f"## Repository Contents\n{search_results}\n\n"
-        "Return a JSON array of candidate locations. Each item MUST have keys: "
-        '"file" (path), "symbol" (function/class/symbol name, or "" if file-level), '
-        '"reason" (why it is relevant — include the feature keywords it relates to), '
-        '"confidence" (0.0–1.0), '
-        '"line_start" (null — line numbers unknown until file is read), '
-        '"line_end" (null — line numbers unknown until file is read). '
-        "Use directory structure, file names, and project conventions to infer relevance. "
-        "Be thorough — coverage over precision. Include both implementation files AND tests. "
-        "IMPORTANT: always include any AGENTS.md, CLAUDE.md, or skills/*/SKILL.md files "
-        "listed — they describe project conventions, agent behaviour, and available skills "
-        "that the runner MUST follow. "
-        "Output ONLY the JSON array, no prose."
+        "I want to implement this feature — look at all tracked files in the repo and "
+        "find the relevant sources. For each relevant file, give me a quick description "
+        "of why it matters for this feature.\n\n"
+        f"## Feature\n{text}\n\n"
+        f"## All Tracked Files\n{search_results}\n\n"
+        "Return a JSON array. Each item MUST have:\n"
+        '  "file": path string,\n'
+        '  "symbol": function/class/symbol name or "" for file-level,\n'
+        '  "reason": one sentence — why this file is relevant to the feature,\n'
+        '  "confidence": 0.0–1.0,\n'
+        '  "line_start": null,\n'
+        '  "line_end": null\n'
+        "Use file names and directory structure to infer relevance. "
+        "Be thorough — include implementation files, tests, and config. "
+        "Always include AGENTS.md, CLAUDE.md, and skills/*/SKILL.md if present — "
+        "they define how the runner must behave. "
+        "Output ONLY the JSON array."
     )
     text = run_text(
         prompt, model, variant=variant, output_format="text", timeout=timeout, agent=agent,
@@ -354,14 +353,15 @@ def filter_task_context(
     ladder: Ladder,
     session: object = None,
 ) -> str:
-    """Per-task filter run by the harness after localize, before planning.
+    """Per-task filter: cheap LLM reads the located files and summarizes what's useful.
 
     Receives:
       - task.target_files  — paths the locator found for this task
       - task.description   — this task only (not the full PRD)
 
-    Reads those files, passes actual source to the precision model, and returns
-    a focused context string stored on task.filtered_context.
+    Reads those files and asks the cheap recall model to describe what's
+    interesting in each file for THIS specific task.  The summary is stored on
+    task.filtered_context and passed directly to the planner.
     """
     target_files = getattr(task, "target_files", None)
     description = getattr(task, "description", "")
@@ -374,37 +374,34 @@ def filter_task_context(
         return ""
 
     prompt = (
-        "You are a code context agent. Below is a task description and the source files "
-        "the locator identified as relevant. Read the code and extract the sections that "
-        "matter for implementing this task.\n\n"
+        "You are a code context assistant. Below is a specific task and the source files "
+        "identified as relevant to it. Read the files and describe — in plain language — "
+        "what is interesting in each file for understanding and implementing this task.\n\n"
         f"## Task\n{description}\n\n"
         f"## Source Files\n{file_contents}\n\n"
-        "For each relevant section, output a block in this EXACT format:\n\n"
-        "### <file_path>:L<start>-L<end> — <symbol_or_description>\n"
-        "rtk: rtk read <file_path>\n"
-        "<one-line note on why this section matters for the task>\n"
-        "```\n"
-        "<the relevant code snippet>\n"
-        "```\n\n"
-        "Include exact line numbers. If uncertain about line numbers, estimate from the "
-        "file content shown. Be specific — the planner will navigate directly to these locations."
+        "For each file that has relevant content, write a short paragraph explaining:\n"
+        "- What this file does\n"
+        "- Which parts (functions, types, routes, configs) matter for this task and why\n"
+        "- Any gotchas, patterns, or constraints the implementor should know\n\n"
+        "Be concise but complete. Skip files with no relevant content. "
+        "The planner will use this summary to understand the codebase before writing code."
     )
     try:
         return run_text(
             prompt,
-            ladder.localizer_precision_model,
-            variant=ladder.localizer_precision_variant,
-            timeout=ladder.localizer_precision_timeout,
+            ladder.localizer_recall_model,
+            variant=ladder.localizer_recall_variant,
+            timeout=ladder.localizer_recall_timeout,
             agent=ladder.localizer_agent,
             session=session,
         )
     except (ProviderGapError, RuntimeError) as e:
-        log.warning("precision model failed (%s), retrying with fallback model", type(e).__name__)
+        log.warning("filter model failed (%s), retrying with fallback", type(e).__name__)
         return run_text(
             prompt,
             ladder.localizer_recall_fallback_model,
-            variant=ladder.localizer_precision_variant,
-            timeout=ladder.localizer_precision_timeout,
+            variant=ladder.localizer_recall_variant,
+            timeout=ladder.localizer_recall_timeout,
             agent=ladder.localizer_agent,
             session=session,
         )
