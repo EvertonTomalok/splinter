@@ -281,6 +281,43 @@ def _trace_md(session: Session) -> str:
     return "\n\n".join(parts)
 
 
+def _final_eval_rounds_md(session: Session) -> str:
+    """Render all final eval rounds — LLM review + user decision, split by PRD round."""
+    kdir = session.dir / "knowledge"
+    round_files = sorted(kdir.glob("final-eval-*.md"), key=lambda p: int(
+        re.match(r"final-eval-(\d+)", p.stem).group(1)  # type: ignore[union-attr]
+        if re.match(r"final-eval-(\d+)", p.stem) else 0
+    ))
+
+    if round_files:
+        parts = ["# Final Eval"]
+        for rf in round_files:
+            m = re.match(r"final-eval-(\d+)", rf.stem)
+            n = int(m.group(1)) if m else 0
+            content = rf.read_text().strip()
+            parts.append(f"\n\n---\n\n{content}")
+        return "\n".join(parts)
+
+    # Fallback: single final_eval.md with decision inferred from status.
+    content = session.read("final_eval.md").strip()
+    if not content:
+        if (session.dir / "final_eval.yaml").exists():
+            return "# Final Eval\n\n_pending — eval has not run yet._"
+        return "# Final Eval\n\n_no final eval configured._"
+    status = session.read_status()
+    state = str(status.get("state", ""))
+    fe_passed = status.get("final_eval_passed")
+    if fe_passed:
+        decision = "\n\n---\n\n**User Decision: ✅ Approved**"
+    elif state == "awaiting_validation":
+        decision = "\n\n---\n\n*⏳ Awaiting review…*"
+    elif state == "failed" and str(status.get("stage", "")) == "final_eval":
+        decision = "\n\n---\n\n**User Decision: ❌ Rejected**"
+    else:
+        decision = ""
+    return f"# Final Eval\n\n{content}{decision}"
+
+
 def _task_md(session: Session, task_no: int, title: str) -> str:
     """Detail for an expanded task node — title, iteration tally, last verdict."""
     tasks = _tasks(session.read("loop.md"))
@@ -491,10 +528,22 @@ class AnalyzeApp(App[None]):
         steps.add_leaf(
             "eval", data={"kind": "file", "label": "Eval", "file": "eval.md"}
         )
-        if self.session.read("final_eval.md"):
+        has_fe_yaml = (self.session.dir / "final_eval.yaml").exists()
+        has_fe_md = bool(self.session.read("final_eval.md"))
+        if has_fe_yaml or has_fe_md:
             status = self.session.read_status()
             fe_passed = status.get("final_eval_passed")
-            fe_icon = "✅" if fe_passed else "❌"
+            state = str(status.get("state", ""))
+            if fe_passed:
+                fe_icon = "✅"
+            elif state == "awaiting_validation":
+                fe_icon = "🔍"
+            elif state == "failed" and status.get("stage") == "final_eval":
+                fe_icon = "❌"
+            elif has_fe_md:
+                fe_icon = "📋"
+            else:
+                fe_icon = "⏳"
             steps.add_leaf(
                 f"{fe_icon} final_eval",
                 data={"kind": "file", "label": "Final Eval", "file": "final_eval.md"},
@@ -504,7 +553,9 @@ class AnalyzeApp(App[None]):
         extra = [
             (fn, lbl)
             for fn, lbl in notes
-            if lbl not in ("plan", "localization") and not lbl.startswith("plan-")
+            if lbl not in ("plan", "localization")
+            and not lbl.startswith("plan-")
+            and not lbl.startswith("final-eval-")
         ]
         if extra:
             self._kn_node = tree.root.add("📝 Knowledge", expand=True)
@@ -588,6 +639,8 @@ class AnalyzeApp(App[None]):
         elif kind == "file":
             if data.get("file") == "knowledge/plan.md":
                 self._render_plan()
+            elif data.get("file") == "final_eval.md":
+                self._detail().update(_final_eval_rounds_md(self.session))
             else:
                 self._detail().update(_file_md(self.session, data["label"], data["file"]))
         else:
@@ -653,7 +706,9 @@ class AnalyzeApp(App[None]):
         extra = [
             (fn, lbl)
             for fn, lbl in notes
-            if lbl not in ("plan", "localization") and not lbl.startswith("plan-")
+            if lbl not in ("plan", "localization")
+            and not lbl.startswith("plan-")
+            and not lbl.startswith("final-eval-")
         ]
         new = [(fn, lbl) for fn, lbl in extra if lbl not in self._kn_labels]
         if not new:
@@ -1719,20 +1774,33 @@ class RunApp(App[int]):
         st = self.session.read_status()
         summary = str(st.get("final_eval_summary", ""))
         all_passed = bool(st.get("final_eval_passed", True))
+        round_index = int(st.get("round_index", 1))
+        current_round = max(0, round_index - 1)
+        fe_round_file = f"knowledge/final-eval-{current_round}.md"
+
+        def _append_decision(label: str, text: str = "") -> None:
+            if self.session.has(fe_round_file):
+                body = f"\n## User Decision: {label}\n"
+                if text:
+                    body += f"\n{text}\n"
+                self.session.append(fe_round_file, body)
 
         def _on_choice(result: tuple[str, str] | None) -> None:
             if result is None:
                 self.write_log("— rejected ❌ — run marked failed —", logging.WARNING)
+                _append_decision("Rejected")
                 self.session.set_status("failed", stage="final_eval")
                 self.exit(1)
                 return
             action, text = result
             if action == "approve":
                 self.write_log("— validated ✅ — run accepted —", logging.INFO)
+                _append_decision("Approved")
                 self.session.set_status("completed", stage="done")
                 self._write_run_complete()
             elif action == "changes":
                 guidance = text or summary
+                _append_decision("Requested Changes", guidance)
                 self.write_log(
                     f"— planning corrections: {guidance[:80]}… —", logging.INFO
                 )
