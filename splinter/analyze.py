@@ -31,6 +31,7 @@ _EXPAND_FILES = {
     "plan": "knowledge/plan.md",
     "loop": "loop.md",
     "eval": "eval.md",
+    "final_eval": "final_eval.md",
     "localization": "knowledge/localization.md",
     "trace": "trace.md",
 }

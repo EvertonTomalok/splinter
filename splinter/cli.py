@@ -19,6 +19,7 @@ class ExpandStep(str, Enum):
     plan = "plan"
     loop = "loop"
     eval = "eval"
+    final_eval = "final_eval"
     localization = "localization"
     trace = "trace"
     agentic = "agentic"
