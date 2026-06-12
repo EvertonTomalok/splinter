@@ -1556,6 +1556,79 @@ class _ConfirmStopModal(ModalScreen[str | None]):
             self.dismiss(None)
 
 
+class _RunErrorModal(ModalScreen[bool]):
+    """Shown when the pipeline worker fails unexpectedly.
+
+    Returns True → retry/resume from last checkpoint.
+    Returns False → abort.
+    """
+
+    DEFAULT_CSS = """
+    _RunErrorModal {
+        align: center middle;
+        background: $background 60%;
+    }
+    _RunErrorModal > Vertical#err-dialog {
+        width: 72;
+        height: auto;
+        border: round $error;
+        background: $surface;
+        padding: 1 2;
+    }
+    _RunErrorModal #err-title {
+        text-style: bold;
+        color: $error;
+        margin-bottom: 1;
+    }
+    _RunErrorModal #err-body {
+        color: $text;
+        margin-bottom: 1;
+    }
+    _RunErrorModal #err-actions {
+        height: 3;
+        align-horizontal: center;
+        margin-top: 1;
+    }
+    _RunErrorModal Button {
+        width: 1fr;
+        height: 3;
+        margin: 0 1;
+        border: none;
+        text-style: bold;
+    }
+    """
+
+    BINDINGS = [
+        ("c", "do_continue", "Continue"),
+        ("escape", "do_abort", "Abort"),
+    ]
+
+    def __init__(self, error: str) -> None:
+        super().__init__()
+        self._error = error
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="err-dialog"):
+            yield Static("⚠  Run failed", id="err-title")
+            yield Static(self._error[:300], id="err-body")
+            yield Static("[dim]Continue resumes from the last checkpoint.[/]")
+            with Horizontal(id="err-actions"):
+                yield Button("  Continue  (c)", id="continue", variant="warning")
+                yield Button("  Abort  (Esc)", id="abort", variant="error")
+
+    def on_mount(self) -> None:
+        self.query_one("#continue", Button).focus()
+
+    def action_do_continue(self) -> None:
+        self.dismiss(True)
+
+    def action_do_abort(self) -> None:
+        self.dismiss(False)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.dismiss(event.button.id == "continue")
+
+
 class _ManualValidationModal(ModalScreen[tuple[str, str] | None]):
     """Shown after final eval — user approves, rejects, or requests corrections.
 
@@ -1942,12 +2015,26 @@ class RunApp(App[int]):
             self.write_log("— final eval complete — awaiting manual validation —", logging.INFO)
             self.call_after_refresh(self._show_manual_validation_modal)
         else:
-            # On failure, finish the TUI automatically (after a brief glimpse).
-            self.write_log(f"— run failed (rc={self.rc}) — closing —", logging.ERROR)
+            # Unexpected failure — kill children then ask the user.
             from splinter import procreg
 
             procreg.terminate_all()
-            self.set_timer(1.5, lambda: self.exit(self.rc))
+            st = self.session.read_status()
+            err_msg = str(st.get("error", "") or f"rc={self.rc}")
+            self.write_log(f"— run failed: {err_msg} —", logging.ERROR)
+            self.call_after_refresh(self._show_error_modal, err_msg)
+
+    def _show_error_modal(self, error: str) -> None:
+        def _on_choice(resume: bool) -> None:
+            if resume:
+                if self._timer is None:
+                    self._timer = self.set_interval(0.5, self._refresh)
+                self.write_log("— resuming from last checkpoint… —", logging.WARNING)
+                self._run_pipeline_worker(resume=True)
+            else:
+                self.exit(self.rc)
+
+        self.push_screen(_RunErrorModal(error), callback=_on_choice)
 
     def _show_gap_modal(self, kind: str, provider: str = "", retry_after: object = None) -> None:
         try:
