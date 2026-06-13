@@ -393,6 +393,19 @@ def mark_story_done(prd_text: str, us_id: str) -> str:
     return _STORY_BLOCK.sub(_tick, prd_text)
 
 
+def mark_all_stories_done(prd_text: str) -> str:
+    """Tick every ``- [ ]`` box inside *every* ``US-NNN`` block.
+
+    Used by the raphael single-shot run: one holistic PASS completes all stories
+    at once. Checkboxes outside story blocks (if any) are left untouched.
+    """
+
+    def _tick(match: re.Match[str]) -> str:
+        return _OPEN_BOX.sub("- [x]", match.group(1))
+
+    return _STORY_BLOCK.sub(_tick, prd_text)
+
+
 def completed_story_ids(prd_text: str) -> set[str]:
     """Story ids whose acceptance criteria are fully checked (≥1 box, none open).
 

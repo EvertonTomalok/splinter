@@ -604,33 +604,41 @@ def _drive_tasks(
     return session, ran
 
 
-def test_pass_checks_off_prd_and_advances_task_index(
+def test_single_shot_pass_checks_off_all_stories(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    tasks = [
-        Task(description="US-001: First", acceptance="a"),
-        Task(description="US-002: Second", acceptance="a"),
-        Task(description="US-003: Third", acceptance="a"),
+    """Raphael is single-shot: the pipeline merges every story into one task, so a
+    single holistic PASS ticks all stories at once (task_index ends at 1)."""
+    from splinter.pipeline import _merge_stories_into_task
+
+    stories = [
+        Task(description="US-001: First", acceptance="does A\ndoes B"),
+        Task(description="US-002: Second", acceptance="does C"),
+        Task(description="US-003: Third", acceptance="does D"),
     ]
-    session, ran = _drive_tasks(monkeypatch, tmp_path, tasks, resume=False, prd=_PRD)
-    # Fresh run executes all three and ticks every story's boxes.
-    assert len(ran) == 3
+    merged = _merge_stories_into_task(_PRD, stories)
+    session, ran = _drive_tasks(monkeypatch, tmp_path, [merged], resume=False, prd=_PRD)
+    assert len(ran) == 1
     assert prd_session.completed_story_ids(session.read("prd.md")) == {"US-001", "US-002", "US-003"}
-    assert session.read_status().get("task_index") == 3
+    assert session.read_status().get("task_index") == 1
 
 
-def test_resume_skips_completed_stories_via_prd(
+def test_single_shot_runs_one_task_on_resume(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    tasks = [
-        Task(description="US-001: First", acceptance="a"),
-        Task(description="US-002: Second", acceptance="a"),
-        Task(description="US-003: Third", acceptance="a"),
+    """Single-shot has no per-story skipping — resume drives the one merged task,
+    regardless of which stories were previously ticked."""
+    from splinter.pipeline import _merge_stories_into_task
+
+    stories = [
+        Task(description="US-001: First", acceptance="does A\ndoes B"),
+        Task(description="US-002: Second", acceptance="does C"),
+        Task(description="US-003: Third", acceptance="does D"),
     ]
-    # PRD already has US-001 + US-002 ticked → resume restarts at US-003 only.
-    prd = prd_session.mark_story_done(prd_session.mark_story_done(_PRD, "US-001"), "US-002")
-    session, ran = _drive_tasks(monkeypatch, tmp_path, tasks, resume=True, prd=prd)
-    assert ran == ["US-003: Third"]
+    merged = _merge_stories_into_task(_PRD, stories)
+    prd = prd_session.mark_story_done(_PRD, "US-001")
+    session, ran = _drive_tasks(monkeypatch, tmp_path, [merged], resume=True, prd=prd)
+    assert len(ran) == 1
 
 
 # --- gate never vetoes the eval; eval session continuity ---------------------

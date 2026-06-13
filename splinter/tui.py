@@ -56,7 +56,9 @@ from splinter.analyze import (
     _knowledge_notes,
     _loop_block,
     _plan_files,
+    _prd_feature_name,
     _prd_phases,
+    _prd_story_titles,
     _run_state,
     _task_iters,
     _tasks,
@@ -350,6 +352,20 @@ def _task_md(session: Session, task_no: int, title: str) -> str:
     return "\n".join(lines)
 
 
+def _story_md(session: Session, us_id: str, title: str) -> str:
+    """Detail for a single-shot story leaf — that story's ``### US-NNN`` PRD block,
+    with its acceptance checkboxes showing done/pending state."""
+    prd = session.read("prd.md")
+    if not prd.strip():
+        return f"_{title or us_id}_\n\n_no PRD on disk_"
+    block = re.search(
+        rf"(###\s+{re.escape(us_id)}\b.*?)(?=###\s+US-\d+|\Z)", prd, re.DOTALL
+    )
+    if not block:
+        return f"# {title or us_id}\n\n_story block not found_"
+    return block.group(1).strip()
+
+
 def _prd_phase_md(session: Session, phase: str, detail: str) -> str:
     """Detail for a trajectory phase — routed to the artifact that phase produced,
     not the PRD for every node."""
@@ -607,11 +623,32 @@ class AnalyzeApp(App[None]):
                 if task_no in self._expanded_tasks:
                     task_node.expand()
         else:
-            for n, tier, verdict in _iterations(loop_md):
-                self._traj_node.add_leaf(
-                    f"#{n} · {tier} · {verdict}",
-                    data={"kind": "iter", "task": 1, "n": n},
+            iters = _iterations(loop_md)
+            stories = _prd_story_titles(self.session)
+            if len(stories) > 1:
+                # Single-shot (raphael): one task node holding the PRD stories + iters.
+                feature = _prd_feature_name(self.session)
+                task_node = self._traj_node.add(
+                    f"🗂 Task · {feature} ({len(stories)} stories)",
+                    data={"kind": "task", "n": 1, "title": feature},
+                    expand=True,
                 )
+                for st in stories:
+                    sid = st.split(":", 1)[0].strip()
+                    task_node.add_leaf(
+                        f"📋 {st}", data={"kind": "story", "id": sid, "title": st}
+                    )
+                for n, tier, verdict in iters:
+                    task_node.add_leaf(
+                        f"#{n} · {tier} · {verdict}",
+                        data={"kind": "iter", "task": 1, "n": n},
+                    )
+            else:
+                for n, tier, verdict in iters:
+                    self._traj_node.add_leaf(
+                        f"#{n} · {tier} · {verdict}",
+                        data={"kind": "iter", "task": 1, "n": n},
+                    )
 
     # --- detail ---
     def _detail(self) -> Markdown:
@@ -630,6 +667,8 @@ class AnalyzeApp(App[None]):
             self._detail().update(_iteration_md(self.session, task_no, data["n"]))
         elif kind == "task":
             self._detail().update(_task_md(self.session, data["n"], data.get("title", "")))
+        elif kind == "story":
+            self._detail().update(_story_md(self.session, data["id"], data.get("title", "")))
         elif kind == "prd_phase":
             self._detail().update(_prd_phase_md(self.session, data["phase"], data["detail"]))
         elif kind == "trace":

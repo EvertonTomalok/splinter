@@ -173,6 +173,32 @@ def _load_tasks_from_prd(prd_path: str) -> tuple[list[Task], str | None]:
     return tasks, strategy
 
 
+#: trivial < normal < hard < critical — used to pick the hardest story's effort.
+_EFFORT_RANK = {"trivial": 0, "normal": 1, "hard": 2, "critical": 3}
+
+
+def _merge_stories_into_task(prd_text: str, stories: list[Task]) -> Task:
+    """Raphael single-shot: collapse all PRD stories into ONE task.
+
+    The description is the whole PRD body (every ``### US-NNN`` verbatim) and the
+    acceptance is every story's criteria concatenated. There is no per-task
+    localization — the single run gets the main localization and implements all
+    stories in one session, judged holistically.
+    """
+    _fm, body = planner._parse_frontmatter(prd_text)
+    acceptance = "\n".join(s.acceptance for s in stories if s.acceptance)
+    hardest = max(
+        (s.effort for s in stories),
+        key=lambda e: _EFFORT_RANK.get(e, 1),
+        default="normal",
+    )
+    return Task(
+        description=body.strip(),
+        acceptance=acceptance or "implementation matches the PRD",
+        effort=hardest,
+    )
+
+
 def _clear_round_caches(session: Session) -> None:
     """Remove stale plan/filter/per-task-localization files before a new round."""
     import re as _re
@@ -278,6 +304,14 @@ def run_pipeline(
         )
         return 1
 
+    # Raphael (direct) is single-shot: merge every PRD story into one task and skip
+    # the per-task filter/localization phases below. Other strategies are untouched.
+    single_shot = getattr(strat, "name", "") == "direct"
+    if single_shot and prd_path and len(tasks) > 1:
+        n_stories = len(tasks)
+        tasks = [_merge_stories_into_task(Path(prd_path).read_text(), tasks)]
+        log.info("raphael single-shot: merged %d stories into one task", n_stories)
+
     session.set_status(
         "running",
         pid=os.getpid(),
@@ -351,7 +385,7 @@ def run_pipeline(
                     anchors = localize(prd_text, session, ladder)
                 localization = session.read("knowledge/localization.md")
 
-        if anchors and tasks:
+        if anchors and tasks and not single_shot:
             planner.assign_target_files(tasks, anchors)
             session.set_status("running", stage="filter")
             log.info("filtering code context per task…")
