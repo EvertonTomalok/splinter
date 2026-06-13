@@ -100,7 +100,7 @@ def _ask(prompt: str, *, resume: str | None, session: object = None) -> Turn:
         "input": result.usage.get("input_tokens", 0) or 0,
         "output": result.usage.get("output_tokens", 0) or 0,
     }
-    cost = claude_cli._calc_cost(PRD_MODEL, result.usage)
+    cost, _cost_indet = claude_cli._calc_cost(PRD_MODEL, result.usage)
     if session is not None:
         try:
             session.log_llm_usage(PRD_MODEL, tokens, cost)  # type: ignore[attr-defined]

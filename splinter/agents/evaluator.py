@@ -66,6 +66,10 @@ class Evaluator:
         gate_detail: str = "",
         session: str | None = None,
         timeout: int | None = None,
+        trace: object = None,
+        iteration: int = 0,
+        tier: int = 0,
+        task_index: int = 0,
     ) -> EvalVerdict:
         """Judge the code generation against the task with a frontier LLM.
 
@@ -113,7 +117,9 @@ class Evaluator:
                 standards_section=section("Code Conventions", load_standards()),
             )
         response, sid = run_provider_session(
-            prompt, model, variant=effort, session=session, timeout=timeout
+            prompt, model, variant=effort, session=session, timeout=timeout,
+            trace=trace, iteration=iteration, tier=tier,
+            task_index=task_index, role="eval",
         )
         record_exchange(prompt, response.text, model=model)
         verdict = self._parse_verdict(response.text)

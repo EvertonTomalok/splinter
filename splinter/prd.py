@@ -98,10 +98,11 @@ def _run_prd(
     result1 = claude_cli.run(turn1_prompt, prd_model, effort=prd_effort)
     questions = result1.text
     session_id = result1.raw.get("_session_id", "")
+    _cost1, _ = claude_cli._calc_cost(prd_model, result1.usage)
     session.log_llm_usage(prd_model, {
         "input": result1.usage.get("input_tokens", 0) or 0,
         "output": result1.usage.get("output_tokens", 0) or 0,
-    }, claude_cli._calc_cost(prd_model, result1.usage))
+    }, _cost1)
 
     print("\n" + questions + "\n")
     print("answer with e.g. 1A,2C,3B (or type full answers):")
@@ -120,10 +121,11 @@ def _run_prd(
     resume = session_id if session_id else None
     result2 = claude_cli.run(turn2_prompt, prd_model, effort=prd_effort, resume=resume)
     prd_text = result2.text
+    _cost2, _ = claude_cli._calc_cost(prd_model, result2.usage)
     session.log_llm_usage(prd_model, {
         "input": result2.usage.get("input_tokens", 0) or 0,
         "output": result2.usage.get("output_tokens", 0) or 0,
-    }, claude_cli._calc_cost(prd_model, result2.usage))
+    }, _cost2)
 
     if not prd_text.startswith("---"):
         fm_strategy = strategy or "cascade"

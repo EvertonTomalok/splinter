@@ -12,6 +12,7 @@ from splinter.providers.base import ModelProvider, ProviderResponse
 
 # Child of "splinter" so the run-pane log handler surfaces these live.
 _stream_log = logging.getLogger("splinter.live")
+_log = logging.getLogger("splinter.providers")
 
 
 @dataclass(frozen=True)
@@ -38,13 +39,15 @@ _PRICING: dict[str, tuple[float, float]] = {
 }
 
 
-def _calc_cost(model: str, usage: dict[str, Any]) -> float:
+def _calc_cost(model: str, usage: dict[str, Any]) -> tuple[float, bool]:
+    """Return (cost_usd, indeterminate). indeterminate=True when model not in pricing table."""
     prices = _PRICING.get(model)
     if not prices:
-        return 0.0
+        _log.warning("cost indeterminate: unknown model %r not in pricing table", model)
+        return 0.0, True
     inp = usage.get("input_tokens", 0) or 0
     out = usage.get("output_tokens", 0) or 0
-    return (inp * prices[0] + out * prices[1]) / 1_000_000
+    return (inp * prices[0] + out * prices[1]) / 1_000_000, False
 
 
 def _normalize_effort(effort: str | None) -> str | None:
@@ -268,13 +271,15 @@ class ClaudeProvider(ModelProvider):
             if gap:
                 raise gap from exc
             raise
+        cost, cost_indeterminate = _calc_cost(model, result.usage)
         return ProviderResponse(
             text=result.text,
             tokens={
                 "input": result.usage.get("input_tokens", 0) or 0,
                 "output": result.usage.get("output_tokens", 0) or 0,
             },
-            cost=_calc_cost(model, result.usage),
+            cost=cost,
             raw=result.raw,
             session_id=result.raw.get("_session_id") or None,
+            cost_indeterminate=cost_indeterminate,
         )

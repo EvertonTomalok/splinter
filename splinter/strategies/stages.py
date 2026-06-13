@@ -21,7 +21,7 @@ from splinter.memory.knowledge import KnowledgeStore
 from splinter.memory.session import Session
 from splinter.models.roster import Ladder
 from splinter.obs.agentic import agentic_scope, load_agentic_events, record_gate_marker
-from splinter.obs.trace import RunEntry, Trace, log_run
+from splinter.obs.trace import Trace
 from splinter.skills import ResolvedSkill
 from splinter.strategies.base import EvalVerdict
 
@@ -171,6 +171,9 @@ class RunStage(Stage):
                 localization=ctx.localization,
                 corrections=ctx.corrections,
                 opencode_session=ctx.oc_session,
+                trace=ctx.trace,
+                iteration=ctx.iteration,
+                task_index=ctx.task_index,
             )
         log.info(
             "iter %d · ran %s · tokens=%s · $%.4f",
@@ -180,7 +183,6 @@ class RunStage(Stage):
             result.cost,
         )
         ctx.run_result = result
-        log_run(ctx.trace, result, ctx.iteration, ctx.task_index)
         if ctx.oc_session is None and result.opencode_session:
             ctx.oc_session = result.opencode_session
 
@@ -284,22 +286,13 @@ class EvalStage(Stage):
                 gate_detail=ctx.gate_detail,
                 session=ctx.eval_session,
                 timeout=ctx.ladder.eval_timeout,
+                trace=ctx.trace,
+                iteration=ctx.iteration,
+                tier=ctx.tier,
+                task_index=ctx.task_index,
             )
         ctx.verdict = verdict
         ctx.eval_session = verdict.eval_session
-        if verdict.cost > 0 or verdict.tokens:
-            ctx.trace.entries.append(
-                RunEntry(
-                    model=ctx.ladder.eval_model,
-                    tier=0,
-                    iteration=ctx.iteration,
-                    tokens=verdict.tokens,
-                    cost=verdict.cost,
-                    latency_s=0.0,
-                    task=ctx.task_index,
-                    role="eval",
-                )
-            )
         log.info(
             "iter %d · eval %s — %s · $%.4f",
             ctx.iteration,

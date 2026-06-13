@@ -465,8 +465,7 @@ def render_overview(session: Session, state: str) -> str:
     pre_run = session.read_pre_run_usage()
     if metrics or pre_run:
         run_cost = float(metrics.get("cost", 0) or 0)
-        pre_cost = float(pre_run.get("cost", 0) or 0)
-        total_cost = run_cost + pre_cost
+        total_cost = run_cost
 
         run_tokens: dict[str, int] = {}
         try:

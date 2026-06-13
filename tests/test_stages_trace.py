@@ -184,3 +184,46 @@ def test_record_action_inside_scope_with_render(tmp_session: Session) -> None:
     assert "## Actions" in result
     assert "🔧 Edit /path/to/file.py" in result
     assert "💬 Changes applied successfully" in result
+
+
+class TestCostReconciliation:
+    def test_trace_total_cost_matches_summary_parse(self) -> None:
+        from splinter.analyze import _trace_metrics
+        from splinter.obs.trace import RunEntry, Trace
+
+        trace = Trace()
+        trace.entries.append(
+            RunEntry(model="m", tier=1, iteration=1, tokens={"input": 100, "output": 50},
+                     cost=0.0100, latency_s=0.0, task=0)
+        )
+        trace.entries.append(
+            RunEntry(model="m", tier=0, iteration=2, tokens={"input": 80, "output": 40},
+                     cost=0.0200, latency_s=0.0, task=0, role="eval")
+        )
+        trace.entries.append(
+            RunEntry(model="m", tier=2, iteration=3, tokens={"input": 120, "output": 60},
+                     cost=0.0300, latency_s=0.0, task=0)
+        )
+
+        md = trace.summary()
+        metrics = _trace_metrics(md)
+
+        assert float(metrics["cost"]) == pytest.approx(trace.total_cost, abs=1e-6)
+        assert trace.total_cost == pytest.approx(0.0600)
+
+    def test_log_run_then_trace_parse_agrees(self) -> None:
+        from splinter.agents.runner import RunResult
+        from splinter.analyze import _trace_metrics
+        from splinter.obs.trace import Trace, log_run
+
+        trace = Trace()
+        log_run(trace, RunResult(text="a", model="m", tier=1, tokens={"input": 10},
+                                 cost=0.0400, raw={}), iteration=1, task=0)
+        log_run(trace, RunResult(text="b", model="m", tier=2, tokens={"input": 20},
+                                 cost=0.0250, raw={}), iteration=2, task=0)
+
+        md = trace.summary()
+        metrics = _trace_metrics(md)
+
+        assert float(metrics["cost"]) == pytest.approx(trace.total_cost, abs=1e-6)
+        assert trace.total_cost == pytest.approx(0.0650)

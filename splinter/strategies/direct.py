@@ -369,6 +369,7 @@ class DirectStrategy(Strategy):
         session: Session,
         ladder: Ladder,
         localization: str,
+        trace: object = None,
     ) -> None:
         """Pre-generate plans for all tasks; reuses existing files on resume."""
         for i, task in enumerate(tasks):
@@ -384,7 +385,10 @@ class DirectStrategy(Strategy):
                     filter(None, [prev_rounds, task_loc, task.filtered_context or localization])
                 )
                 with agentic_scope(session, "plan", i, 0):
-                    plan = _make_plan(task, ladder, code_ctx, session=session)
+                    plan = _make_plan(
+                        task, ladder, code_ctx, session=session,
+                        trace=trace, iteration=0, tier=0, task_index=i,
+                    )
                 session.write(task_plan_file, f"# Plan\n\n{plan}\n")
                 if i == 0:
                     session.write("knowledge/plan.md", f"# Plan\n\n{plan}\n")
@@ -398,9 +402,10 @@ class DirectStrategy(Strategy):
         session: Session,
         ladder: Ladder,
         localization: str,
+        trace: object = None,
     ) -> None:
         session.set_status("running", stage="plan")
-        self._plan_all_tasks(tasks, session, ladder, localization)
+        self._plan_all_tasks(tasks, session, ladder, localization, trace=trace)
         session.set_status("running", stage="run")
 
     def _run_task_loop(
@@ -474,7 +479,10 @@ class DirectStrategy(Strategy):
                 filter(None, [prev_rounds, task.filtered_context or localization])
             )
             with agentic_scope(session, "plan", task_index, 0):
-                plan = _make_plan(task, ladder, code_ctx, session=session)
+                plan = _make_plan(
+                    task, ladder, code_ctx, session=session,
+                    trace=trace, iteration=0, tier=tier, task_index=task_index,
+                )
             session.write("knowledge/plan.md", f"# Plan\n\n{plan}\n")
             session.write(task_plan_file, f"# Plan\n\n{plan}\n")
 
@@ -766,7 +774,16 @@ def _correction_context(knowledge: KnowledgeStore, latest: str) -> str:
     return "\n\n".join(parts)
 
 
-def _make_plan(task: Task, ladder: Ladder, code_ctx: str, session: object = None) -> str:
+def _make_plan(
+    task: Task,
+    ladder: Ladder,
+    code_ctx: str,
+    session: object = None,
+    trace: object = None,
+    iteration: int = 0,
+    tier: int = 0,
+    task_index: int = 0,
+) -> str:
     from splinter.templating import load_standards
 
     prompt = render(
@@ -782,6 +799,11 @@ def _make_plan(task: Task, ladder: Ladder, code_ctx: str, session: object = None
         variant=ladder.planner_effort,
         timeout=ladder.planner_timeout,
         session=session,
+        trace=trace,
+        iteration=iteration,
+        tier=tier,
+        task_index=task_index,
+        role="plan",
     )
     record_exchange(prompt, plan, model=ladder.planner_model)
     return plan

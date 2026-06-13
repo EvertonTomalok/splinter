@@ -11,6 +11,7 @@ from splinter.procreg import run_subprocess
 from splinter.providers.base import ModelProvider, ProviderResponse
 
 _stream_log = logging.getLogger("splinter.live")
+_log = logging.getLogger("splinter.providers")
 
 
 @dataclass(frozen=True)
@@ -20,6 +21,7 @@ class CodexResult:
     cost: float
     raw: dict[str, Any]
     session_id: str | None
+    cost_indeterminate: bool = False
 
 
 _CLI_EFFORTS = {"low", "medium", "high", "xhigh"}
@@ -35,13 +37,15 @@ _PRICING: dict[str, tuple[float, float]] = {
 }
 
 
-def _calc_cost(model: str, tokens: dict[str, int]) -> float:
+def _calc_cost(model: str, tokens: dict[str, int]) -> tuple[float, bool]:
+    """Return (cost_usd, indeterminate). indeterminate=True when model not in pricing table."""
     prices = _PRICING.get(model)
     if not prices:
-        return 0.0
+        _log.warning("cost indeterminate: unknown model %r not in pricing table", model)
+        return 0.0, True
     inp = tokens.get("input", 0) or 0
     out = tokens.get("output", 0) or 0
-    return (inp * prices[0] + out * prices[1]) / 1_000_000
+    return (inp * prices[0] + out * prices[1]) / 1_000_000, False
 
 
 def _normalize_effort(effort: str | None) -> str | None:
@@ -150,7 +154,7 @@ def run(
 
     parsed = _parse_jsonl(proc.stdout)
     tokens = parsed["tokens"]
-    cost = _calc_cost(bare_model, tokens)
+    cost, cost_indeterminate = _calc_cost(bare_model, tokens)
 
     return CodexResult(
         text=parsed["text"],
@@ -158,6 +162,7 @@ def run(
         cost=cost,
         raw={**parsed, "_session_id": parsed["session_id"]},
         session_id=parsed["session_id"],
+        cost_indeterminate=cost_indeterminate,
     )
 
 
@@ -203,4 +208,5 @@ class CodexProvider(ModelProvider):
             cost=result.cost,
             raw=result.raw,
             session_id=result.session_id,
+            cost_indeterminate=result.cost_indeterminate,
         )

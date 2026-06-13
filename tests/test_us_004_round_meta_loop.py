@@ -396,7 +396,7 @@ class TestRoundHistory:
 
         captured_ctxs: list[str] = []
 
-        def _spy_make_plan(tsk, ldr, code_ctx, session=None):
+        def _spy_make_plan(tsk, ldr, code_ctx, session=None, **kw):
             captured_ctxs.append(code_ctx)
             return "spy plan"
 
@@ -433,7 +433,7 @@ class TestRoundHistory:
 
         captured: list[str] = []
 
-        def _spy_make_plan(tsk, ldr, code_ctx, session=None):
+        def _spy_make_plan(tsk, ldr, code_ctx, session=None, **kw):
             captured.append(code_ctx)
             return "fallback spy plan"
 

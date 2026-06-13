@@ -1977,7 +1977,7 @@ def test_run_prd_abort_no_answers_leaves_no_empty_session(
     import splinter.providers.claude_cli as cc
 
     monkeypatch.setattr(cc, "run", lambda *a, **kw: _fake_cc_result("Q1?"))
-    monkeypatch.setattr(cc, "_calc_cost", lambda *a, **kw: 0.0)
+    monkeypatch.setattr(cc, "_calc_cost", lambda *a, **kw: (0.0, False))
     monkeypatch.setattr("builtins.input", lambda *a: "")  # user gives no answers
 
     rc = run_prd(description="add auth", no_ground=True)
@@ -1999,7 +1999,7 @@ def test_run_prd_keyboardinterrupt_cleans_up_empty_session(
     import splinter.providers.claude_cli as cc
 
     monkeypatch.setattr(cc, "run", lambda *a, **kw: _fake_cc_result("Q1?"))
-    monkeypatch.setattr(cc, "_calc_cost", lambda *a, **kw: 0.0)
+    monkeypatch.setattr(cc, "_calc_cost", lambda *a, **kw: (0.0, False))
 
     def _interrupt(*a: object) -> str:
         raise KeyboardInterrupt
@@ -3399,3 +3399,462 @@ def test_save_load_roundtrip(
     assert selections["models"] == models
     assert selections["efforts"] == efforts
     assert selections["timeouts"] == timeouts
+
+
+# --- US-002: per-provider-call trace logging acceptance tests ----------------
+
+
+def _make_provider_response(text: str = "ok", cost: float = 0.01) -> object:
+    from splinter.providers.base import ProviderResponse
+
+    return ProviderResponse(
+        text=text,
+        tokens={"input": 100, "output": 50},
+        cost=cost,
+        raw={},
+        session_id="sid",
+    )
+
+
+def _mock_provider_run(monkeypatch: "pytest.MonkeyPatch") -> None:
+    """Mock provider.run so the real dispatch _log_trace code executes."""
+    monkeypatch.setattr(
+        "splinter.providers.registry.get_provider",
+        lambda _name: type("P", (), {"run": lambda *a, **kw: _make_provider_response()})(),
+    )
+
+
+def test_log_trace_appends_entry_for_billable_call() -> None:
+    """_log_trace appends a RunEntry when cost > 0 or tokens are non-empty."""
+    from splinter.obs.trace import Trace
+    from splinter.providers.dispatch import _log_trace
+
+    trace = Trace()
+    _log_trace(trace, "test-model", {"input": 100}, 0.01,
+               tier=0, iteration=1, task_index=0, role="run")
+    assert len(trace.entries) == 1
+    assert trace.entries[0].model == "test-model"
+    assert trace.entries[0].cost == 0.01
+    assert trace.entries[0].tier == 0
+    assert trace.entries[0].iteration == 1
+    assert trace.entries[0].role == "run"
+
+
+def test_log_trace_skips_non_billable_call() -> None:
+    """_log_trace does NOT append when cost=0 and tokens sum to zero."""
+    from splinter.obs.trace import Trace
+    from splinter.providers.dispatch import _log_trace
+
+    trace = Trace()
+    _log_trace(trace, "test-model", {}, 0.0,
+               tier=0, iteration=1, task_index=0, role="run")
+    assert len(trace.entries) == 0
+
+
+def test_log_trace_skips_zero_sum_token_dict() -> None:
+    """_log_trace excludes a response with cost=0 and tokens={\"input\": 0, \"output\": 0}
+    — the dict is non-empty but the token counts sum to zero."""
+    from splinter.obs.trace import Trace
+    from splinter.providers.dispatch import _log_trace
+
+    trace = Trace()
+    _log_trace(trace, "test-model", {"input": 0, "output": 0}, 0.0,
+               tier=0, iteration=1, task_index=0, role="run")
+    assert len(trace.entries) == 0
+
+
+def test_log_trace_logs_cost_only_when_tokens_zero_sum() -> None:
+    """_log_trace logs when cost > 0 even if all token counts are zero."""
+    from splinter.obs.trace import Trace
+    from splinter.providers.dispatch import _log_trace
+
+    trace = Trace()
+    _log_trace(trace, "test-model", {"input": 0, "output": 0}, 0.01,
+               tier=0, iteration=1, task_index=0, role="run")
+    assert len(trace.entries) == 1
+    assert trace.entries[0].cost == 0.01
+
+
+def test_billed_error_raises_and_logs_usage_to_trace(
+    monkeypatch: "pytest.MonkeyPatch",
+) -> None:
+    """When provider.run returns a billed response but then the provider
+    raises a gap error carrying usage/cost, dispatch logs the usage before
+    re-raising — the trace entry is preserved."""
+    from splinter.obs.trace import Trace
+    from splinter.providers import dispatch as dispatch_mod
+    from splinter.providers.base import ProviderGapError
+
+    trace = Trace()
+
+    billing_gap = ProviderGapError(
+        kind="rate_limit", provider="opencode", model="test-model",
+        original=RuntimeError("billed then rate-limited"),
+    )
+    billing_gap.tokens = {"input": 200, "output": 80}  # type: ignore[attr-defined]
+    billing_gap.cost = 0.05  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(
+        dispatch_mod, "get_provider",
+        lambda _name: type(
+            "P",
+            (),
+            {"run": lambda *a, **kw: (_ for _ in ()).throw(billing_gap)},
+        )(),
+    )
+
+    try:
+        dispatch_mod.run_provider_session(
+            "prompt", "test-model",
+            trace=trace, iteration=2, tier=1, task_index=0, role="run",
+        )
+    except ProviderGapError:
+        pass
+
+    assert len(trace.entries) == 1
+    assert trace.entries[0].cost == 0.05
+    assert trace.entries[0].tokens == {"input": 200, "output": 80}
+    assert trace.entries[0].tier == 1
+    assert trace.entries[0].iteration == 2
+
+
+def test_run_provider_session_logs_to_trace(monkeypatch: "pytest.MonkeyPatch") -> None:
+    """dispatch.run_provider_session logs a billable call to trace when trace
+    param is provided — the real _log_trace code path is exercised."""
+    from splinter.obs.trace import Trace
+    from splinter.providers import dispatch as dispatch_mod
+
+    monkeypatch.setattr(
+        dispatch_mod, "get_provider",
+        lambda _name: type("P", (), {"run": lambda *a, **kw: _make_provider_response()})(),
+    )
+
+    trace = Trace()
+    dispatch_mod.run_provider_session(
+        "prompt", "test-model",
+        trace=trace, iteration=1, tier=0, task_index=0, role="run",
+    )
+    assert len(trace.entries) == 1
+    assert trace.entries[0].role == "run"
+    assert trace.entries[0].cost == 0.01
+
+
+def test_multi_retry_each_billable_call_appends_one_entry(
+    monkeypatch: "pytest.MonkeyPatch",
+) -> None:
+    """Multiple billable provider calls through dispatch produce corresponding
+    trace entries — N calls → N entries. Tests through run_task."""
+    from unittest.mock import Mock
+
+    from splinter.obs.trace import Trace
+    from splinter.providers import dispatch as dispatch_mod
+
+    monkeypatch.setattr(
+        dispatch_mod, "get_provider",
+        lambda _name: type("P", (), {"run": lambda *a, **kw: _make_provider_response(cost=0.01)})(),
+    )
+    monkeypatch.setattr("splinter.agents.runner.resolve_model", lambda t, _lad: ("t0", "opencode"))
+    monkeypatch.setattr("splinter.agents.runner.resolve_variant", lambda *a, **kw: "low")
+    monkeypatch.setattr("splinter.agents.runner.record_exchange", lambda *a, **kw: None)
+
+    from splinter.agents.runner import Task, run_task
+
+    trace = Trace()
+    ladder = Mock()
+    ladder.tier_timeout.return_value = 600
+    task = Task(description="test", acceptance="works", suggested_tier=0)
+
+    run_task(task, "plan", 0, ladder, trace=trace, iteration=1, task_index=0)
+    assert len(trace.entries) == 1
+    assert trace.entries[0].role == "run"
+    assert trace.entries[0].cost == 0.01
+
+    run_task(task, "plan", 0, ladder, trace=trace, iteration=2, task_index=0)
+    assert len(trace.entries) == 2
+    assert trace.entries[1].iteration == 2
+
+    run_task(task, "plan", 0, ladder, trace=trace, iteration=3, task_index=0)
+    assert len(trace.entries) == 3
+
+
+def test_billable_failed_retry_is_logged(monkeypatch: "pytest.MonkeyPatch") -> None:
+    """A provider call that returns tokens/cost is logged to trace regardless of
+    whether the run outcome (gate/eval) is considered a failure. Entry exists
+    independently of downstream verdict."""
+    from unittest.mock import Mock
+
+    from splinter.obs.trace import Trace
+    from splinter.providers import dispatch as dispatch_mod
+
+    monkeypatch.setattr(
+        dispatch_mod, "get_provider",
+        lambda _name: type(
+            "P", (), {"run": lambda *a, **kw: _make_provider_response(cost=0.03)}
+        )(),
+    )
+    monkeypatch.setattr("splinter.agents.runner.resolve_model", lambda t, _lad: ("t0", "opencode"))
+    monkeypatch.setattr("splinter.agents.runner.resolve_variant", lambda *a, **kw: "low")
+    monkeypatch.setattr("splinter.agents.runner.record_exchange", lambda *a, **kw: None)
+
+    from splinter.agents.runner import Task, run_task
+
+    trace = Trace()
+    ladder = Mock()
+    ladder.tier_timeout.return_value = 600
+    task = Task(description="test", acceptance="works", suggested_tier=0)
+
+    run_task(task, "plan", 0, ladder, trace=trace, iteration=1, task_index=0)
+    assert len(trace.entries) == 1
+    assert trace.entries[0].cost == 0.03
+    assert trace.entries[0].tokens == {"input": 100, "output": 50}
+    assert trace.entries[0].task == 0
+
+
+def test_non_billable_call_excluded_from_trace(monkeypatch: "pytest.MonkeyPatch") -> None:
+    """Provider calls with cost=0 and zero-sum tokens are excluded from the trace.
+    This covers both empty tokens {} and zero-valued {\"input\": 0, \"output\": 0}."""
+    from unittest.mock import Mock
+
+    from splinter.obs.trace import Trace
+    from splinter.providers import dispatch as dispatch_mod
+    from splinter.providers.base import ProviderResponse
+
+    monkeypatch.setattr(
+        dispatch_mod, "get_provider",
+        lambda _name: type(
+            "P",
+            (),
+            {
+                "run": lambda *a, **kw: ProviderResponse(
+                    text="empty", tokens={"input": 0, "output": 0}, cost=0.0,
+                    raw={}, session_id=None,
+                ),
+            },
+        )(),
+    )
+    monkeypatch.setattr("splinter.agents.runner.resolve_model", lambda t, _lad: ("t0", "opencode"))
+    monkeypatch.setattr("splinter.agents.runner.resolve_variant", lambda *a, **kw: "low")
+    monkeypatch.setattr("splinter.agents.runner.record_exchange", lambda *a, **kw: None)
+
+    from splinter.agents.runner import Task, run_task
+
+    trace = Trace()
+    ladder = Mock()
+    ladder.tier_timeout.return_value = 600
+    task = Task(description="test", acceptance="works", suggested_tier=0)
+
+    run_task(task, "plan", 0, ladder, trace=trace, iteration=1, task_index=0)
+    assert len(trace.entries) == 0
+
+
+def test_no_double_log_stages_dont_append_independently(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch",
+) -> None:
+    """RunStage does not add a second trace entry — dispatch is the single
+    logging point. The stage calls run_task (which calls dispatch internally);
+    the stage itself never calls log_run or appends to trace.entries."""
+    monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
+
+    from splinter.agents.runner import RunResult, Task
+    from splinter.memory.knowledge import KnowledgeStore
+    from splinter.memory.session import Session
+    from splinter.models.roster import load_ladder
+    from splinter.obs.trace import Trace
+    from splinter.strategies.stages import IterationContext, RunStage
+
+    session = Session("ses_test")
+    ladder = load_ladder()
+    trace = Trace()
+    knowledge = KnowledgeStore(session)
+
+    task = Task(
+        description="test task",
+        acceptance="test acceptance",
+        target_files=["test.py"],
+    )
+
+    def stub_run_task(*args: object, **kwargs: object) -> RunResult:
+        trace.entries.append(
+            type("Entry", (), {"model": "test", "cost": 0.02, "tokens": {}, "latency_s": 0.1})(),
+        )
+        return RunResult(
+            text="test output",
+            model="test-model",
+            tier=0,
+            tokens={"input": 100, "output": 50},
+            cost=0.02,
+            raw={},
+        )
+
+    monkeypatch.setattr("splinter.strategies.stages.run_task", stub_run_task)
+
+    ctx = IterationContext(
+        task=task,
+        plan="test plan",
+        tier=0,
+        iteration=1,
+        ladder=ladder,
+        session=session,
+        trace=trace,
+        knowledge=knowledge,
+    )
+    stage = RunStage()
+    stage.process(ctx)
+
+    assert len(trace.entries) == 1, (
+        f"expected 1 trace entry (from dispatch), got {len(trace.entries)}"
+    )
+
+
+def test_compute_summary_cost_uses_trace_when_entries_present() -> None:
+    from splinter.agents.runner import RunResult
+    from splinter.obs.trace import RunEntry, Trace
+    from splinter.pipeline import _compute_summary_cost
+
+    trace = Trace()
+    trace.entries.append(
+        RunEntry(model="m1", tier=0, iteration=0, tokens={"input": 10}, cost=0.02,
+                 latency_s=0.0, task=0, role="plan")
+    )
+    trace.entries.append(
+        RunEntry(model="m1", tier=0, iteration=1, tokens={"input": 20}, cost=0.05,
+                 latency_s=0.0, task=0, role="run")
+    )
+
+    results = [
+        RunResult(text="out", model="m1", tier=0, tokens={"input": 20},
+                  cost=0.05, raw={})
+    ]
+
+    total, runs = _compute_summary_cost(trace, results)
+    assert total == pytest.approx(0.07)
+    assert runs == 2
+
+
+def test_compute_summary_cost_falls_back_to_results_when_trace_empty() -> None:
+    from splinter.agents.runner import RunResult
+    from splinter.obs.trace import Trace
+    from splinter.pipeline import _compute_summary_cost
+
+    trace = Trace()
+
+    results = [
+        RunResult(text="a", model="m", tier=0, tokens={}, cost=0.03, raw={}),
+        RunResult(text="b", model="m", tier=0, tokens={}, cost=0.07, raw={}),
+    ]
+
+    total, runs = _compute_summary_cost(trace, results)
+    assert total == pytest.approx(0.10)
+    assert runs == 2
+
+
+# ── US-003: indeterminate-cost flagging ──────────────────────────────────────
+
+def test_calc_cost_known_model_returns_correct_cost() -> None:
+    """Known model produces (cost, False) — no indeterminate flag."""
+    from splinter.providers.claude_cli import _calc_cost
+
+    cost, indeterminate = _calc_cost("sonnet", {"input_tokens": 1_000_000, "output_tokens": 0})
+    assert indeterminate is False
+    assert cost == pytest.approx(3.00)
+
+
+def test_calc_cost_unknown_model_warns_and_flags(caplog: pytest.LogCaptureFixture) -> None:
+    """Unknown model returns (0.0, True) and emits a WARNING log."""
+    import logging
+
+    from splinter.providers.claude_cli import _calc_cost
+
+    with caplog.at_level(logging.WARNING, logger="splinter"):
+        cost, indeterminate = _calc_cost(
+            "no-such-model-xyz", {"input_tokens": 500, "output_tokens": 100}
+        )
+
+    assert indeterminate is True
+    assert cost == 0.0
+    assert any("indeterminate" in r.message.lower() for r in caplog.records)
+
+
+def test_extract_cost_present_field_returns_value_not_indeterminate() -> None:
+    """opencode payload with cost field → (cost, False)."""
+    from splinter.providers.opencode import _extract_cost
+
+    cost, indeterminate = _extract_cost({"cost": 0.0123})
+    assert indeterminate is False
+    assert cost == pytest.approx(0.0123)
+
+
+def test_extract_cost_missing_field_warns_and_flags(caplog: pytest.LogCaptureFixture) -> None:
+    """opencode payload without cost field → (0.0, True) and WARNING log."""
+    import logging
+
+    from splinter.providers.opencode import _extract_cost
+
+    with caplog.at_level(logging.WARNING, logger="splinter"):
+        cost, indeterminate = _extract_cost({})
+
+    assert indeterminate is True
+    assert cost == 0.0
+    assert any("indeterminate" in r.message.lower() for r in caplog.records)
+
+
+def test_codex_calc_cost_unknown_model_warns_and_flags(caplog: pytest.LogCaptureFixture) -> None:
+    """Codex unknown model returns (0.0, True) and emits a WARNING log."""
+    import logging
+
+    from splinter.providers.codex import _calc_cost
+
+    with caplog.at_level(logging.WARNING, logger="splinter"):
+        cost, indeterminate = _calc_cost("no-such-codex-model", {"input": 500, "output": 100})
+
+    assert indeterminate is True
+    assert cost == 0.0
+    assert any("indeterminate" in r.message.lower() for r in caplog.records)
+
+
+def test_codex_calc_cost_known_model_returns_correct_cost() -> None:
+    """Known codex model produces (cost, False)."""
+    from splinter.providers.codex import _calc_cost
+
+    cost, indeterminate = _calc_cost("gpt-5-codex", {"input": 1_000_000, "output": 0})
+    assert indeterminate is False
+    assert cost == pytest.approx(10.00)
+
+
+def test_trace_indeterminate_flag_survives_markdown_roundtrip() -> None:
+    """cost_indeterminate=True entry is serialized with [!cost] and re-parsed correctly."""
+    from splinter.obs.trace import RunEntry, Trace
+
+    trace = Trace()
+    trace.entries.append(
+        RunEntry(
+            model="no-such-model",
+            tier=0,
+            iteration=0,
+            tokens={"input": 500, "output": 100},
+            cost=0.0,
+            latency_s=1.5,
+            cost_indeterminate=True,
+        )
+    )
+    trace.entries.append(
+        RunEntry(
+            model="sonnet",
+            tier=0,
+            iteration=1,
+            tokens={"input": 200, "output": 50},
+            cost=0.0015,
+            latency_s=0.8,
+            cost_indeterminate=False,
+        )
+    )
+
+    md = trace.summary()
+    assert "[!cost]" in md
+
+    restored = Trace.from_markdown(md)
+    assert len(restored.entries) == 2
+    indet = restored.entries[0]
+    normal = restored.entries[1]
+    assert indet.cost_indeterminate is True
+    assert normal.cost_indeterminate is False

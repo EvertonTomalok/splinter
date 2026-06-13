@@ -12,10 +12,11 @@ import yaml
 
 from splinter.agents import planner
 from splinter.agents.localizer import CodeAnchor, filter_task_context, localize, rtk_cat_tip
-from splinter.agents.runner import Task
+from splinter.agents.runner import RunResult, Task
 from splinter.memory.session import Session, new_session_id
 from splinter.models.roster import Ladder, load_ladder
 from splinter.obs.agentic import agentic_scope
+from splinter.obs.trace import Trace
 from splinter.providers.base import ProviderGapError
 from splinter.strategies.base import AskUserPause, GracefulPause, ManualValidationPause
 from splinter.strategies.registry import available_strategies, get_strategy
@@ -294,6 +295,13 @@ def _load_round_history(session: Session) -> str:
     return "\n\n".join(parts)
 
 
+def _compute_summary_cost(trace: Trace, results: list[RunResult]) -> tuple[float, int]:
+    """Return (cost, runs) from the persisted trace, falling back to results."""
+    if trace.entries:
+        return trace.total_cost, len(trace.entries)
+    return sum(r.cost for r in results), len(results)
+
+
 def run_pipeline(
     *,
     strategy: str | None = None,
@@ -560,10 +568,12 @@ def run_pipeline(
             )
 
         session.set_status("completed", stage="done")
-        total = sum(r.cost for r in results)
-        log.info("pipeline complete · %d run(s) · $%.4f", len(results), total)
+        trace_md = session.read("trace.md")
+        trace = Trace.from_markdown(trace_md)
+        total, runs = _compute_summary_cost(trace, results)
+        log.info("pipeline complete · %d run(s) · $%.4f", runs, total)
         print(f"pipeline complete. session: {session.id}")
-        print(f"  runs: {len(results)}")
+        print(f"  runs: {runs}")
         print(f"  cost: ${total:.4f}")
 
         if phased:
