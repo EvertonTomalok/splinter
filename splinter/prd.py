@@ -7,7 +7,7 @@ import yaml
 
 from splinter.memory.knowledge import KnowledgeStore
 from splinter.memory.session import Session, delete_session, new_session_id
-from splinter.providers import claude_cli
+from splinter.providers.dispatch import run_provider_session
 
 
 def _abort(session: Session, message: str) -> int:
@@ -63,8 +63,9 @@ def _run_prd(
     from splinter.models.roster import load_ladder
 
     ladder = load_ladder()
-    prd_model = ladder.planner_model
-    prd_effort = ladder.planner_effort
+    prd_model = ladder.prd_model
+    prd_effort = ladder.prd_effort
+    prd_timeout = ladder.prd_timeout
 
     skill_text = _load_prd_skill()
 
@@ -95,17 +96,22 @@ def _run_prd(
         "Output ONLY the questions, no preamble."
     )
 
-    result1 = claude_cli.run(turn1_prompt, prd_model, effort=prd_effort)
+    result1, session_id = run_provider_session(
+        turn1_prompt,
+        prd_model,
+        variant=prd_effort,
+        output_format="json",
+        timeout=prd_timeout,
+        role="prd",
+    )
     questions = result1.text
-    session_id = result1.raw.get("_session_id", "")
-    _cost1, _ = claude_cli._calc_cost(prd_model, result1.usage)
     session.log_llm_usage(
         prd_model,
         {
-            "input": result1.usage.get("input_tokens", 0) or 0,
-            "output": result1.usage.get("output_tokens", 0) or 0,
+            "input": result1.tokens.get("input", 0) or 0,
+            "output": result1.tokens.get("output", 0) or 0,
         },
-        _cost1,
+        result1.cost,
     )
 
     print("\n" + questions + "\n")
@@ -123,16 +129,23 @@ def _run_prd(
     )
 
     resume = session_id if session_id else None
-    result2 = claude_cli.run(turn2_prompt, prd_model, effort=prd_effort, resume=resume)
+    result2, _sid2 = run_provider_session(
+        turn2_prompt,
+        prd_model,
+        variant=prd_effort,
+        output_format="json",
+        session=resume,
+        timeout=prd_timeout,
+        role="prd",
+    )
     prd_text = result2.text
-    _cost2, _ = claude_cli._calc_cost(prd_model, result2.usage)
     session.log_llm_usage(
         prd_model,
         {
-            "input": result2.usage.get("input_tokens", 0) or 0,
-            "output": result2.usage.get("output_tokens", 0) or 0,
+            "input": result2.tokens.get("input", 0) or 0,
+            "output": result2.tokens.get("output", 0) or 0,
         },
-        _cost2,
+        result2.cost,
     )
 
     if not prd_text.startswith("---"):

@@ -133,6 +133,99 @@ class TestOnEdit:
                 mock_busy.assert_called_once_with(False, "describe changes / accept / cowabunga")
 
 
+class TestLiveDraftDispatch:
+    """Ensure chat/review workers receive the current left-pane draft."""
+
+    def test_on_chat_refine_uses_live_draft(self, session: Session, run_kwargs: dict) -> None:
+        app = PrdSessionApp(session, run_kwargs)
+        app.phase = "chat"
+        app._busy = False
+
+        with patch.object(app, "_read_draft", return_value="# live draft") as mock_read:
+            with patch.object(app, "_set_busy") as mock_busy:
+                with patch.object(app, "_spawn") as mock_spawn:
+                    app._on_chat("1A")
+                    mock_read.assert_called_once()
+                    mock_busy.assert_called_once_with(True, "incorporating your answers…")
+                    assert mock_spawn.call_args.kwargs == {
+                        "answers": "1A",
+                        "draft": "# live draft",
+                    }
+
+    def test_on_chat_finalize_uses_live_draft(self, session: Session, run_kwargs: dict) -> None:
+        app = PrdSessionApp(session, run_kwargs)
+        app.phase = "chat"
+        app._busy = False
+
+        with patch.object(app, "_read_draft", return_value="# live draft") as mock_read:
+            with patch.object(app, "_set_busy") as mock_busy:
+                with patch.object(app, "_spawn") as mock_spawn:
+                    app._on_chat("fulfilled")
+                    mock_read.assert_called_once()
+                    mock_busy.assert_called_once_with(True, "finalizing the PRD…")
+                    assert mock_spawn.call_args.kwargs == {
+                        "autodecide": False,
+                        "draft": "# live draft",
+                    }
+
+    def test_on_review_revise_uses_live_draft(self, session: Session, run_kwargs: dict) -> None:
+        app = PrdSessionApp(session, run_kwargs)
+        app.phase = "review"
+        app._busy = False
+
+        with patch.object(app, "_read_draft", return_value="# live draft") as mock_read:
+            with patch.object(app, "_set_busy") as mock_busy:
+                with patch.object(app, "_spawn") as mock_spawn:
+                    app._on_review("add acceptance criteria")
+                    mock_read.assert_called_once()
+                    mock_busy.assert_called_once_with(True, "applying your changes…")
+                    assert mock_spawn.call_args.kwargs == {
+                        "instructions": "add acceptance criteria",
+                        "draft": "# live draft",
+                    }
+
+
+class TestSourcePrdPersistence:
+    """Persist updated PRD back to the original prd_path when provided."""
+
+    def test_set_preview_writes_to_source_prd_path(
+        self,
+        session: Session,
+        run_kwargs: dict,
+    ) -> None:
+        src = session.dir / "source-prd.md"
+        src.write_text("# old")
+        run_kwargs["prd_path"] = str(src)
+
+        app = PrdSessionApp(session, run_kwargs)
+        app._set_preview("# new")
+
+        assert src.read_text() == "# new"
+        assert session.read("prd.md") == "# new"
+
+    def test_begin_run_writes_final_prd_to_source_prd_path(
+        self,
+        session: Session,
+        run_kwargs: dict,
+    ) -> None:
+        src = session.dir / "source-prd.md"
+        src.write_text("# old")
+        run_kwargs["prd_path"] = str(src)
+
+        app = PrdSessionApp(session, run_kwargs)
+        app.strategy = "cascade"
+        app._source_prd_path = str(src)
+
+        with patch.object(app, "_read_draft", return_value="# final from draft"):
+            with patch.object(app, "_say"):
+                with patch.object(app, "_save_state"):
+                    with patch.object(app, "exit"):
+                        app._begin_run()
+
+        assert src.read_text() == "# final from draft"
+        assert session.read("prd.md") == "# final from draft"
+
+
 class TestAcceptButton:
     """Unit tests for Accept/Edit button dispatch."""
 

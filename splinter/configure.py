@@ -319,6 +319,12 @@ MODEL_STEPS: list[tuple[str, str, str]] = [
         "once per session.",
     ),
     (
+        "prd",
+        "PRD",
+        "Interactive PRD generation/refinement model used in the question/answer "
+        "phase before execution starts.",
+    ),
+    (
         "eval",
         "Eval",
         "The judge. Checks the output against acceptance criteria and returns "
@@ -484,6 +490,7 @@ def current_model_selections() -> dict[str, Any]:
             "localizer_recall_large": ladder.localizer_recall_large_model,
             "localizer_precision": ladder.localizer_precision_model,
             "planner": ladder.planner_model,
+            "prd": ladder.prd_model,
             "eval": ladder.eval_model,
             "tiers": [t.models[0] for t in tiers],
         },
@@ -492,6 +499,7 @@ def current_model_selections() -> dict[str, Any]:
             "localizer_recall_large": ladder.localizer_recall_large_variant,
             "localizer_precision": ladder.localizer_precision_variant,
             "planner": ladder.planner_effort,
+            "prd": ladder.prd_effort,
             "eval": ladder.eval_effort,
             "tiers": [ladder.tier_variant(t.level) or "" for t in tiers],
         },
@@ -500,6 +508,7 @@ def current_model_selections() -> dict[str, Any]:
             "localizer_recall_large": ladder.localizer_recall_large_timeout,
             "localizer_precision": ladder.localizer_precision_timeout,
             "planner": ladder.planner_timeout,
+            "prd": ladder.prd_timeout,
             "eval": ladder.eval_timeout,
             "tiers": [ladder.tier_timeout(t.level) for t in tiers],
         },
@@ -508,6 +517,7 @@ def current_model_selections() -> dict[str, Any]:
             "localizer_recall_large": provider_for(ladder.localizer_recall_large_model),
             "localizer_precision": provider_for(ladder.localizer_precision_model),
             "planner": provider_for(ladder.planner_model),
+            "prd": provider_for(ladder.prd_model),
             "eval": provider_for(ladder.eval_model),
             "tiers": [t.provider for t in tiers],
         },
@@ -660,6 +670,7 @@ DEFAULT_CC_CONFIG: dict[str, Any] = {
         "localizer_recall_large": "haiku",
         "localizer_precision": "haiku",
         "planner": "opus",
+        "prd": "opus",
         "eval": "opus",
         "tiers": [
             "haiku",  # T0 easy
@@ -675,6 +686,7 @@ DEFAULT_CC_CONFIG: dict[str, Any] = {
         "localizer_recall_large": "low",
         "localizer_precision": "low",
         "planner": "high",
+        "prd": "high",
         "eval": "high",
         "tiers": ["high", "max", "high", "max", "high", "max"],
     },
@@ -683,6 +695,7 @@ DEFAULT_CC_CONFIG: dict[str, Any] = {
         "localizer_recall_large": 3600,
         "localizer_precision": 3600,
         "planner": 3600,
+        "prd": 3600,
         "eval": 3600,
         "tiers": [3600, 3600, 3600, 3600, 3600, 3600],
     },

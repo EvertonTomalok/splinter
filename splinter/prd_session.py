@@ -3,7 +3,7 @@
 ``splinter run --prd path`` no longer executes a PRD blindly. On a TTY it first
 opens a TUI (:class:`splinter.tui.PrdSessionApp`) that drives this module:
 
-1. **clarify** — opus-4.8 reads the PRD and asks lettered clarifying questions;
+1. **clarify** — the configured PRD model reads the PRD and asks lettered clarifying questions;
    the user answers in the TUI; the model rewrites the draft and asks what is
    still open. This loops until the user declares the PRD *fulfilled*.
 2. **finalize** — the model emits the complete PRD (frontmatter + ``US-NNN``
@@ -14,8 +14,8 @@ opens a TUI (:class:`splinter.tui.PrdSessionApp`) that drives this module:
 At any prompt the user can type **cowabunga**: the model stops asking and decides
 everything itself (answers its own open questions, picks a strategy if needed).
 
-opus-4.8 is the PRD model; ``high`` is already its default reasoning effort, so we
-deliberately pass no ``--effort`` here.
+PRD model and effort come from ``.splinter/config.yaml`` (``models.prd`` and
+``efforts.prd``). The default is Claude ``opus`` with ``high`` effort.
 """
 
 from __future__ import annotations
@@ -26,15 +26,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from splinter.providers import claude_cli
+from splinter.models.roster import load_ladder
+from splinter.providers.dispatch import run_provider_session
 
 if TYPE_CHECKING:
     from splinter.memory.session import Session
     from splinter.models.roster import Ladder
-
-#: opus-4.8 defaults to high effort — passing --effort would be redundant/wrong.
-#: ``opus`` is the claude CLI alias; ``opus-4.8`` is NOT a valid --model id (404).
-PRD_MODEL = "opus"
 
 #: Escape hatch: hand the wheel to the model. Matched loosely (case/space-insensitive).
 COWABUNGA = "cowabunga"
@@ -81,6 +78,7 @@ class Turn:
 
     text: str
     session_id: str
+    model: str = ""
     tokens: dict[str, int] = field(default_factory=dict)
     cost: float = 0.0
 
@@ -93,20 +91,30 @@ def _load_prd_skill() -> str:
 
 
 def _ask(prompt: str, *, resume: str | None, session: object = None) -> Turn:
-    # No effort: opus-4.8's default (high) is exactly what we want here.
-    result = claude_cli.run(prompt, PRD_MODEL, output_format="json", resume=resume)
-    sid = result.raw.get("_session_id", "") or (resume or "")
+    ladder = load_ladder()
+    prd_model = ladder.prd_model
+    prd_effort = ladder.prd_effort
+    prd_timeout = ladder.prd_timeout
+    result, sid = run_provider_session(
+        prompt,
+        prd_model,
+        variant=prd_effort,
+        output_format="json",
+        session=resume,
+        timeout=prd_timeout,
+        role="prd",
+    )
     tokens = {
-        "input": result.usage.get("input_tokens", 0) or 0,
-        "output": result.usage.get("output_tokens", 0) or 0,
+        "input": result.tokens.get("input", 0) or 0,
+        "output": result.tokens.get("output", 0) or 0,
     }
-    cost, _cost_indet = claude_cli._calc_cost(PRD_MODEL, result.usage)
+    cost = result.cost
     if session is not None:
         try:
-            session.log_llm_usage(PRD_MODEL, tokens, cost)  # type: ignore[attr-defined]
+            session.log_llm_usage(prd_model, tokens, cost)  # type: ignore[attr-defined]
         except Exception:
             pass
-    return Turn(text=result.text, session_id=sid, tokens=tokens, cost=cost)
+    return Turn(text=result.text, session_id=sid or "", model=prd_model, tokens=tokens, cost=cost)
 
 
 def open_questions(
@@ -146,11 +154,22 @@ def _resume_preamble(prd_text: str | None, *, resume: str | None) -> str:
     )
 
 
+def _current_draft_section(current_prd: str | None) -> str:
+    if not (current_prd and current_prd.strip()):
+        return ""
+    return (
+        "## Current PRD Draft in Editor (source of truth)\n"
+        f"{current_prd}\n\n"
+        "Treat this editor draft as authoritative, incorporating user answers into it.\n\n"
+    )
+
+
 def refine(
     answers: str,
     *,
     resume: str,
     prd_text: str | None = None,
+    current_prd: str | None = None,
     localization: str = "",
     session: object = None,
 ) -> Turn:
@@ -163,6 +182,7 @@ def refine(
     )
     prompt = (
         f"{_resume_preamble(prd_text, resume=resume)}"
+        f"{_current_draft_section(current_prd)}"
         f"{ground_section}"
         f"User answers:\n{answers}\n\n"
         "Incorporate these into the PRD. Then output two clearly separated parts:\n"
@@ -180,6 +200,7 @@ def finalize(
     strategy: str | None,
     autodecide: bool,
     prd_text: str | None = None,
+    current_prd: str | None = None,
     localization: str = "",
     session: object = None,
 ) -> Turn:
@@ -200,6 +221,7 @@ def finalize(
     )
     prompt = (
         f"{_resume_preamble(prd_text, resume=resume)}"
+        f"{_current_draft_section(current_prd)}"
         f"{ground_section}"
         f"{decide}{strat_line}"
         "Now output the COMPLETE final PRD in markdown following the skill template:\n"

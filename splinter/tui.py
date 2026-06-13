@@ -3780,6 +3780,7 @@ class PrdSessionApp(App[int | None]):
         self._convo_lines: list[str] = []
         self._generating = False
         self._started_at: str | None = None
+        self._source_prd_path = str(run_kwargs.get("prd_path") or "")
 
     def _save_state(self) -> None:
         """Persist enough to resume this refinement: conversation id, phase, strategy."""
@@ -4087,10 +4088,21 @@ class PrdSessionApp(App[int | None]):
         if not md.strip():
             return
         self.session.write("prd.md", md)
+        self._write_source_prd(md)
         try:
             self.query_one("#draft-edit", TextArea).text = md
         except Exception:
             pass
+
+    def _write_source_prd(self, md: str) -> None:
+        if not self._source_prd_path:
+            return
+        try:
+            from pathlib import Path as _Path
+
+            _Path(self._source_prd_path).write_text(md)
+        except OSError as exc:
+            self._fail(f"cannot write PRD: {exc}")
 
     def _focus_instructions(self) -> None:
         self.query_one("#instructions", TextArea).focus()
@@ -4103,16 +4115,6 @@ class PrdSessionApp(App[int | None]):
         from functools import partial
 
         self.run_worker(partial(fn, **kw), thread=True, name="prd")
-
-    def _seed(self) -> str | None:
-        """Draft to re-anchor the model when the saved conversation id was lost.
-
-        Returns ``None`` while a conversation is live (server keeps the context);
-        only kicks in for a resumed session with no ``claude_session`` id.
-        """
-        if self.claude_session:
-            return None
-        return self._read_draft() or None
 
     def _grounding(self, text: str) -> str:
         """Return grounding string from cached localization, or "" if --no-ground."""
@@ -4136,30 +4138,39 @@ class PrdSessionApp(App[int | None]):
         except Exception as exc:  # noqa: BLE001
             self.call_from_thread(self._fail, f"PRD model: {exc}")
             return
-        self.session.log_llm_usage(prd_session.PRD_MODEL, turn.tokens, turn.cost)
+        self.session.log_llm_usage(turn.model, turn.tokens, turn.cost)
         self.call_from_thread(self._after_questions, turn.text, turn.session_id)
 
-    def _refine_worker(self, answers: str) -> None:
+    def _refine_worker(self, answers: str, draft: str) -> None:
         from splinter import prd_session
 
+        seed = draft or None if not self.claude_session else None
         try:
-            turn = prd_session.refine(answers, resume=self.claude_session, prd_text=self._seed())
+            turn = prd_session.refine(
+                answers,
+                resume=self.claude_session,
+                prd_text=seed,
+                current_prd=draft,
+                localization=self._grounding(draft),
+            )
         except Exception as exc:  # noqa: BLE001
             self.call_from_thread(self._fail, f"PRD model: {exc}")
             return
-        self.session.log_llm_usage(prd_session.PRD_MODEL, turn.tokens, turn.cost)
+        self.session.log_llm_usage(turn.model, turn.tokens, turn.cost)
         self.call_from_thread(self._after_refine, turn.text, turn.session_id)
 
-    def _finalize_worker(self, autodecide: bool) -> None:
+    def _finalize_worker(self, autodecide: bool, draft: str) -> None:
         from splinter import prd_session
 
+        seed = draft or None if not self.claude_session else None
         try:
             turn = prd_session.finalize(
                 resume=self.claude_session,
                 strategy=self.strategy,
                 autodecide=autodecide,
-                prd_text=self._seed(),
-                localization=self._grounding(self._seed() or self._initial_prd),
+                prd_text=seed,
+                current_prd=draft,
+                localization=self._grounding(draft or self._initial_prd),
             )
             prd = prd_session.ensure_frontmatter(
                 turn.text, description=self._desc, strategy=self.strategy
@@ -4167,15 +4178,16 @@ class PrdSessionApp(App[int | None]):
         except Exception as exc:  # noqa: BLE001
             self.call_from_thread(self._fail, f"PRD model: {exc}")
             return
-        self.session.log_llm_usage(prd_session.PRD_MODEL, turn.tokens, turn.cost)
+        self.session.log_llm_usage(turn.model, turn.tokens, turn.cost)
         self.call_from_thread(self._after_finalize, prd, turn.session_id)
 
-    def _revise_worker(self, instructions: str) -> None:
+    def _revise_worker(self, instructions: str, draft: str) -> None:
         from splinter import prd_session
 
+        seed = draft or None if not self.claude_session else None
         try:
             turn = prd_session.revise_final(
-                instructions, resume=self.claude_session, prd_text=self._seed()
+                instructions, resume=self.claude_session, prd_text=seed
             )
             prd = prd_session.ensure_frontmatter(
                 turn.text, description=self._desc, strategy=self.strategy
@@ -4183,7 +4195,7 @@ class PrdSessionApp(App[int | None]):
         except Exception as exc:  # noqa: BLE001
             self.call_from_thread(self._fail, f"PRD model: {exc}")
             return
-        self.session.log_llm_usage(prd_session.PRD_MODEL, turn.tokens, turn.cost)
+        self.session.log_llm_usage(turn.model, turn.tokens, turn.cost)
         self.call_from_thread(self._after_revise, prd, turn.session_id)
 
     def _generate_worker(self, instructions: str) -> None:
@@ -4201,7 +4213,7 @@ class PrdSessionApp(App[int | None]):
         except Exception as exc:  # noqa: BLE001
             self.call_from_thread(self._fail, f"PRD model: {exc}")
             return
-        self.session.log_llm_usage(prd_session.PRD_MODEL, turn.tokens, turn.cost)
+        self.session.log_llm_usage(turn.model, turn.tokens, turn.cost)
         self.call_from_thread(self._after_generate, prd, turn.session_id)
 
     # --- worker callbacks (back on the UI thread) ---
@@ -4388,15 +4400,16 @@ class PrdSessionApp(App[int | None]):
     def _on_chat(self, text: str) -> None:
         from splinter import prd_session
 
+        draft = self._read_draft()
         if prd_session.is_cowabunga(text):
             self._set_busy(True, "cowabunga — finalizing…")
-            self._spawn(self._finalize_worker, autodecide=True)
+            self._spawn(self._finalize_worker, autodecide=True, draft=draft)
         elif prd_session.is_done(text):
             self._set_busy(True, "finalizing the PRD…")
-            self._spawn(self._finalize_worker, autodecide=False)
+            self._spawn(self._finalize_worker, autodecide=False, draft=draft)
         else:
             self._set_busy(True, "incorporating your answers…")
-            self._spawn(self._refine_worker, answers=text)
+            self._spawn(self._refine_worker, answers=text, draft=draft)
 
     def _on_strategy(self, text: str) -> None:
         from splinter import prd_session
@@ -4481,7 +4494,7 @@ class PrdSessionApp(App[int | None]):
             self._on_edit()
             return
         self._set_busy(True, "applying your changes…")
-        self._spawn(self._revise_worker, instructions=text)
+        self._spawn(self._revise_worker, instructions=text, draft=self._read_draft())
 
     def _open_final_eval_modal(self) -> None:
         """Open the Set Final Eval modal and persist the user's choice."""
@@ -4528,6 +4541,7 @@ class PrdSessionApp(App[int | None]):
         self.final_prd = draft
         prd_session.log_phase(self.session, "run", self.strategy or "cascade")
         self.session.write("prd.md", self.final_prd)
+        self._write_source_prd(self.final_prd)
         self.session.update_index(
             f"# Session {self.session.id}\n- prd: prd.md\n- strategy: {self.strategy}\n"
         )

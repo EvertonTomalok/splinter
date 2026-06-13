@@ -55,6 +55,8 @@ class Ladder:
     localizer_recall_model: str
     localizer_recall_large_model: str
     localizer_precision_model: str
+    prd_model: str = "opus"
+    prd_effort: str = "high"
     localizer_recall_variant: str = "minimal"
     localizer_recall_large_variant: str = "minimal"
     localizer_precision_variant: str = "low"
@@ -68,6 +70,7 @@ class Ladder:
     default_timeout: int = 3600
     eval_timeout: int = 3600
     planner_timeout: int = 3600
+    prd_timeout: int = 3600
     localizer_recall_timeout: int = 3600
     localizer_recall_large_timeout: int = 3600
     localizer_precision_timeout: int = 3600
@@ -172,6 +175,7 @@ def load_ladder(raw: dict[str, Any] | None = None) -> Ladder:
 
     eval_cfg = raw.get("eval", {})
     planner_cfg = raw.get("planner", {})
+    prd_cfg = raw.get("prd", {})
     loc_cfg = raw.get("localizer", {})
 
     ladder = Ladder(
@@ -181,6 +185,8 @@ def load_ladder(raw: dict[str, Any] | None = None) -> Ladder:
         eval_effort=eval_cfg.get("default_effort", "high"),
         planner_model=planner_cfg.get("model", "sonnet"),
         planner_effort=planner_cfg.get("effort", "high"),
+        prd_model=prd_cfg.get("model", "opus"),
+        prd_effort=prd_cfg.get("effort", "high"),
         localizer_recall_model=loc_cfg.get("recall_model", "opencode/deepseek-v4-flash-free"),
         localizer_recall_large_model=loc_cfg.get("recall_model_large", "opencode-go/minimax-m3"),
         localizer_precision_model=loc_cfg.get("precision_model", "opencode/deepseek-v4-flash-free"),
@@ -197,6 +203,7 @@ def load_ladder(raw: dict[str, Any] | None = None) -> Ladder:
     ladder.default_timeout = gdefault
     ladder.eval_timeout = gdefault
     ladder.planner_timeout = gdefault
+    ladder.prd_timeout = gdefault
     ladder.localizer_recall_timeout = gdefault
     ladder.localizer_recall_large_timeout = gdefault
     ladder.localizer_precision_timeout = gdefault
@@ -237,6 +244,8 @@ def _apply_config_overrides(ladder: Ladder) -> None:
             ladder.localizer_recall_fallback_model = m["localizer_recall_fallback"]
         if m.get("planner"):
             ladder.planner_model = m["planner"]
+        if m.get("prd"):
+            ladder.prd_model = m["prd"]
         if m.get("eval"):
             ladder.eval_model = m["eval"]
         for level, model_id in enumerate(m.get("tiers") or []):
@@ -257,6 +266,8 @@ def _apply_config_overrides(ladder: Ladder) -> None:
             ladder.localizer_precision_variant = e["localizer_precision"]
         if e.get("planner"):
             ladder.planner_effort = e["planner"]
+        if e.get("prd"):
+            ladder.prd_effort = e["prd"]
         if e.get("eval"):
             ladder.eval_effort = e["eval"]
         for level, variant in enumerate(e.get("tiers") or []):
@@ -280,6 +291,8 @@ def _apply_config_overrides(ladder: Ladder) -> None:
             ladder.localizer_precision_timeout = _to_int(t["localizer_precision"])  # type: ignore[assignment]
         if _to_int(t.get("planner")):
             ladder.planner_timeout = _to_int(t["planner"])  # type: ignore[assignment]
+        if _to_int(t.get("prd")):
+            ladder.prd_timeout = _to_int(t["prd"])  # type: ignore[assignment]
         if _to_int(t.get("eval")):
             ladder.eval_timeout = _to_int(t["eval"])  # type: ignore[assignment]
         for level, raw_to in enumerate(t.get("tiers") or []):
