@@ -18,14 +18,12 @@ def test_scroll_css_constant_exists() -> None:
     assert "height: 1fr" in _SCROLL_LEFT_PANE_CSS, "constant should set height"
     assert "overflow-y: auto" in _SCROLL_LEFT_PANE_CSS, "constant should set overflow-y"
     assert "overflow-x: hidden" in _SCROLL_LEFT_PANE_CSS, "constant should set overflow properties"
-    assert (
-        "scrollbar-size-vertical: 1" in _SCROLL_LEFT_PANE_CSS
-    ), "constant should set scrollbar size"
+    assert "scrollbar-size-vertical: 1" in _SCROLL_LEFT_PANE_CSS, (
+        "constant should set scrollbar size"
+    )
 
 
-def test_analyze_app_uses_scroll_css(
-    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
-) -> None:
+def test_analyze_app_uses_scroll_css(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
     import pytest
 
     pytest.importorskip("textual")
@@ -56,9 +54,7 @@ def test_analyze_app_uses_scroll_css(
     asyncio.run(drive())
 
 
-def test_run_app_uses_scroll_css(
-    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
-) -> None:
+def test_run_app_uses_scroll_css(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
     import pytest
 
     pytest.importorskip("textual")
@@ -85,9 +81,7 @@ def test_run_app_uses_scroll_css(
             await pilot.pause()
             for _ in range(20):
                 await pilot.pause(0.05)
-                if app.workers and all(
-                    w.state.name in ("SUCCESS", "ERROR") for w in app.workers
-                ):
+                if app.workers and all(w.state.name in ("SUCCESS", "ERROR") for w in app.workers):
                     break
             await pilot.pause()
             # Just verify the app starts without error
@@ -201,9 +195,7 @@ def test_run_app_scroll_css_properties_applied(
             await pilot.pause()
             for _ in range(20):
                 await pilot.pause(0.05)
-                if app.workers and all(
-                    w.state.name in ("SUCCESS", "ERROR") for w in app.workers
-                ):
+                if app.workers and all(w.state.name in ("SUCCESS", "ERROR") for w in app.workers):
                     break
             await pilot.pause()
 
@@ -228,9 +220,7 @@ def test_consistency_no_duplication_in_analyze_app(
     full_css = AnalyzeApp.CSS
 
     # Find the _SCROLL_LEFT_PANE_CSS section in the full CSS
-    assert (
-        _SCROLL_LEFT_PANE_CSS in full_css
-    ), "AnalyzeApp should include _SCROLL_LEFT_PANE_CSS"
+    assert _SCROLL_LEFT_PANE_CSS in full_css, "AnalyzeApp should include _SCROLL_LEFT_PANE_CSS"
 
     # Verify #nav scroll CSS is in the constant
     assert "#nav" in _SCROLL_LEFT_PANE_CSS, "scroll constant should target #nav"
@@ -246,11 +236,9 @@ def test_consistency_no_duplication_in_run_app(
     full_css = RunApp.CSS
 
     # Find the _SCROLL_LEFT_PANE_CSS section in the full CSS
-    assert (
-        _SCROLL_LEFT_PANE_CSS in full_css
-    ), "RunApp should include _SCROLL_LEFT_PANE_CSS"
+    assert _SCROLL_LEFT_PANE_CSS in full_css, "RunApp should include _SCROLL_LEFT_PANE_CSS"
 
     # Verify #overview-scroll scroll CSS is in the constant
-    assert (
-        "#overview-scroll" in _SCROLL_LEFT_PANE_CSS
-    ), "scroll constant should target #overview-scroll"
+    assert "#overview-scroll" in _SCROLL_LEFT_PANE_CSS, (
+        "scroll constant should target #overview-scroll"
+    )

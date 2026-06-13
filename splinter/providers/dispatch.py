@@ -105,18 +105,31 @@ def run_text(
     provider = get_provider(provider_for(model))
     try:
         resp = provider.run(
-            prompt, model, variant=variant, output_format=output_format,
-            timeout=timeout, agent=agent,
+            prompt,
+            model,
+            variant=variant,
+            output_format=output_format,
+            timeout=timeout,
+            agent=agent,
         )
     except Exception as exc:
         if trace is not None:
-            _log_trace_from_exc(trace, model, exc, tier=tier,
-                                iteration=iteration, task_index=task_index, role=role)
+            _log_trace_from_exc(
+                trace, model, exc, tier=tier, iteration=iteration, task_index=task_index, role=role
+            )
         raise
     if trace is not None:
-        _log_trace(trace, model, resp.tokens, resp.cost, tier=tier,
-                   iteration=iteration, task_index=task_index, role=role,
-                   cost_indeterminate=resp.cost_indeterminate)
+        _log_trace(
+            trace,
+            model,
+            resp.tokens,
+            resp.cost,
+            tier=tier,
+            iteration=iteration,
+            task_index=task_index,
+            role=role,
+            cost_indeterminate=resp.cost_indeterminate,
+        )
     if session is not None:
         _log_session(session, model, resp.tokens, resp.cost)
     return resp.text
@@ -143,18 +156,32 @@ def run_text_session(
     provider = get_provider(provider_for(model))
     try:
         resp = provider.run(
-            prompt, model, variant=variant, output_format=output_format, session=session,
-            timeout=timeout, agent=agent,
+            prompt,
+            model,
+            variant=variant,
+            output_format=output_format,
+            session=session,
+            timeout=timeout,
+            agent=agent,
         )
     except Exception as exc:
         if trace is not None:
-            _log_trace_from_exc(trace, model, exc, tier=tier,
-                                iteration=iteration, task_index=task_index, role=role)
+            _log_trace_from_exc(
+                trace, model, exc, tier=tier, iteration=iteration, task_index=task_index, role=role
+            )
         raise
     if trace is not None:
-        _log_trace(trace, model, resp.tokens, resp.cost, tier=tier,
-                   iteration=iteration, task_index=task_index, role=role,
-                   cost_indeterminate=resp.cost_indeterminate)
+        _log_trace(
+            trace,
+            model,
+            resp.tokens,
+            resp.cost,
+            tier=tier,
+            iteration=iteration,
+            task_index=task_index,
+            role=role,
+            cost_indeterminate=resp.cost_indeterminate,
+        )
     sid = resp.session_id or session
     return resp.text, sid
 
@@ -179,18 +206,32 @@ def run_provider_session(
     provider = get_provider(provider_for(model))
     try:
         resp = provider.run(
-            prompt, model, variant=variant, output_format=output_format, session=session,
-            timeout=timeout, agent=agent,
+            prompt,
+            model,
+            variant=variant,
+            output_format=output_format,
+            session=session,
+            timeout=timeout,
+            agent=agent,
         )
     except Exception as exc:
         if trace is not None:
-            _log_trace_from_exc(trace, model, exc, tier=tier,
-                                iteration=iteration, task_index=task_index, role=role)
+            _log_trace_from_exc(
+                trace, model, exc, tier=tier, iteration=iteration, task_index=task_index, role=role
+            )
         raise
     if trace is not None:
-        _log_trace(trace, model, resp.tokens, resp.cost, tier=tier,
-                   iteration=iteration, task_index=task_index, role=role,
-                   cost_indeterminate=resp.cost_indeterminate)
+        _log_trace(
+            trace,
+            model,
+            resp.tokens,
+            resp.cost,
+            tier=tier,
+            iteration=iteration,
+            task_index=task_index,
+            role=role,
+            cost_indeterminate=resp.cost_indeterminate,
+        )
     sid = resp.session_id or session or None
     if resp.session_id != sid:
         resp = replace(resp, session_id=sid)

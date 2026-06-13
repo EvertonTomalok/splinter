@@ -63,9 +63,7 @@ def session(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Session:
 def task_yaml(tmp_path: Path) -> str:
     p = tmp_path / "task.yaml"
     p.write_text(
-        "description: Implement feature X\n"
-        "acceptance: Feature X works correctly\n"
-        "effort: normal\n"
+        "description: Implement feature X\nacceptance: Feature X works correctly\neffort: normal\n"
     )
     return str(p)
 
@@ -75,6 +73,7 @@ def _base_patches(monkeypatch: pytest.MonkeyPatch, *, fe_results: list) -> None:
     monkeypatch.setattr("splinter.pipeline.localize", lambda *a, **kw: [])
     monkeypatch.setattr("splinter.pipeline._resolve_gate", lambda *a, **kw: None)
     from splinter.strategies.cascade import CascadeStrategy
+
     monkeypatch.setattr(CascadeStrategy, "execute", _fake_execute)
     monkeypatch.setattr("splinter.configure.load_config", lambda *a, **kw: _config_with_fe())
     fe_iter = iter(fe_results)
@@ -112,6 +111,7 @@ class TestFinalEvalPass:
         )
         monkeypatch.setattr("splinter.pipeline._resolve_gate", lambda *a, **kw: None)
         from splinter.strategies.cascade import CascadeStrategy
+
         monkeypatch.setattr(CascadeStrategy, "execute", _fake_execute)
         monkeypatch.setattr("splinter.configure.load_config", lambda *a, **kw: _config_with_fe())
         monkeypatch.setattr(
@@ -142,6 +142,7 @@ class TestFinalEvalPass:
         monkeypatch.setattr("splinter.pipeline.localize", lambda *a, **kw: [])
         monkeypatch.setattr("splinter.pipeline._resolve_gate", lambda *a, **kw: None)
         from splinter.strategies.cascade import CascadeStrategy
+
         monkeypatch.setattr(CascadeStrategy, "execute", _fake_execute)
         monkeypatch.setattr(
             "splinter.configure.load_config",
@@ -248,6 +249,7 @@ class TestResumeNewRound:
         )
         monkeypatch.setattr("splinter.pipeline._resolve_gate", lambda *a, **kw: None)
         from splinter.strategies.cascade import CascadeStrategy
+
         monkeypatch.setattr(CascadeStrategy, "execute", _fake_execute)
         monkeypatch.setattr("splinter.configure.load_config", lambda *a, **kw: _config_with_fe())
         monkeypatch.setattr(
@@ -295,6 +297,7 @@ class TestResumeNewRound:
         monkeypatch.setattr("splinter.pipeline.localize", lambda *a, **kw: [])
         monkeypatch.setattr("splinter.pipeline._resolve_gate", lambda *a, **kw: None)
         from splinter.strategies.cascade import CascadeStrategy
+
         monkeypatch.setattr(CascadeStrategy, "execute", _capturing_execute)
         monkeypatch.setattr("splinter.configure.load_config", lambda *a, **kw: _config_with_fe())
         monkeypatch.setattr(
@@ -324,6 +327,7 @@ class TestResumeNewRound:
         )
         monkeypatch.setattr("splinter.pipeline._resolve_gate", lambda *a, **kw: None)
         from splinter.strategies.cascade import CascadeStrategy
+
         monkeypatch.setattr(CascadeStrategy, "execute", _fake_execute)
         monkeypatch.setattr("splinter.configure.load_config", lambda *a, **kw: _config_with_fe())
         monkeypatch.setattr(
@@ -489,3 +493,193 @@ class TestHelpers:
         assert "first failure" in hist
         assert "round-eval-1" in hist
         assert "second failure" in hist
+
+
+# ── 5. next_* config override round-trip ─────────────────────────────────────
+
+
+class TestNextConfigOverrides:
+    def test_round_dir_creates_subfolder(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
+        s = Session("ses_rd")
+        rd = s.round_dir(0)
+        assert rd.exists()
+        assert rd.name == "eval-fix-0"
+
+    def test_round_dir_increments(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
+        s = Session("ses_rd2")
+        rd0 = s.round_dir(0)
+        rd1 = s.round_dir(1)
+        assert rd0.name == "eval-fix-0"
+        assert rd1.name == "eval-fix-1"
+        assert rd0 != rd1
+
+    def test_read_next_config_empty_when_not_set(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
+        s = Session("ses_nc_empty")
+        assert s.read_next_config() == {}
+
+    def test_read_next_config_returns_only_set_keys(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
+        s = Session("ses_nc_set")
+        s.set_status("running", next_planner_model="opus", next_eval_effort="high")
+        cfg = s.read_next_config()
+        assert cfg["next_planner_model"] == "opus"
+        assert cfg["next_eval_effort"] == "high"
+        assert "next_runner_model" not in cfg
+
+    def test_clear_next_config_empties_keys(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
+        s = Session("ses_nc_clear")
+        s.set_status(
+            "running",
+            next_planner_model="opus",
+            next_planner_effort="high",
+            next_runner_model="sonnet",
+        )
+        s.clear_next_config()
+        cfg = s.read_next_config()
+        assert cfg == {}
+
+    def test_clear_next_config_preserves_state(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
+        s = Session("ses_nc_state")
+        s.set_status("awaiting_user", round_index=2, next_planner_model="opus")
+        s.clear_next_config()
+        st = s.read_status()
+        assert st["state"] == "awaiting_user"
+        assert st["round_index"] == 2
+
+    def test_pipeline_applies_planner_override(
+        self,
+        session: Session,
+        task_yaml: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        session.set_status(
+            "awaiting_user",
+            round_index=1,
+            next_effort="hard",
+            next_planner_model="opus",
+            next_planner_effort="max",
+        )
+
+        captured: list[dict] = []
+
+        def _capturing_execute(self_, tasks, sess, ladder, **kwargs):
+            captured.append(
+                {"planner_model": ladder.planner_model, "planner_effort": ladder.planner_effort}
+            )
+            return [_run_result()]
+
+        monkeypatch.setattr("splinter.pipeline.localize", lambda *a, **kw: [])
+        monkeypatch.setattr("splinter.pipeline._resolve_gate", lambda *a, **kw: None)
+        from splinter.strategies.cascade import CascadeStrategy
+
+        monkeypatch.setattr(CascadeStrategy, "execute", _capturing_execute)
+        monkeypatch.setattr("splinter.configure.load_config", lambda *a, **kw: _config_with_fe())
+        monkeypatch.setattr(
+            "splinter.agents.final_eval.run_all_final_evals",
+            lambda *a, **kw: _pass_fe(),
+        )
+
+        run_pipeline(task_path=task_yaml, session=session, resume=True)
+
+        assert len(captured) == 1
+        assert captured[0]["planner_model"] == "opus"
+        assert captured[0]["planner_effort"] == "max"
+
+    def test_pipeline_clears_next_config_after_read(
+        self,
+        session: Session,
+        task_yaml: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        session.set_status(
+            "awaiting_user", round_index=1, next_effort="hard", next_planner_model="opus"
+        )
+        _base_patches(monkeypatch, fe_results=[_pass_fe()])
+
+        run_pipeline(task_path=task_yaml, session=session, resume=True)
+
+        assert session.read_next_config() == {}
+
+    def test_per_round_eval_fix_dir_created(
+        self,
+        session: Session,
+        task_yaml: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _base_patches(monkeypatch, fe_results=[_fail_fe()])
+        run_pipeline(task_path=task_yaml, session=session)
+
+        rd = session.dir / "eval-fix-0"
+        assert rd.exists(), "eval-fix-0 must be created on final-eval run"
+        assert (rd / "final-eval.md").exists()
+        assert (rd / "round-eval.md").exists()
+
+    def test_two_rounds_different_overrides_each_apply_correct_config(
+        self,
+        session: Session,
+        task_yaml: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Round 0: default planner. Round 1: override planner=opus. Each uses correct config."""
+        round_ladder_snapshots: list[dict] = []
+
+        def _capturing_execute(self_, tasks, sess, ladder, **kwargs):
+            round_ladder_snapshots.append(
+                {
+                    "planner_model": ladder.planner_model,
+                    "eval_model": ladder.eval_model,
+                }
+            )
+            return [_run_result()]
+
+        monkeypatch.setattr("splinter.pipeline.localize", lambda *a, **kw: [])
+        monkeypatch.setattr("splinter.pipeline._resolve_gate", lambda *a, **kw: None)
+        from splinter.strategies.cascade import CascadeStrategy
+
+        monkeypatch.setattr(CascadeStrategy, "execute", _capturing_execute)
+        monkeypatch.setattr("splinter.configure.load_config", lambda *a, **kw: _config_with_fe())
+
+        fe_iter = iter([_fail_fe(), _pass_fe()])
+        monkeypatch.setattr(
+            "splinter.agents.final_eval.run_all_final_evals",
+            lambda *a, **kw: next(fe_iter),
+        )
+
+        run_pipeline(task_path=task_yaml, session=session)
+        assert len(round_ladder_snapshots) == 1
+        default_planner = round_ladder_snapshots[0]["planner_model"]
+
+        session.set_status(
+            "awaiting_user",
+            round_index=1,
+            next_effort="hard",
+            next_planner_model="opus",
+            next_eval_model="haiku",
+        )
+
+        run_pipeline(task_path=task_yaml, session=session, resume=True)
+        assert len(round_ladder_snapshots) == 2
+        assert round_ladder_snapshots[1]["planner_model"] == "opus"
+        assert round_ladder_snapshots[1]["eval_model"] == "haiku"
+
+        assert round_ladder_snapshots[0]["planner_model"] == default_planner
+
+        rd0 = session.dir / "eval-fix-0"
+        rd1 = session.dir / "eval-fix-1"
+        assert rd0.exists(), "eval-fix-0 must exist after round 0"
+        assert rd1.exists(), "eval-fix-1 must exist after round 1"

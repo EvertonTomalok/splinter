@@ -85,6 +85,7 @@ def test_parse_jsonl_invalid_lines_skipped() -> None:
 
 # ── _calc_cost ───────────────────────────────────────────────────────────────
 
+
 def test_calc_cost_known_model() -> None:
     tokens = {"input": 1_000_000, "output": 1_000_000}
     cost, indeterminate = _calc_cost("gpt-5-codex", tokens)
@@ -107,6 +108,7 @@ def test_calc_cost_zero_tokens() -> None:
 
 # ── _normalize_effort ────────────────────────────────────────────────────────
 
+
 @pytest.mark.parametrize(
     "raw,expected",
     [
@@ -127,6 +129,7 @@ def test_normalize_effort(raw: str | None, expected: str | None) -> None:
 
 # ── _strip_prefix ────────────────────────────────────────────────────────────
 
+
 def test_strip_prefix_removes_codex_prefix() -> None:
     assert _strip_prefix("codex/gpt-5-codex") == "gpt-5-codex"
 
@@ -140,6 +143,7 @@ def test_strip_prefix_noop_other_prefix() -> None:
 
 
 # ── run() subprocess integration ─────────────────────────────────────────────
+
 
 def _fake_proc(stdout: str, returncode: int = 0) -> SimpleNamespace:
     return SimpleNamespace(returncode=returncode, stdout=stdout, stderr="")
@@ -281,6 +285,7 @@ def test_run_calls_on_line_callback(monkeypatch: pytest.MonkeyPatch) -> None:
 
 # ── provider routing ─────────────────────────────────────────────────────────
 
+
 def test_provider_for_codex_prefix() -> None:
     from splinter.models.roster import provider_for
 
@@ -316,6 +321,7 @@ def test_available_providers_includes_codex() -> None:
 
 
 # ── CodexProvider.run ────────────────────────────────────────────────────────
+
 
 def test_codex_provider_returns_provider_response(monkeypatch: pytest.MonkeyPatch) -> None:
     from splinter.providers.base import ProviderResponse
@@ -387,6 +393,7 @@ def test_codex_provider_passes_session_as_resume(monkeypatch: pytest.MonkeyPatch
 
 
 # ── dispatch routing ──────────────────────────────────────────────────────────
+
 
 def test_dispatch_run_text_routes_codex(monkeypatch: pytest.MonkeyPatch) -> None:
     from splinter.providers import dispatch

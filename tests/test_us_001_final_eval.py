@@ -25,11 +25,7 @@ class TestLoadFinalEval:
         assert result == []
 
     def test_load_final_eval_single_entry(self) -> None:
-        config = {
-            "final_eval": [
-                {"name": "gate1", "kind": "ask_user"}
-            ]
-        }
+        config = {"final_eval": [{"name": "gate1", "kind": "ask_user"}]}
         result = load_final_eval(config)
         assert len(result) == 1
         assert result[0].name == "gate1"
@@ -87,11 +83,7 @@ class TestLoadFinalEval:
         assert result[2].name == "gate3"
 
     def test_load_final_eval_invalid_kind_raises(self) -> None:
-        config = {
-            "final_eval": [
-                {"name": "bad", "kind": "invalid_kind"}
-            ]
-        }
+        config = {"final_eval": [{"name": "bad", "kind": "invalid_kind"}]}
         with pytest.raises(ValueError):
             load_final_eval(config)
 
@@ -206,13 +198,12 @@ class TestFinalEvalGatePersistence:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.chdir(tmp_path)
-        original_final_eval = [
-            {"name": "review", "kind": "skill", "skill": "cursor_review"}
-        ]
+        original_final_eval = [{"name": "review", "kind": "skill", "skill": "cursor_review"}]
         original_config = {"final_eval": original_final_eval, "gate_checks": []}
         config_path = tmp_path / ".splinter" / "config.yaml"
         config_path.parent.mkdir(parents=True)
         import yaml
+
         with open(config_path, "w") as f:
             yaml.dump(original_config, f)
 
@@ -220,6 +211,7 @@ class TestFinalEvalGatePersistence:
         write_gate_checks(checks)
 
         from splinter.configure import load_config
+
         reloaded = load_config()
         assert "final_eval" in reloaded
         assert reloaded["final_eval"] == original_final_eval
@@ -228,13 +220,12 @@ class TestFinalEvalGatePersistence:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.chdir(tmp_path)
-        original_final_eval = [
-            {"name": "review", "kind": "skill", "skill": "cursor_review"}
-        ]
+        original_final_eval = [{"name": "review", "kind": "skill", "skill": "cursor_review"}]
         original_config = {"final_eval": original_final_eval}
         config_path = tmp_path / ".splinter" / "config.yaml"
         config_path.parent.mkdir(parents=True)
         import yaml
+
         with open(config_path, "w") as f:
             yaml.dump(original_config, f)
 
@@ -242,6 +233,7 @@ class TestFinalEvalGatePersistence:
         write_model_config(models)
 
         from splinter.configure import load_config
+
         reloaded = load_config()
         assert "final_eval" in reloaded
         assert reloaded["final_eval"] == original_final_eval
@@ -263,6 +255,7 @@ class TestDisabledWhenAbsent:
         config_path = tmp_path / ".splinter" / "config.yaml"
         config_path.parent.mkdir(parents=True)
         import yaml
+
         with open(config_path, "w") as f:
             yaml.dump(original_config, f)
 

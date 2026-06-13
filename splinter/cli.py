@@ -117,28 +117,32 @@ def run(
     phase_plan_model: Annotated[
         str | None,
         typer.Option(
-            "-pm", "--plan-model",
+            "-pm",
+            "--plan-model",
             help="Model for phase planning (e.g. opus, sonnet, deepseek-v4-pro)",
         ),
     ] = None,
     phase_plan_effort: Annotated[
         str | None,
         typer.Option(
-            "-pe", "--plan-effort",
+            "-pe",
+            "--plan-effort",
             help="Reasoning effort for phase planner (low, medium, high, max, auto)",
         ),
     ] = None,
     phase_run_model: Annotated[
         str | None,
         typer.Option(
-            "-rm", "--run-model",
+            "-rm",
+            "--run-model",
             help="Model for phase execution (e.g. haiku, deepseek-v4-flash-free)",
         ),
     ] = None,
     phase_run_effort: Annotated[
         str | None,
         typer.Option(
-            "-re", "--run-effort",
+            "-re",
+            "--run-effort",
             help="Reasoning effort for phase runner (low, medium, high, max, auto)",
         ),
     ] = None,

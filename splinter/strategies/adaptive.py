@@ -81,7 +81,9 @@ class AdaptiveStrategy(CascadeStrategy):
         if done:
             log.info("adaptive resume: %d task(s) already checkpointed", len(done))
 
-        self._run_plan_phase(ordered, session, ladder, localization, trace=trace, skip_planner=skip_planner)
+        self._run_plan_phase(
+            ordered, session, ladder, localization, trace=trace, skip_planner=skip_planner
+        )
 
         for i, task in enumerate(ordered):
             if task.id and task.id in done:
@@ -91,25 +93,19 @@ class AdaptiveStrategy(CascadeStrategy):
             task_effort = effort or task.effort
 
             remaining_budget = (
-                None if effective_budget is None
-                else max(0.0, effective_budget - trace.total_cost)
+                None if effective_budget is None else max(0.0, effective_budget - trace.total_cost)
             )
             remaining_efforts = [
-                effort or t.effort
-                for t in ordered[i:]
-                if not (t.id and t.id in done)
+                effort or t.effort for t in ordered[i:] if not (t.id and t.id in done)
             ]
-            routed_tier = self._route_tier(
-                task_effort, ladder, remaining_budget, remaining_efforts
-            )
+            routed_tier = self._route_tier(task_effort, ladder, remaining_budget, remaining_efforts)
 
             if self._log_routing_detail:
                 em = ladder.effort_mapping(task_effort)
                 floor = em.start_tier if em is not None else 0
                 down_routed = routed_tier < floor
                 log.info(
-                    "%s: task %d/%d effort=%s → T%d (%s)"
-                    " [budget=%s floor=T%d down_routed=%s]",
+                    "%s: task %d/%d effort=%s → T%d (%s) [budget=%s floor=T%d down_routed=%s]",
                     self._log_prefix,
                     i + 1,
                     len(ordered),

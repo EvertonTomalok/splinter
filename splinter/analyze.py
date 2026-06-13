@@ -337,9 +337,7 @@ def _trajectory_lines(session: Session, iters: list[tuple[int, str, str]]) -> li
     phases = _prd_phases(session.read("prd_phases.md"))
     status = session.read_status()
     final_eval_md = session.read("final_eval.md")
-    has_final_eval = bool(
-        (session.dir / "final_eval.yaml").exists() or final_eval_md
-    )
+    has_final_eval = bool((session.dir / "final_eval.yaml").exists() or final_eval_md)
     phase_md = session.read("phases.md")
     has_phases = bool(phase_md.strip())
     if not (phases or iters or has_final_eval or has_phases):
@@ -400,8 +398,7 @@ def _trajectory_lines(session: Session, iters: list[tuple[int, str, str]]) -> li
                 pnum, pstatus, pmodel, pcost = entry
                 glyph, color = ("✓", "green") if pstatus == "PASS" else ("✗", "red")
                 lines.append(
-                    f"    [dim]phase {pnum}[/]  [{color}]{glyph}[/]  "
-                    f"[dim]{pmodel}  ${pcost}[/]"
+                    f"    [dim]phase {pnum}[/]  [{color}]{glyph}[/]  [dim]{pmodel}  ${pcost}[/]"
                 )
 
     if has_final_eval:
@@ -594,9 +591,7 @@ def render_overview(session: Session, state: str) -> str:
     has_eval = any(v in ("PASS", "RETRY", "ESCALATE") for _, _, v in iters)
 
     final_eval_md = session.read("final_eval.md")
-    has_final_eval_cfg = bool(
-        (session.dir / "final_eval.yaml").exists() or final_eval_md
-    )
+    has_final_eval_cfg = bool((session.dir / "final_eval.yaml").exists() or final_eval_md)
     fe_passed = status.get("final_eval_passed")
     awaiting_validation = state == "AWAITING_VALIDATION"
 
@@ -734,6 +729,7 @@ def render_expand(session: Session, what: str) -> str:
 
     if what == "agentic":
         from splinter.obs.agentic import render_agentic
+
         return render_agentic(session)
 
     if what == "plan":
@@ -763,11 +759,7 @@ def render_expand(session: Session, what: str) -> str:
             content = session.read(_EXPAND_FILES[name])
             out.append(f"===== {name} =====\n{content.strip() if content else '(empty)'}")
         notes = _knowledge_notes(session)
-        extra = [
-            n
-            for n in notes
-            if n[1] not in ("plan", "localization")
-        ]
+        extra = [n for n in notes if n[1] not in ("plan", "localization")]
         if extra:
             for filename, label in extra:
                 content = session.read(filename)

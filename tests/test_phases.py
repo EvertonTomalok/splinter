@@ -257,9 +257,7 @@ class TestPhaseConfigModal:
         class _TestApp(App[None]):
             def on_mount(self) -> None:
                 modal = _PhaseConfigModal(phase_num=1)
-                self.push_screen(
-                    modal, callback=lambda r: result_holder.append(r)
-                )
+                self.push_screen(modal, callback=lambda r: result_holder.append(r))
 
         async def _run() -> None:
             app = _TestApp()
@@ -297,9 +295,7 @@ class TestPhaseConfigModal:
                     default_plan_model="opus",
                     default_run_model="haiku",
                 )
-                self.push_screen(
-                    modal, callback=lambda r: result_holder.append(r)
-                )
+                self.push_screen(modal, callback=lambda r: result_holder.append(r))
 
         async def _run() -> None:
             app = _TestApp()

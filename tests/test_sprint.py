@@ -53,12 +53,8 @@ def test_sprint_docstring_describes_flash_first() -> None:
     doc = inspect.getdoc(sprint_module)
     assert doc is not None, "sprint module missing docstring"
     # Expect both "flash" and "cheapest" to be present
-    assert "flash" in doc.lower(), (
-        f"sprint docstring should mention 'flash': {doc}"
-    )
-    assert "cheapest" in doc.lower(), (
-        f"sprint docstring should mention 'cheapest': {doc}"
-    )
+    assert "flash" in doc.lower(), f"sprint docstring should mention 'flash': {doc}"
+    assert "cheapest" in doc.lower(), f"sprint docstring should mention 'cheapest': {doc}"
 
 
 # ---------------------------------------------------------------------------
@@ -86,9 +82,7 @@ def test_route_tier_returns_zero_for_all_efforts(
         assert tier == 0, f"expected T0 for effort={effort}, got T{tier}"
 
 
-def test_route_tier_ignores_budget_args(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_route_tier_ignores_budget_args(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Sprint ignores budget/remaining_efforts and always returns the cheapest tier."""
     monkeypatch.chdir(tmp_path)
     ladder = load_ladder()
@@ -323,9 +317,9 @@ def test_sprint_passes_start_tier_override_zero_for_all_efforts(
         captured_start_tiers.clear()
         task = Task(description="Test task", acceptance="AC", effort=effort, id="T1")
         strategy.execute([task], session, ladder)
-        assert (
-            captured_start_tiers[0] == 0
-        ), f"effort={effort}: expected start_tier_override=0, got {captured_start_tiers[0]}"
+        assert captured_start_tiers[0] == 0, (
+            f"effort={effort}: expected start_tier_override=0, got {captured_start_tiers[0]}"
+        )
 
 
 def test_sprint_passes_configured_soft_budget(
@@ -361,6 +355,6 @@ def test_sprint_passes_configured_soft_budget(
     task = Task(description="Test task", acceptance="AC", effort="trivial", id="T1")
     strategy.execute([task], session, ladder)
 
-    assert (
-        captured_soft_budgets[0] == configured_soft_budget()
-    ), f"expected soft_budget={configured_soft_budget()}, got {captured_soft_budgets[0]}"
+    assert captured_soft_budgets[0] == configured_soft_budget(), (
+        f"expected soft_budget={configured_soft_budget()}, got {captured_soft_budgets[0]}"
+    )

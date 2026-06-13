@@ -22,9 +22,7 @@ from splinter.providers.claude_cli import _event_summaries
 
 
 @pytest.fixture
-def tmp_session(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> Session:
+def tmp_session(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Session:
     """Create a session in a temporary directory."""
     monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
     return Session("test-session")
@@ -97,28 +95,32 @@ def test_malformed_jsonl_skipped(tmp_session: Session) -> None:
     trace_dir.mkdir(parents=True, exist_ok=True)
 
     file_path = trace_dir / "agentic-0.jsonl"
-    line1 = json.dumps({
-        "task_index": 0,
-        "iteration": 1,
-        "provider": "opencode",
-        "model": "gpt-4",
-        "kind": "localize",
-        "tokens": {"input": 100, "output": 50},
-        "cost": 0.01,
-        "ts": "2026-06-10T12:00:00Z",
-        "extra": {},
-    })
-    line3 = json.dumps({
-        "task_index": 0,
-        "iteration": 2,
-        "provider": "claude",
-        "model": "opus",
-        "kind": "plan",
-        "tokens": {"input": 200, "output": 100},
-        "cost": 0.02,
-        "ts": "2026-06-10T12:00:01Z",
-        "extra": {},
-    })
+    line1 = json.dumps(
+        {
+            "task_index": 0,
+            "iteration": 1,
+            "provider": "opencode",
+            "model": "gpt-4",
+            "kind": "localize",
+            "tokens": {"input": 100, "output": 50},
+            "cost": 0.01,
+            "ts": "2026-06-10T12:00:00Z",
+            "extra": {},
+        }
+    )
+    line3 = json.dumps(
+        {
+            "task_index": 0,
+            "iteration": 2,
+            "provider": "claude",
+            "model": "opus",
+            "kind": "plan",
+            "tokens": {"input": 200, "output": 100},
+            "cost": 0.02,
+            "ts": "2026-06-10T12:00:01Z",
+            "extra": {},
+        }
+    )
     with open(file_path, "w") as f:
         f.write(line1 + "\n")
         f.write("not valid json\n")
@@ -130,9 +132,7 @@ def test_malformed_jsonl_skipped(tmp_session: Session) -> None:
     assert loaded[1].iteration == 2
 
 
-def test_write_error_swallowed(
-    tmp_session: Session, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_write_error_swallowed(tmp_session: Session, monkeypatch: pytest.MonkeyPatch) -> None:
     """Injected write error is swallowed, no exception raised."""
     event = AgenticEvent(
         task_index=0,
@@ -146,9 +146,7 @@ def test_write_error_swallowed(
         extra={},
     )
 
-    def mock_open_error(
-        *args: object, **kwargs: object
-    ) -> object:
+    def mock_open_error(*args: object, **kwargs: object) -> object:
         raise IOError("simulated write error")
 
     monkeypatch.setattr("builtins.open", mock_open_error)
@@ -240,21 +238,22 @@ def test_exchange_verbatim_no_truncation(tmp_session: Session) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_event_summaries_tool_use(
-) -> None:
+def test_event_summaries_tool_use() -> None:
     """Parse assistant message with tool_use block into (kind, summary) pair."""
-    line = json.dumps({
-        "type": "assistant",
-        "message": {
-            "content": [
-                {
-                    "type": "tool_use",
-                    "name": "Edit",
-                    "input": {"file_path": "/path/to/file.py", "old": "a", "new": "b"},
-                }
-            ]
-        },
-    })
+    line = json.dumps(
+        {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "name": "Edit",
+                        "input": {"file_path": "/path/to/file.py", "old": "a", "new": "b"},
+                    }
+                ]
+            },
+        }
+    )
     summaries = _event_summaries(line)
     assert len(summaries) == 1
     assert summaries[0][0] == "tool_use"
@@ -262,111 +261,112 @@ def test_event_summaries_tool_use(
     assert "/path/to/file.py" in summaries[0][1]
 
 
-def test_event_summaries_text(
-) -> None:
+def test_event_summaries_text() -> None:
     """Parse assistant message with text block into (kind, summary) pair."""
-    line = json.dumps({
-        "type": "assistant",
-        "message": {
-            "content": [
-                {
-                    "type": "text",
-                    "text": "Here is the solution to your problem",
-                }
-            ]
-        },
-    })
+    line = json.dumps(
+        {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "Here is the solution to your problem",
+                    }
+                ]
+            },
+        }
+    )
     summaries = _event_summaries(line)
     assert len(summaries) == 1
     assert summaries[0][0] == "text"
     assert "solution" in summaries[0][1]
 
 
-def test_event_summaries_mixed_content(
-) -> None:
+def test_event_summaries_mixed_content() -> None:
     """Parse assistant message with both tool_use and text blocks."""
-    line = json.dumps({
-        "type": "assistant",
-        "message": {
-            "content": [
-                {
-                    "type": "tool_use",
-                    "name": "Write",
-                    "input": {"file_path": "/new/file.ts"},
-                },
-                {
-                    "type": "text",
-                    "text": "Created the new file",
-                },
-            ]
-        },
-    })
+    line = json.dumps(
+        {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "name": "Write",
+                        "input": {"file_path": "/new/file.ts"},
+                    },
+                    {
+                        "type": "text",
+                        "text": "Created the new file",
+                    },
+                ]
+            },
+        }
+    )
     summaries = _event_summaries(line)
     assert len(summaries) == 2
     assert summaries[0][0] == "tool_use"
     assert summaries[1][0] == "text"
 
 
-def test_event_summaries_tool_detail_truncation(
-) -> None:
+def test_event_summaries_tool_detail_truncation() -> None:
     """Tool details truncated to ≤90 chars."""
     long_path = "a" * 200
-    line = json.dumps({
-        "type": "assistant",
-        "message": {
-            "content": [
-                {
-                    "type": "tool_use",
-                    "name": "Edit",
-                    "input": {"file_path": long_path},
-                }
-            ]
-        },
-    })
+    line = json.dumps(
+        {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "name": "Edit",
+                        "input": {"file_path": long_path},
+                    }
+                ]
+            },
+        }
+    )
     summaries = _event_summaries(line)
     assert len(summaries) == 1
     summary = summaries[0][1]
     assert len(summary) <= 110  # "🔧 Edit " + 90 chars max
 
 
-def test_event_summaries_text_full(
-) -> None:
+def test_event_summaries_text_full() -> None:
     """Text summaries include full content — no truncation."""
     long_text = "B" * 300
-    line = json.dumps({
-        "type": "assistant",
-        "message": {
-            "content": [
-                {
-                    "type": "text",
-                    "text": long_text,
-                }
-            ]
-        },
-    })
+    line = json.dumps(
+        {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": long_text,
+                    }
+                ]
+            },
+        }
+    )
     summaries = _event_summaries(line)
     assert len(summaries) == 1
     summary = summaries[0][1]
     assert summary == f"💬 {long_text}"
 
 
-def test_event_summaries_malformed_json(
-) -> None:
+def test_event_summaries_malformed_json() -> None:
     """Malformed JSON returns empty list."""
     assert _event_summaries("not valid json") == []
     assert _event_summaries("{unclosed") == []
     assert _event_summaries("") == []
 
 
-def test_event_summaries_non_assistant_ignored(
-) -> None:
+def test_event_summaries_non_assistant_ignored() -> None:
     """Non-assistant messages return empty list."""
     line = json.dumps({"type": "stream_event", "event": {"type": "other"}})
     assert _event_summaries(line) == []
 
 
-def test_event_summaries_non_dict(
-) -> None:
+def test_event_summaries_non_dict() -> None:
     """Non-dict objects return empty list."""
     assert _event_summaries('"just a string"') == []
     assert _event_summaries('["array", "not", "dict"]') == []

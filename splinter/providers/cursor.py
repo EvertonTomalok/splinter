@@ -47,9 +47,7 @@ def run(
         cwd=project_dir,
     )
     if proc.returncode != 0:
-        raise RuntimeError(
-            f"cursor exited {proc.returncode}: {proc.stderr.strip()}"
-        )
+        raise RuntimeError(f"cursor exited {proc.returncode}: {proc.stderr.strip()}")
     text = proc.stdout.strip()
     return CursorResult(text=text, raw={"returncode": proc.returncode})
 

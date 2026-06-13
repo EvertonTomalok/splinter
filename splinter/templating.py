@@ -21,8 +21,7 @@ from pathlib import Path
 PROMPTS_PACKAGE = "splinter.prompts"
 
 SEQUENTIAL_DIRECTIVE = (
-    "Runs are sequential-only. No strategy selection. "
-    "No parallel execution. One task at a time.\n"
+    "Runs are sequential-only. No strategy selection. No parallel execution. One task at a time.\n"
 )
 
 #: Template names the harness ships and that ``configure`` scaffolds.

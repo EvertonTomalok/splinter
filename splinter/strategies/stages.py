@@ -87,6 +87,7 @@ class Stage(ABC):
         if self.process(ctx):
             if self._next is not None:
                 from splinter import procreg
+
                 if procreg.stop_requested():
                     ctx.pause_at_stage = self._next.name
                     return ctx
@@ -125,7 +126,8 @@ def _render_actions(task_index: int, iteration: int, session: Session) -> str:
     """
     events = load_agentic_events(session)
     actions = [
-        e for e in events
+        e
+        for e in events
         if e.task_index == task_index
         and e.iteration == iteration
         and e.kind in {"tool_use", "text"}
@@ -273,6 +275,7 @@ class EvalStage(Stage):
 
         if ctx.skip_eval:
             from splinter.enums import Decision
+
             ctx.verdict = EvalVerdict(
                 decision=Decision.PASS,
                 reason="eval skipped by user",
@@ -282,8 +285,7 @@ class EvalStage(Stage):
             ctx.flush_loop()
             ctx.session.append(
                 "eval.md",
-                f"### Iter {ctx.iteration}: PASS (skipped)\n"
-                "**Reason:** eval skipped by user\n\n",
+                f"### Iter {ctx.iteration}: PASS (skipped)\n**Reason:** eval skipped by user\n\n",
             )
             return True
 

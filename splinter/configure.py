@@ -487,10 +487,7 @@ def current_model_selections() -> dict[str, Any]:
 
 def _normalize_gate_checks(checks: list[dict[str, str]]) -> list[dict[str, str]]:
     """Ensure gate checks have language field."""
-    return [
-        {**c, "language": c.get("language", "all")}
-        for c in checks
-    ]
+    return [{**c, "language": c.get("language", "all")} for c in checks]
 
 
 def load_final_eval(config: dict[str, Any]) -> list[FinalEvalEntry]:

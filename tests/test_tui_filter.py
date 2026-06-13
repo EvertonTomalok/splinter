@@ -11,11 +11,13 @@ def _patch_list_models(monkeypatch: "pytest.MonkeyPatch") -> None:
     from splinter.providers import opencode
 
     monkeypatch.setattr(
-        opencode, "list_models", lambda timeout=30: [
+        opencode,
+        "list_models",
+        lambda timeout=30: [
             "opencode-go/flash",
             "opencode-go/deepseek-v4-pro",
             "opencode-go/qwen-coder",
-        ]
+        ],
     )
 
 
@@ -138,9 +140,7 @@ class TestFilterSelectionPreserved:
 
 
 class TestFilterPerRowIsolation:
-    def test_per_row_isolation(
-        self, tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
-    ) -> None:
+    def test_per_row_isolation(self, tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
         from splinter.tui import ConfigureApp
 
         _patch_list_models(monkeypatch)

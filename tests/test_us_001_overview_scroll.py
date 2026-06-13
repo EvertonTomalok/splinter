@@ -8,9 +8,7 @@ if TYPE_CHECKING:
     import pytest
 
 
-def test_long_overview_shows_scrollbar(
-    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
-) -> None:
+def test_long_overview_shows_scrollbar(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
     import pytest
 
     pytest.importorskip("textual")
@@ -43,24 +41,18 @@ def test_long_overview_shows_scrollbar(
             await pilot.pause()
             for _ in range(20):
                 await pilot.pause(0.05)
-                if app.workers and all(
-                    w.state.name in ("SUCCESS", "ERROR") for w in app.workers
-                ):
+                if app.workers and all(w.state.name in ("SUCCESS", "ERROR") for w in app.workers):
                     break
             await pilot.pause()
             scroll = app.query_one("#overview-scroll", VerticalScroll)
             max_scroll = scroll.max_scroll_y
-            assert (
-                max_scroll > 0
-            ), f"scrollbar not present — max_scroll_y = {max_scroll}"
+            assert max_scroll > 0, f"scrollbar not present — max_scroll_y = {max_scroll}"
             await pilot.press("q")
 
     asyncio.run(drive())
 
 
-def test_short_overview_no_scrollbar(
-    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
-) -> None:
+def test_short_overview_no_scrollbar(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
     import pytest
 
     pytest.importorskip("textual")
@@ -93,24 +85,20 @@ def test_short_overview_no_scrollbar(
             await pilot.pause()
             for _ in range(20):
                 await pilot.pause(0.05)
-                if app.workers and all(
-                    w.state.name in ("SUCCESS", "ERROR") for w in app.workers
-                ):
+                if app.workers and all(w.state.name in ("SUCCESS", "ERROR") for w in app.workers):
                     break
             await pilot.pause()
             scroll = app.query_one("#overview-scroll", VerticalScroll)
             max_scroll = scroll.max_scroll_y
-            assert (
-                max_scroll == 0
-            ), f"scrollbar present but should not be — max_scroll_y = {max_scroll}"
+            assert max_scroll == 0, (
+                f"scrollbar present but should not be — max_scroll_y = {max_scroll}"
+            )
             await pilot.press("q")
 
     asyncio.run(drive())
 
 
-def test_scroll_reaches_top_and_bottom(
-    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
-) -> None:
+def test_scroll_reaches_top_and_bottom(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
     import pytest
 
     pytest.importorskip("textual")
@@ -143,9 +131,7 @@ def test_scroll_reaches_top_and_bottom(
             await pilot.pause()
             for _ in range(20):
                 await pilot.pause(0.05)
-                if app.workers and all(
-                    w.state.name in ("SUCCESS", "ERROR") for w in app.workers
-                ):
+                if app.workers and all(w.state.name in ("SUCCESS", "ERROR") for w in app.workers):
                     break
             await pilot.pause()
             scroll = app.query_one("#overview-scroll", VerticalScroll)
@@ -155,9 +141,9 @@ def test_scroll_reaches_top_and_bottom(
 
             await pilot.press("end")
             await pilot.pause()
-            assert (
-                scroll.scroll_offset.y == max_scroll
-            ), f"end key should reach bottom — {scroll.scroll_offset.y} != {max_scroll}"
+            assert scroll.scroll_offset.y == max_scroll, (
+                f"end key should reach bottom — {scroll.scroll_offset.y} != {max_scroll}"
+            )
 
             await pilot.press("home")
             await pilot.pause()
@@ -168,9 +154,7 @@ def test_scroll_reaches_top_and_bottom(
     asyncio.run(drive())
 
 
-def test_pagedown_pageup_scroll(
-    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
-) -> None:
+def test_pagedown_pageup_scroll(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
     import pytest
 
     pytest.importorskip("textual")
@@ -203,9 +187,7 @@ def test_pagedown_pageup_scroll(
             await pilot.pause()
             for _ in range(20):
                 await pilot.pause(0.05)
-                if app.workers and all(
-                    w.state.name in ("SUCCESS", "ERROR") for w in app.workers
-                ):
+                if app.workers and all(w.state.name in ("SUCCESS", "ERROR") for w in app.workers):
                     break
             await pilot.pause()
             scroll = app.query_one("#overview-scroll", VerticalScroll)
@@ -216,25 +198,23 @@ def test_pagedown_pageup_scroll(
             await pilot.press("pagedown")
             await pilot.pause()
             after_pagedown = scroll.scroll_offset.y
-            assert (
-                after_pagedown > start_offset
-            ), f"pagedown should scroll — {after_pagedown} <= {start_offset}"
+            assert after_pagedown > start_offset, (
+                f"pagedown should scroll — {after_pagedown} <= {start_offset}"
+            )
 
             await pilot.press("pageup")
             await pilot.pause()
             after_pageup = scroll.scroll_offset.y
-            assert (
-                after_pageup < after_pagedown
-            ), f"pageup should scroll back — {after_pageup} >= {after_pagedown}"
+            assert after_pageup < after_pagedown, (
+                f"pageup should scroll back — {after_pageup} >= {after_pagedown}"
+            )
 
             await pilot.press("q")
 
     asyncio.run(drive())
 
 
-def test_run_keybindings_not_shadowed(
-    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
-) -> None:
+def test_run_keybindings_not_shadowed(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
     import pytest
 
     pytest.importorskip("textual")
@@ -277,9 +257,7 @@ def test_run_keybindings_not_shadowed(
             await pilot.pause()
             for _ in range(20):
                 await pilot.pause(0.05)
-                if app.workers and all(
-                    w.state.name in ("SUCCESS", "ERROR") for w in app.workers
-                ):
+                if app.workers and all(w.state.name in ("SUCCESS", "ERROR") for w in app.workers):
                     break
             await pilot.pause()
 
@@ -293,17 +271,15 @@ def test_run_keybindings_not_shadowed(
 
     asyncio.run(drive())
 
-    assert (
-        "pause_graceful" in actions_called
-    ), f"p key did not trigger pause_graceful — got: {actions_called}"
-    assert (
-        "pause_kill" in actions_called
-    ), f"k key did not trigger pause_kill — got: {actions_called}"
+    assert "pause_graceful" in actions_called, (
+        f"p key did not trigger pause_graceful — got: {actions_called}"
+    )
+    assert "pause_kill" in actions_called, (
+        f"k key did not trigger pause_kill — got: {actions_called}"
+    )
 
 
-def test_log_pane_unchanged(
-    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
-) -> None:
+def test_log_pane_unchanged(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
     import pytest
 
     pytest.importorskip("textual")
@@ -330,9 +306,7 @@ def test_log_pane_unchanged(
             await pilot.pause()
             for _ in range(20):
                 await pilot.pause(0.05)
-                if app.workers and all(
-                    w.state.name in ("SUCCESS", "ERROR") for w in app.workers
-                ):
+                if app.workers and all(w.state.name in ("SUCCESS", "ERROR") for w in app.workers):
                     break
             await pilot.pause()
 
@@ -340,9 +314,9 @@ def test_log_pane_unchanged(
             overview_static = app.query_one("#overview", Static)
             log = app.query_one("#log", RichLog)
 
-            assert isinstance(
-                overview_scroll, VerticalScroll
-            ), "overview-scroll should be VerticalScroll"
+            assert isinstance(overview_scroll, VerticalScroll), (
+                "overview-scroll should be VerticalScroll"
+            )
             assert isinstance(overview_static, Static), "overview should be Static"
             assert isinstance(log, RichLog), "log should be RichLog"
 

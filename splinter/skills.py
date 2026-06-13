@@ -51,7 +51,9 @@ def resolve_eval_skill(name: str | None) -> ResolvedSkill | None:
 
     log.warning(
         "eval skill '%s' not found (looked in skills/%s/SKILL.md and splinter/skills/%s/SKILL.md)",
-        name, name, name,
+        name,
+        name,
+        name,
     )
     return ResolvedSkill(
         name=name,

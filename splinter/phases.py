@@ -143,9 +143,7 @@ def run_phase(
         f"[run] phase {n} · {cfg.run_model} · {cfg.run_effort}",
     )
 
-    run_prompt = _build_prompt(
-        task, plan, localization="", corrections="", is_continuation=False
-    )
+    run_prompt = _build_prompt(task, plan, localization="", corrections="", is_continuation=False)
     provider = get_provider(provider_for(cfg.run_model))
     response = provider.run(
         run_prompt,
@@ -207,9 +205,7 @@ def run_phase(
     log.info("phase %d · gate %s", n, gate_status)
     session.append(
         "phase_loop.md",
-        f"gate {gate_status}"
-        + (f"\n\n{gate_output}" if gate_output else "")
-        + "\n\n",
+        f"gate {gate_status}" + (f"\n\n{gate_output}" if gate_output else "") + "\n\n",
     )
 
     phase_result = PhaseResult(

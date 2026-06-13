@@ -152,7 +152,7 @@ def refine(
     resume: str,
     prd_text: str | None = None,
     localization: str = "",
-    session: object = None
+    session: object = None,
 ) -> Turn:
     """Incorporate the user's answers; return the updated draft + remaining questions.
 
@@ -230,7 +230,7 @@ def generate_prd(
     *,
     strategy: str | None = None,
     localization: str = "",
-    session: object = None
+    session: object = None,
 ) -> Turn:
     """Generate a complete PRD directly from instructions (no Q&A).
 
