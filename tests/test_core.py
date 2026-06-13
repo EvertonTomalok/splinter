@@ -118,12 +118,14 @@ def test_config_model_overrides_apply_to_ladder(
     write_model_config(
         {
             "planner": "opus-4.8",
+            "prd": "sonnet",
             "localizer_precision": "opencode-go/minimax-m3",
             "tiers": ["opencode-go/kimi-k2.6"],
         }
     )
     ladder = load_ladder()
     assert ladder.planner_model == "opus-4.8"
+    assert ladder.prd_model == "sonnet"
     assert ladder.localizer_precision_model == "opencode-go/minimax-m3"
     t0 = ladder.tier_by_level(0)
     assert t0.models[0] == "opencode-go/kimi-k2.6"
@@ -141,6 +143,7 @@ def test_config_effort_overrides_apply_to_ladder(
         {},
         {
             "planner": "max",
+            "prd": "low",
             "eval": "low",
             "localizer_recall": "high",
             # tier 0 overridden to high; blank tiers keep the ladder.yaml default.
@@ -149,6 +152,7 @@ def test_config_effort_overrides_apply_to_ladder(
     )
     ladder = load_ladder()
     assert ladder.planner_effort == "max"
+    assert ladder.prd_effort == "low"
     assert ladder.eval_effort == "low"
     assert ladder.localizer_recall_variant == "high"
     assert ladder.tier_variant(0) == "high"  # config override wins
@@ -1864,6 +1868,87 @@ def test_refine_omits_grounding_when_empty(monkeypatch: "pytest.MonkeyPatch") ->
     assert "## Codebase Localization" not in captured[0]
 
 
+def test_prd_session_uses_configured_prd_model_and_effort(
+    monkeypatch: "pytest.MonkeyPatch",
+) -> None:
+    from splinter import prd_session
+    from splinter.models.roster import load_ladder
+    from splinter.providers.base import ProviderResponse
+
+    seen: dict[str, object] = {}
+    ladder = load_ladder()
+    ladder.prd_model = "haiku"
+    ladder.prd_effort = "low"
+    ladder.prd_timeout = 1234
+
+    monkeypatch.setattr(prd_session, "load_ladder", lambda: ladder)
+
+    def _fake_run_provider_session(
+        prompt: str,
+        model: str,
+        **kwargs: object,
+    ) -> tuple[ProviderResponse, str]:
+        seen["model"] = model
+        seen["variant"] = kwargs.get("variant")
+        seen["timeout"] = kwargs.get("timeout")
+        return (
+            ProviderResponse(
+                text="Q1?",
+                tokens={"input": 10, "output": 5},
+                cost=0.01,
+                session_id="sid-2",
+            ),
+            "sid-2",
+        )
+
+    monkeypatch.setattr(prd_session, "run_provider_session", _fake_run_provider_session)
+    turn = prd_session.open_questions("## Draft\nx")
+    assert seen["model"] == "haiku"
+    assert seen["variant"] == "low"
+    assert seen["timeout"] == 1234
+    assert turn.session_id == "sid-2"
+
+
+def test_refine_embeds_current_editor_draft(monkeypatch: "pytest.MonkeyPatch") -> None:
+    """refine prompt includes the current editor draft when provided."""
+    from splinter import prd_session
+
+    captured: list[str] = []
+
+    def _fake_ask(prompt: str, *, resume: str | None, session: object = None) -> prd_session.Turn:
+        captured.append(prompt)
+        return prd_session.Turn(
+            text="## Working Draft\n```\n---\nfeature: x\n---\n```\n## Open Questions\nNone",
+            session_id="sid",
+        )
+
+    monkeypatch.setattr(prd_session, "_ask", _fake_ask)
+    prd_session.refine("1A", resume="sid", current_prd="### US-001: Live draft")
+    assert "## Current PRD Draft in Editor (source of truth)" in captured[0]
+    assert "### US-001: Live draft" in captured[0]
+
+
+def test_finalize_embeds_current_editor_draft(monkeypatch: "pytest.MonkeyPatch") -> None:
+    """finalize prompt includes the current editor draft when provided."""
+    from splinter import prd_session
+
+    captured: list[str] = []
+
+    def _fake_ask(prompt: str, *, resume: str | None, session: object = None) -> prd_session.Turn:
+        captured.append(prompt)
+        return prd_session.Turn(text="---\nfeature: x\n---\n", session_id="sid")
+
+    monkeypatch.setattr(prd_session, "_ask", _fake_ask)
+    prd_session.finalize(
+        resume="sid",
+        strategy="direct",
+        autodecide=False,
+        current_prd="### US-001: Live draft",
+    )
+    assert "## Current PRD Draft in Editor (source of truth)" in captured[0]
+    assert "### US-001: Live draft" in captured[0]
+
+
 def test_localize_cache_skips_search(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
     """localize short-circuits without calling _run_search_tools when cache exists."""
     from splinter.agents import localizer
@@ -2767,6 +2852,7 @@ def test_current_model_selections_returns_providers_block(
     assert "localizer_recall_large" in providers
     assert "localizer_precision" in providers
     assert "planner" in providers
+    assert "prd" in providers
     assert "eval" in providers
     assert "tiers" in providers
     assert isinstance(providers["tiers"], list)
@@ -2775,6 +2861,7 @@ def test_current_model_selections_returns_providers_block(
         assert p in {"claude", "opencode", "codex", "cursor"}
     ladder = load_ladder()
     assert providers["planner"] == provider_for(ladder.planner_model)
+    assert providers["prd"] == provider_for(ladder.prd_model)
     assert providers["eval"] == provider_for(ladder.eval_model)
 
 
@@ -3343,6 +3430,7 @@ def test_save_writes_selected_models_per_row(
         "localizer_recall_large": "sonnet",
         "localizer_precision": "haiku",
         "planner": "opus",
+        "prd": "opus",
         "eval": "sonnet",
         "tiers": ["haiku", "sonnet", "sonnet", "opus", "opus", "opus"],
     }
@@ -3351,6 +3439,7 @@ def test_save_writes_selected_models_per_row(
         "localizer_recall_large": "low",
         "localizer_precision": "low",
         "planner": "high",
+        "prd": "high",
         "eval": "high",
         "tiers": ["medium", "high", "high", "max", "xhigh", "max"],
     }
@@ -3359,6 +3448,7 @@ def test_save_writes_selected_models_per_row(
         "localizer_recall_large": 120,
         "localizer_precision": 120,
         "planner": 600,
+        "prd": 600,
         "eval": 600,
         "tiers": [300, 300, 600, 600, 900, 900],
     }
@@ -3386,11 +3476,13 @@ def test_blank_model_omitted(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") 
     config = load_config()
     assert "localizer_recall" not in config["models"]
     assert "planner" not in config["models"]
+    assert "prd" not in config["models"]
     assert config["models"]["localizer_recall_large"] == "sonnet"
     assert config["models"]["tiers"][0] == "haiku"
     selections = current_model_selections()
     assert selections["models"]["localizer_recall"] != ""
     assert selections["models"]["planner"] != ""
+    assert selections["models"]["prd"] != ""
 
 
 def test_save_load_roundtrip(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
@@ -3402,6 +3494,7 @@ def test_save_load_roundtrip(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") 
         "localizer_recall_large": "sonnet",
         "localizer_precision": "haiku",
         "planner": "opus",
+        "prd": "opus",
         "eval": "sonnet",
         "tiers": ["haiku", "sonnet", "sonnet", "opus", "opus", "opus"],
     }
@@ -3410,6 +3503,7 @@ def test_save_load_roundtrip(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") 
         "localizer_recall_large": "low",
         "localizer_precision": "low",
         "planner": "high",
+        "prd": "high",
         "eval": "high",
         "tiers": ["low", "high", "high", "max", "high", "max"],
     }
@@ -3418,6 +3512,7 @@ def test_save_load_roundtrip(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") 
         "localizer_recall_large": 120,
         "localizer_precision": 120,
         "planner": 600,
+        "prd": 600,
         "eval": 600,
         "tiers": [300, 300, 600, 600, 900, 900],
     }

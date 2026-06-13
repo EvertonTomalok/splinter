@@ -80,6 +80,10 @@ planner:
   model: *opus
   effort: high
 
+prd:
+  model: *opus
+  effort: high
+
 localizer:
   # recall/search: cheap context grab for the planner
   recall_model: *deepseek_flash_free
