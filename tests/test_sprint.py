@@ -54,3 +54,17 @@ def test_route_tier_returns_zero_for_all_efforts(
     for effort in ("trivial", "normal", "hard", "critical"):
         tier = strategy._route_tier(effort, ladder)
         assert tier == 0, f"expected T0 for effort={effort}, got T{tier}"
+
+
+def test_route_tier_ignores_budget_args(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Sprint ignores budget/remaining_efforts and always returns the cheapest tier."""
+    monkeypatch.chdir(tmp_path)
+    ladder = load_ladder()
+    strategy = SprintStrategy()
+    floor = min(t.level for t in ladder.tiers)
+    for effort in ("trivial", "normal", "hard", "critical"):
+        assert strategy._route_tier(effort, ladder, 0.001, [effort]) == floor
+        assert strategy._route_tier(effort, ladder, 100.0, [effort]) == floor
+        assert strategy._route_tier(effort, ladder, None, None) == floor
