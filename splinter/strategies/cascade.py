@@ -73,11 +73,11 @@ class CascadeStrategy(DirectStrategy):
                 stage="run",
                 task_index=i,
                 task_total=len(ordered),
-                task=task.description.splitlines()[0][:80],
+                task=task.description.splitlines()[0],
             )
             session.append(
                 "loop.md",
-                f"# Task {i + 1}/{len(ordered)}: {task.description.splitlines()[0][:80]}\n\n",
+                f"# Task {i + 1}/{len(ordered)}: {task.description.splitlines()[0]}\n\n",
             )
 
             result = self._run_task_loop(

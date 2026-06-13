@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 
 from splinter.agents.runner import RunResult, Task
-from splinter.configure import configured_budget
+from splinter.configure import configured_budget, configured_soft_budget
 from splinter.enums import Effort
 from splinter.memory.knowledge import KnowledgeStore
 from splinter.memory.session import Session
@@ -42,6 +42,8 @@ def _effort_weight(effort: str) -> int:
 class AdaptiveStrategy(CascadeStrategy):
     name = "adaptive"
     aliases = ["donatello"]
+    _log_prefix: str = "adaptive"
+    _log_routing_detail: bool = True
 
     def execute(
         self,
@@ -61,6 +63,7 @@ class AdaptiveStrategy(CascadeStrategy):
         jump_premium: bool = False,
     ) -> list[RunResult]:
         effective_budget = budget if budget is not None else configured_budget()
+        effective_soft_budget = configured_soft_budget()
         ordered = self._topo_sort(tasks)
 
         existing_trace = session.read("trace.md")
@@ -84,6 +87,7 @@ class AdaptiveStrategy(CascadeStrategy):
                 continue
 
             task_effort = effort or task.effort
+
             remaining_budget = (
                 None if effective_budget is None
                 else max(0.0, effective_budget - trace.total_cost)
@@ -93,41 +97,48 @@ class AdaptiveStrategy(CascadeStrategy):
                 for t in ordered[i:]
                 if not (t.id and t.id in done)
             ]
-            em = ladder.effort_mapping(task_effort)
-            floor = em.start_tier if em is not None else 0
-            efforts = remaining_efforts or [task_effort]
-            total_w = sum(_effort_weight(e) for e in efforts)
-            per_task_share: float | None = (
-                remaining_budget * _effort_weight(task_effort) / total_w
-                if remaining_budget is not None and total_w > 0
-                else None
+            routed_tier = self._route_tier(
+                task_effort, ladder, remaining_budget, remaining_efforts
             )
-            routed_tier = self._route_tier(task_effort, ladder, remaining_budget, remaining_efforts)
-            down_routed = routed_tier < floor
-            log.info(
-                "adaptive: task %d/%d effort=%s → T%d (%s)"
-                " [budget=%s share=%s floor=T%d down_routed=%s]",
-                i + 1,
-                len(ordered),
-                task_effort,
-                routed_tier,
-                ladder.tier_by_level(routed_tier).name,
-                f"{remaining_budget:.4f}" if remaining_budget is not None else "n/a",
-                f"{per_task_share:.4f}" if per_task_share is not None else "n/a",
-                floor,
-                down_routed,
-            )
+
+            if self._log_routing_detail:
+                em = ladder.effort_mapping(task_effort)
+                floor = em.start_tier if em is not None else 0
+                down_routed = routed_tier < floor
+                log.info(
+                    "%s: task %d/%d effort=%s → T%d (%s)"
+                    " [budget=%s floor=T%d down_routed=%s]",
+                    self._log_prefix,
+                    i + 1,
+                    len(ordered),
+                    task_effort,
+                    routed_tier,
+                    ladder.tier_by_level(routed_tier).name,
+                    f"{remaining_budget:.4f}" if remaining_budget is not None else "n/a",
+                    floor,
+                    down_routed,
+                )
+            else:
+                log.info(
+                    "%s: task %d/%d effort=%s → T%d (%s)",
+                    self._log_prefix,
+                    i + 1,
+                    len(ordered),
+                    task_effort,
+                    routed_tier,
+                    ladder.tier_by_level(routed_tier).name,
+                )
 
             session.set_status(
                 "running",
                 stage="run",
                 task_index=i,
                 task_total=len(ordered),
-                task=task.description.splitlines()[0][:80],
+                task=task.description.splitlines()[0],
             )
             session.append(
                 "loop.md",
-                f"# Task {i + 1}/{len(ordered)}: {task.description.splitlines()[0][:80]}\n\n",
+                f"# Task {i + 1}/{len(ordered)}: {task.description.splitlines()[0]}\n\n",
             )
 
             result = self._run_task_loop(
@@ -144,7 +155,7 @@ class AdaptiveStrategy(CascadeStrategy):
                 eval_skill=eval_skill,
                 cowabunga=cowabunga,
                 resume=False,
-                soft_budget=True,
+                soft_budget=effective_soft_budget,
                 start_tier_override=routed_tier,
             )
 
@@ -184,9 +195,6 @@ class AdaptiveStrategy(CascadeStrategy):
 
         efforts = remaining_efforts or [effort]
         total_w = sum(_effort_weight(e) for e in efforts)
-        if total_w <= 0:
-            return floor
-
         per_task_share = remaining_budget * _effort_weight(effort) / total_w
 
         floor_tier = ladder.tier_by_level(floor)

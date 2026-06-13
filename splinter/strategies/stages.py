@@ -160,7 +160,7 @@ class RunStage(Stage):
             variant,
             "same session" if ctx.oc_session else "new session",
         )
-        log.info("  ▸ task: %s", ctx.task.description.splitlines()[0][:100])
+        log.info("  ▸ task: %s", ctx.task.description.splitlines()[0])
         with agentic_scope(ctx.session, "run", ctx.task_index, ctx.iteration):
             result = run_task(
                 ctx.task,

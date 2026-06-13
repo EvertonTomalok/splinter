@@ -77,7 +77,7 @@ def _stream_codex_event(line: str) -> None:
         if isinstance(item, dict) and item.get("type") == "agent_message":
             txt = str(item.get("text", "")).strip().replace("\n", " ")
             if txt:
-                _stream_log.info("  \U0001f4ac %s", txt[:120])
+                _stream_log.info("  \U0001f4ac %s", txt)
 
 
 def _parse_jsonl(stdout: str) -> dict[str, Any]:

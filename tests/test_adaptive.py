@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from splinter.agents.runner import RunResult, Task
-from splinter.configure import configured_budget
+from splinter.configure import configured_budget, configured_soft_budget
 from splinter.enums import Decision
 from splinter.models.pricing import estimate_tier_cost
 from splinter.models.roster import Tier, load_ladder
@@ -229,6 +229,104 @@ def test_adaptive_uses_config_budget_when_no_cli_budget(
 
 
 # ---------------------------------------------------------------------------
+# configured_soft_budget: reads from config
+# ---------------------------------------------------------------------------
+
+
+def test_configured_soft_budget_default_true(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With no config file, configured_soft_budget() defaults to True."""
+    monkeypatch.chdir(tmp_path)
+    assert configured_soft_budget() is True
+
+
+def test_configured_soft_budget_reads_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """configured_soft_budget() reads soft_budget from config."""
+    monkeypatch.chdir(tmp_path)
+    config_dir = tmp_path / ".splinter"
+    config_dir.mkdir()
+    (config_dir / "config.yaml").write_text("defaults:\n  soft_budget: false\n")
+    assert configured_soft_budget() is False
+
+
+def test_configured_soft_budget_invalid_returns_true(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Malformed soft_budget value returns True (covers exception branch)."""
+    monkeypatch.chdir(tmp_path)
+    config_dir = tmp_path / ".splinter"
+    config_dir.mkdir()
+    (config_dir / "config.yaml").write_text("defaults:\n  soft_budget: [not, a, bool]\n")
+    assert configured_soft_budget() is True
+
+
+def test_adaptive_passes_config_soft_budget_to_loop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AdaptiveStrategy.execute passes configured soft_budget to _run_task_loop."""
+    monkeypatch.chdir(tmp_path)
+    config_dir = tmp_path / ".splinter"
+    config_dir.mkdir()
+    (config_dir / "config.yaml").write_text("defaults:\n  soft_budget: false\n")
+
+    ladder = load_ladder()
+    strategy = AdaptiveStrategy()
+
+    captured: list[bool] = []
+
+    def mock_loop(*args, **kwargs):  # type: ignore[no-untyped-def]
+        captured.append(kwargs.get("soft_budget"))
+        rr = MagicMock(spec=RunResult)
+        rr.text = "done"
+        return rr
+
+    strategy._run_task_loop = mock_loop  # type: ignore[method-assign]
+    strategy._run_plan_phase = lambda *a, **kw: None  # type: ignore[method-assign]
+
+    task = Task(description="Test task", acceptance="AC", effort="trivial", id="T1")
+    session = MagicMock()
+    session.read.return_value = ""
+    session.read_status.return_value = {}
+
+    strategy.execute([task], session, ladder)
+
+    assert captured and captured[0] is False
+
+
+def test_adaptive_default_soft_budget_true(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With no config, AdaptiveStrategy passes soft_budget=True to _run_task_loop."""
+    monkeypatch.chdir(tmp_path)
+
+    ladder = load_ladder()
+    strategy = AdaptiveStrategy()
+
+    captured: list[bool] = []
+
+    def mock_loop(*args, **kwargs):  # type: ignore[no-untyped-def]
+        captured.append(kwargs.get("soft_budget"))
+        rr = MagicMock(spec=RunResult)
+        rr.text = "done"
+        return rr
+
+    strategy._run_task_loop = mock_loop  # type: ignore[method-assign]
+    strategy._run_plan_phase = lambda *a, **kw: None  # type: ignore[method-assign]
+
+    task = Task(description="Test task", acceptance="AC", effort="trivial", id="T1")
+    session = MagicMock()
+    session.read.return_value = ""
+    session.read_status.return_value = {}
+
+    strategy.execute([task], session, ladder)
+
+    assert captured and captured[0] is True
+
+
+# ---------------------------------------------------------------------------
 # soft_budget: caps escalation but run continues
 # ---------------------------------------------------------------------------
 
@@ -324,3 +422,114 @@ def test_adaptive_registered() -> None:
 def test_donatello_alias_registered() -> None:
     strategy = get_strategy("donatello")
     assert isinstance(strategy, AdaptiveStrategy)
+
+
+# ---------------------------------------------------------------------------
+# US-002: Sprint lines logging
+# ---------------------------------------------------------------------------
+
+
+def test_adaptive_log_routing_detail_true() -> None:
+    """AdaptiveStrategy._log_routing_detail is True by default."""
+    strategy = AdaptiveStrategy()
+    assert strategy._log_routing_detail is True
+
+
+def test_adaptive_detailed_log_format(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Detailed log includes [budget=...] when _log_routing_detail=True."""
+    from unittest.mock import MagicMock
+
+    from splinter.agents.runner import RunResult, Task
+    from splinter.memory.session import Session
+
+    monkeypatch.chdir(tmp_path)
+    caplog.set_level("INFO", logger="splinter.loop")
+
+    session = Session(str(tmp_path / "ses"))
+    ladder = load_ladder()
+    task = Task(description="Test task", acceptance="AC", effort="normal", id="T1")
+
+    strategy = AdaptiveStrategy()
+    strategy._run_task_loop = MagicMock(
+        return_value=MagicMock(spec=RunResult, text="done")
+    )
+    strategy._run_plan_phase = MagicMock()
+
+    strategy.execute([task], session, ladder, budget=10.0)
+
+    log_messages = [r.message for r in caplog.records if r.name == "splinter.loop"]
+    task_logs = [m for m in log_messages if "task 1/1" in m]
+    assert task_logs, "Expected task log message not found"
+    task_log = task_logs[0]
+
+    assert task_log.startswith("adaptive: task 1/1"), f"log={task_log}"
+    assert "effort=normal" in task_log
+    assert "[budget=" in task_log, f"log should contain [budget=: {task_log}"
+    assert "floor=" in task_log, f"log should contain floor=: {task_log}"
+
+
+def test_adaptive_uses_self_name_prefix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Detailed log prefix uses self.name, not literal 'adaptive'."""
+    from unittest.mock import MagicMock
+
+    from splinter.agents.runner import RunResult, Task
+    from splinter.memory.session import Session
+
+    monkeypatch.chdir(tmp_path)
+    caplog.set_level("INFO", logger="splinter.loop")
+
+    session = Session(str(tmp_path / "ses"))
+    ladder = load_ladder()
+    task = Task(description="Test task", acceptance="AC", effort="normal", id="T1")
+
+    strategy = AdaptiveStrategy()
+    strategy._run_task_loop = MagicMock(
+        return_value=MagicMock(spec=RunResult, text="done")
+    )
+    strategy._run_plan_phase = MagicMock()
+
+    strategy.execute([task], session, ladder, budget=10.0)
+
+    log_messages = [r.message for r in caplog.records if r.name == "splinter.loop"]
+    task_logs = [m for m in log_messages if "task 1/1" in m]
+    assert task_logs
+    task_log = task_logs[0]
+
+    prefix = f"{strategy.name}: task"
+    assert task_log.startswith(prefix), f"Expected prefix {strategy.name}, got {task_log}"
+
+
+def test_adaptive_logs_adaptive_prefix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Regression test: AdaptiveStrategy logs with 'adaptive: task' prefix."""
+    from unittest.mock import MagicMock
+
+    from splinter.agents.runner import RunResult, Task
+    from splinter.memory.session import Session
+
+    monkeypatch.chdir(tmp_path)
+    caplog.set_level("INFO", logger="splinter.loop")
+
+    session = Session(str(tmp_path / "ses"))
+    ladder = load_ladder()
+    task = Task(description="Test task", acceptance="AC", effort="normal", id="T1")
+
+    strategy = AdaptiveStrategy()
+    strategy._run_task_loop = MagicMock(
+        return_value=MagicMock(spec=RunResult, text="done")
+    )
+    strategy._run_plan_phase = MagicMock()
+
+    strategy.execute([task], session, ladder)
+
+    log_messages = [r.message for r in caplog.records if r.name == "splinter.loop"]
+    task_logs = [m for m in log_messages if "task 1/1" in m]
+    assert task_logs, "Expected task log message not found"
+    task_log = task_logs[0]
+
+    assert task_log.startswith("adaptive: task"), f"log={task_log}"

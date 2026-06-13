@@ -1248,29 +1248,40 @@ class _AskUserModal(ModalScreen[tuple[str, str] | None]):
         background: $background 60%;
     }
     _AskUserModal > Vertical#ask-dialog {
-        width: 80;
-        height: auto;
-        max-height: 90%;
+        width: 95%;
+        height: 92%;
         border: round $primary;
         background: $surface;
-        padding: 1 2;
+        padding: 0;
+    }
+    _AskUserModal #ask-header {
+        padding: 1 2 0 2;
+        height: auto;
     }
     _AskUserModal #ask-title {
         text-style: bold;
         color: $primary;
         margin-bottom: 1;
     }
-    _AskUserModal #ask-reason {
+    _AskUserModal #ask-skill-scroll {
+        height: 1fr;
+        border: round $panel;
+        margin: 0 2 1 2;
+        padding: 0 1;
+    }
+    _AskUserModal #ask-input-label {
+        margin: 0 2 0 2;
+        height: auto;
         color: $text-muted;
-        margin-bottom: 1;
     }
     _AskUserModal #ask-response {
         height: 8;
-        margin-bottom: 1;
+        margin: 0 2 1 2;
     }
     _AskUserModal #ask-actions {
         height: 3;
         align-horizontal: center;
+        margin: 0 2 1 2;
     }
     _AskUserModal Button {
         width: 1fr;
@@ -1295,15 +1306,15 @@ class _AskUserModal(ModalScreen[tuple[str, str] | None]):
         self._corrections = corrections
 
     def compose(self) -> ComposeResult:
+        display = self._corrections or self._reason or "The evaluator needs guidance to continue."
         with Vertical(id="ask-dialog"):
-            yield Static("❓  Run Paused · Your input needed", id="ask-title")
-            yield Rule()
-            yield Static(
-                self._reason or "The evaluator needs guidance to continue.",
-                id="ask-reason",
-            )
-            yield Label("Your answer (optional context for the runner):")
-            yield TextArea(self._corrections, id="ask-response")
+            with Vertical(id="ask-header"):
+                yield Static("❓  Run Paused · Your input needed", id="ask-title")
+                yield Rule()
+            with VerticalScroll(id="ask-skill-scroll"):
+                yield Markdown(display)
+            yield Label("Your feedback (optional — sent to the runner):", id="ask-input-label")
+            yield TextArea("", id="ask-response")
             with Horizontal(id="ask-actions"):
                 yield Button("  Answer  (a)", id="answer", variant="success")
                 yield Button("  Jump Premium  (p)", id="jump_premium", variant="primary")
@@ -1311,7 +1322,7 @@ class _AskUserModal(ModalScreen[tuple[str, str] | None]):
                 yield Button("  Exit  (e)", id="exit", variant="error")
 
     def on_mount(self) -> None:
-        self.query_one("#answer", Button).focus()
+        self.query_one("#ask-response", TextArea).focus()
 
     def action_submit_answer(self) -> None:
         self.query_one("#answer", Button).press()
