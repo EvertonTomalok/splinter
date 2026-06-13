@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from splinter.analyze import _eval_segments, _iterations, _tasks
 from splinter.tui import _cap_payload
 
@@ -174,3 +176,42 @@ verdict: FAIL
         assert len(result) == 1
         assert result[0][1] == "T?"
         assert result[0][2] == "?"
+
+
+class TestCostReconciliation:
+    def test_trace_metrics_cost_matches_trace_total_cost(self) -> None:
+        from splinter.analyze import _trace_metrics
+        from splinter.obs.trace import RunEntry, Trace
+
+        trace = Trace()
+        trace.entries.extend([
+            RunEntry(model="m1", tier=1, iteration=1, tokens={"input": 100, "output": 50},
+                     cost=0.0100, latency_s=0.0, task=0),
+            RunEntry(model="m1", tier=0, iteration=2, tokens={"input": 80, "output": 40},
+                     cost=0.0200, latency_s=0.0, task=0, role="eval"),
+            RunEntry(model="m1", tier=2, iteration=3, tokens={"input": 120, "output": 60},
+                     cost=0.0300, latency_s=0.0, task=0),
+        ])
+
+        md = trace.summary()
+        metrics = _trace_metrics(md)
+
+        assert float(metrics["cost"]) == pytest.approx(trace.total_cost, abs=1e-6)
+        assert trace.total_cost == pytest.approx(0.0600)
+
+    def test_trace_metrics_excludes_pre_run_cost(self) -> None:
+        from splinter.analyze import _trace_metrics
+        from splinter.obs.trace import RunEntry, Trace
+
+        trace = Trace()
+        trace.entries.append(
+            RunEntry(model="m", tier=1, iteration=1, tokens={}, cost=0.0500,
+                     latency_s=0.0, task=0)
+        )
+
+        md = trace.summary()
+        metrics = _trace_metrics(md)
+        run_cost = float(metrics["cost"])
+
+        assert run_cost == pytest.approx(0.0500, abs=1e-6)
+        assert run_cost < 0.0501

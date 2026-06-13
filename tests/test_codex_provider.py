@@ -87,17 +87,22 @@ def test_parse_jsonl_invalid_lines_skipped() -> None:
 
 def test_calc_cost_known_model() -> None:
     tokens = {"input": 1_000_000, "output": 1_000_000}
-    cost = _calc_cost("gpt-5-codex", tokens)
+    cost, indeterminate = _calc_cost("gpt-5-codex", tokens)
     assert cost == pytest.approx(50.0)
+    assert indeterminate is False
 
 
 def test_calc_cost_unknown_model_returns_zero() -> None:
     tokens = {"input": 999999, "output": 999999}
-    assert _calc_cost("unknown-model", tokens) == 0.0
+    cost, indeterminate = _calc_cost("unknown-model", tokens)
+    assert cost == 0.0
+    assert indeterminate is True
 
 
 def test_calc_cost_zero_tokens() -> None:
-    assert _calc_cost("gpt-5-codex", {"input": 0, "output": 0}) == 0.0
+    cost, indeterminate = _calc_cost("gpt-5-codex", {"input": 0, "output": 0})
+    assert cost == 0.0
+    assert indeterminate is False
 
 
 # ── _normalize_effort ────────────────────────────────────────────────────────

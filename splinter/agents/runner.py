@@ -10,7 +10,6 @@ from typing import Any
 from splinter.enums import Effort, Variant
 from splinter.models.roster import Ladder
 from splinter.obs.agentic import record_exchange
-from splinter.providers.registry import get_provider
 from splinter.templating import render, section
 
 log = logging.getLogger("splinter.runner")
@@ -49,6 +48,7 @@ class RunResult:
     cost: float
     raw: dict[str, Any]
     opencode_session: str | None = None
+    cost_indeterminate: bool = False
 
 
 def resolve_variant(
@@ -126,8 +126,11 @@ def run_task(
     corrections: str = "",
     opencode_session: str | None = None,
     timeout: int | None = None,
+    trace: object = None,
+    iteration: int = 0,
+    task_index: int = 0,
 ) -> RunResult:
-    model_id, provider_name = resolve_model(tier_level, ladder)
+    model_id, _ = resolve_model(tier_level, ladder)
     variant = resolve_variant(task, effort_override, ladder, tier_level)
     if timeout is None:
         timeout = ladder.tier_timeout(tier_level)
@@ -135,12 +138,15 @@ def run_task(
         task, plan, localization, corrections, is_continuation=opencode_session is not None
     )
 
-    provider = get_provider(provider_name)
+    from splinter.providers.dispatch import run_provider_session
+
     response = None
     for attempt in range(_MAX_GAP_RETRIES + 1):
         try:
-            response = provider.run(
-                prompt, model_id, variant=variant, session=opencode_session, timeout=timeout
+            response, _sid = run_provider_session(
+                prompt, model_id, variant=variant, session=opencode_session, timeout=timeout,
+                trace=trace, iteration=iteration, tier=tier_level,
+                task_index=task_index, role="run",
             )
             break
         except Exception as exc:
@@ -170,4 +176,5 @@ def run_task(
         cost=response.cost,
         raw=response.raw,
         opencode_session=response.session_id or opencode_session,
+        cost_indeterminate=response.cost_indeterminate,
     )

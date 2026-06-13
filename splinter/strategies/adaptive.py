@@ -63,7 +63,7 @@ class AdaptiveStrategy(CascadeStrategy):
         if done:
             log.info("adaptive resume: %d task(s) already checkpointed", len(done))
 
-        self._run_plan_phase(ordered, session, ladder, localization)
+        self._run_plan_phase(ordered, session, ladder, localization, trace=trace)
 
         for i, task in enumerate(ordered):
             if task.id and task.id in done:

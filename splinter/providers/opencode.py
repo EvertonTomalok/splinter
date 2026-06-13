@@ -13,6 +13,7 @@ from splinter.providers.base import ModelProvider, ProviderResponse
 
 # Child of "splinter" so the run-pane log handler surfaces these live.
 _stream_log = logging.getLogger("splinter.live")
+_log = logging.getLogger("splinter.providers")
 
 
 def _stream_event(line: str) -> None:
@@ -55,6 +56,7 @@ class OpencodeResult:
     tokens: dict[str, int]
     cost: float
     raw: dict[str, Any]
+    cost_indeterminate: bool = False
 
 
 def run(
@@ -103,9 +105,11 @@ def run(
     raw = _parse_output(proc.stdout, "json")
     text = _extract_text(raw)
     tokens = _extract_tokens(raw)
-    cost = _extract_cost(raw)
+    cost, cost_indeterminate = _extract_cost(raw)
 
-    return OpencodeResult(text=text, tokens=tokens, cost=cost, raw=raw)
+    return OpencodeResult(
+        text=text, tokens=tokens, cost=cost, raw=raw, cost_indeterminate=cost_indeterminate
+    )
 
 
 def list_models(timeout: int = 30) -> list[str]:
@@ -255,20 +259,22 @@ def _extract_tokens(raw: dict[str, Any]) -> dict[str, int]:
     return tokens
 
 
-def _extract_cost(raw: dict[str, Any]) -> float:
+def _extract_cost(raw: dict[str, Any]) -> tuple[float, bool]:
+    """Return (cost_usd, indeterminate). indeterminate=True when cost absent from payload."""
     if "cost" in raw:
         try:
-            return float(raw["cost"])
+            return float(raw["cost"]), False
         except (TypeError, ValueError):
             pass
     if "usage" in raw and isinstance(raw["usage"], dict):
         c = raw["usage"].get("cost")
         if c is not None:
             try:
-                return float(c)
+                return float(c), False
             except (TypeError, ValueError):
                 pass
-    return 0.0
+    _log.warning("cost indeterminate: no cost field in opencode response payload")
+    return 0.0, True
 
 
 class OpencodeProvider(ModelProvider):
@@ -303,6 +309,8 @@ class OpencodeProvider(ModelProvider):
         # opencode exits 0 even for billing/rate-limit errors — text-check too
         gap = detect_provider_gap(RuntimeError(result.text), self.name, model)
         if gap:
+            gap.tokens = result.tokens  # type: ignore[attr-defined]
+            gap.cost = result.cost  # type: ignore[attr-defined]
             raise gap from RuntimeError(result.text)
         session_id = session or result.raw.get("session_id") or result.raw.get("session")
         return ProviderResponse(
@@ -311,4 +319,5 @@ class OpencodeProvider(ModelProvider):
             cost=result.cost,
             raw=result.raw,
             session_id=session_id,
+            cost_indeterminate=result.cost_indeterminate,
         )

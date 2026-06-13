@@ -19,6 +19,7 @@ class RunEntry:
     latency_s: float
     task: int = 0
     role: str = "run"
+    cost_indeterminate: bool = False
 
 
 class Trace:
@@ -72,10 +73,11 @@ class Trace:
         for e in self.entries:
             task_prefix = f"task {e.task} " if e.task else ""
             role_label = "eval" if e.role == "eval" else f"T{e.tier}"
+            indet_marker = " [!cost]" if e.cost_indeterminate else ""
             lines.append(
                 f"- {task_prefix}iter {e.iteration}: {e.model} "
                 f"({role_label}) tokens={e.tokens} "
-                f"cost=${e.cost:.4f} {e.latency_s:.1f}s"
+                f"cost=${e.cost:.4f}{indet_marker} {e.latency_s:.1f}s"
             )
         return "\n".join(lines) + "\n"
 
@@ -84,7 +86,7 @@ class Trace:
         trace = cls()
         run_pattern = re.compile(
             r"- (?:task (\d+) )?iter (\d+): (.+?) \((?:T(\d+)|eval)\) "
-            r"tokens=\{([^}]*)\} cost=\$([\d.]+) ([\d.]+)s"
+            r"tokens=\{([^}]*)\} cost=\$([\d.]+)( \[!cost\])? ([\d.]+)s"
         )
         for m in run_pattern.finditer(md):
             task = int(m.group(1)) if m.group(1) else 0
@@ -100,7 +102,8 @@ class Trace:
             for tm in re.finditer(r"'(\w+)':\s*(\d+)", m.group(5)):
                 tokens[tm.group(1)] = int(tm.group(2))
             cost = float(m.group(6))
-            latency = float(m.group(7))
+            cost_indeterminate = m.group(7) is not None
+            latency = float(m.group(8))
             trace.entries.append(
                 RunEntry(
                     model=model,
@@ -111,6 +114,7 @@ class Trace:
                     latency_s=latency,
                     task=task,
                     role=role,
+                    cost_indeterminate=cost_indeterminate,
                 )
             )
         return trace
@@ -126,5 +130,6 @@ def log_run(trace: Trace, result: RunResult, iteration: int, task: int = 0) -> N
             cost=result.cost,
             latency_s=0.0,
             task=task,
+            cost_indeterminate=result.cost_indeterminate,
         )
     )

@@ -24,6 +24,7 @@ class ProviderResponse:
     cost: float = 0.0
     raw: dict[str, Any] = field(default_factory=dict)
     session_id: str | None = None
+    cost_indeterminate: bool = False
 
 
 class ModelProvider(ABC):
