@@ -109,7 +109,7 @@ def _event_summaries(line: str) -> list[tuple[str, str]]:
         elif block.get("type") == "text":
             txt = str(block.get("text", "")).strip().replace("\n", " ")
             if txt:
-                summary = f"💬 {txt[:120]}"
+                summary = f"💬 {txt}"
                 summaries.append(("text", summary))
     return summaries
 

@@ -574,7 +574,7 @@ def run_pipeline(
                 ladder=ladder,
             )
             fe_summary = "\n".join(
-                f"- {r.name}: {'PASS' if r.passed else 'FAIL'} — {r.output[:200]}"
+                f"- {r.name}: {'PASS' if r.passed else 'FAIL'} — {r.output}"
                 for r in fe_results
             )
             fe_verbatim = "\n\n---\n\n".join(r.output for r in fe_results)

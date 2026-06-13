@@ -47,7 +47,7 @@ def _stream_event(line: str) -> None:
     elif etype == "text" and isinstance(part.get("text"), str):
         txt = str(part["text"]).strip().replace("\n", " ")
         if txt:
-            _stream_log.info("  💬 %s", txt[:120])
+            _stream_log.info("  💬 %s", txt)
 
 
 @dataclass(frozen=True)
