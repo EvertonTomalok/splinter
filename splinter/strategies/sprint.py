@@ -22,6 +22,11 @@ class SprintStrategy(AdaptiveStrategy):
     aliases = ["michelangelo"]
 
     @staticmethod
-    def _route_tier(effort: str, ladder: Ladder) -> int:
+    def _route_tier(
+        effort: str,
+        ladder: Ladder,
+        remaining_budget: float | None = None,
+        remaining_efforts: list[str] | None = None,
+    ) -> int:
         """Always start at the cheapest (flash) tier; escalate only on eval failure."""
         return min(t.level for t in ladder.tiers)

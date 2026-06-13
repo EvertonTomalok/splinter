@@ -12,7 +12,7 @@ from splinter.configure import configured_budget
 from splinter.enums import Decision
 from splinter.models.pricing import estimate_tier_cost
 from splinter.models.roster import Tier, load_ladder
-from splinter.strategies.adaptive import AdaptiveStrategy
+from splinter.strategies.adaptive import AdaptiveStrategy, _effort_weight
 from splinter.strategies.registry import get_strategy
 
 # ---------------------------------------------------------------------------
@@ -42,20 +42,119 @@ def test_route_tier_critical_respects_floor(
     assert tier >= floor.start_tier
 
 
-def test_route_tier_returns_cheapest_among_capable(
+def test_route_tier_no_budget_returns_floor(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without a budget, _route_tier returns the effort floor for all effort levels."""
+    monkeypatch.chdir(tmp_path)
+    ladder = load_ladder()
+    for effort in ("trivial", "normal", "hard", "critical"):
+        tier = AdaptiveStrategy._route_tier(effort, ladder)
+        em = ladder.effort_mapping(effort)
+        assert em is not None
+        assert tier == em.start_tier, f"effort={effort}: expected T{em.start_tier}, got T{tier}"
+
+
+# ---------------------------------------------------------------------------
+# _route_tier: budget-aware routing (US-002, US-003)
+# ---------------------------------------------------------------------------
+
+# Tier/cost constants derived from ladder.yaml + pricing.py for normal effort:
+#   T1 (minimax): (8000*0.80 + 1500*4.50) / 1_000_000 = 0.01315
+#   T0 (deepseek_pro): (8000*0.27 + 1500*1.10) / 1_000_000 = 0.00381
+# For hard effort (T3 floor, same deepseek_pro model as T0):
+#   T3 cost: (16000*0.27 + 3000*1.10) / 1_000_000 = 0.00762
+
+_BUDGET_ROUTE_CASES: list[tuple[str, str, float, list[str], int]] = [
+    # ample budget → effort floor (same as cascade start)
+    ("ample_normal", "normal", 10.0, ["normal"], 1),
+    ("ample_hard", "hard", 10.0, ["hard"], 3),
+    # tight budget (floor over share) → down-route below floor
+    # normal floor T1 cost=0.01315 > share=0.008, T0 cost=0.00381 ≤ 0.008 → T0
+    ("tight_normal_down_routes", "normal", 0.008, ["normal"], 0),
+    # critical always at floor regardless of budget (hard capability floor)
+    ("critical_tight_budget_keeps_floor", "critical", 0.0001, ["critical"], 4),
+    # none fits → globally cheapest tier (T0, level 0)
+    ("none_fits_returns_cheapest", "normal", 0.001, ["normal"], 0),
+]
+
+
+@pytest.mark.parametrize(
+    "case_id,effort,budget,remaining,expected",
+    _BUDGET_ROUTE_CASES,
+    ids=[c[0] for c in _BUDGET_ROUTE_CASES],
+)
+def test_route_tier_budget_aware(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    case_id: str,
+    effort: str,
+    budget: float,
+    remaining: list[str],
+    expected: int,
 ) -> None:
     monkeypatch.chdir(tmp_path)
     ladder = load_ladder()
-    strategy = AdaptiveStrategy()
-    for effort in ("trivial", "normal", "hard", "critical"):
-        tier = strategy._route_tier(effort, ladder)
+    tier = AdaptiveStrategy._route_tier(effort, ladder, budget, remaining)
+    assert tier == expected, f"case={case_id}: expected T{expected}, got T{tier}"
+
+
+def test_route_tier_ample_budget_equals_cascade_floor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ample budget: donatello routes to the same floor tier cascade would start at."""
+    monkeypatch.chdir(tmp_path)
+    ladder = load_ladder()
+    for effort in ("normal", "hard"):
         em = ladder.effort_mapping(effort)
         assert em is not None
-        assert tier >= em.start_tier
-        candidates = [t for t in ladder.tiers if t.level >= em.start_tier]
-        cheapest = min(candidates, key=lambda t: estimate_tier_cost(t, effort))
-        assert tier == cheapest.level
+        cascade_floor = em.start_tier
+        donatello_tier = AdaptiveStrategy._route_tier(effort, ladder, 100.0, [effort])
+        assert donatello_tier == cascade_floor, (
+            f"effort={effort}: expected T{cascade_floor}, got T{donatello_tier}"
+        )
+
+
+def test_route_tier_tight_budget_routes_below_floor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Tight budget: donatello routes strictly cheaper than cascade's start tier."""
+    monkeypatch.chdir(tmp_path)
+    ladder = load_ladder()
+    # normal floor is T1 (minimax, cost 0.01315); budget of 0.008 → share < T1 cost
+    em = ladder.effort_mapping("normal")
+    assert em is not None
+    cascade_floor = em.start_tier  # T1
+    donatello_tier = AdaptiveStrategy._route_tier("normal", ladder, 0.008, ["normal"])
+    assert donatello_tier < cascade_floor, (
+        f"expected down-route below T{cascade_floor}, got T{donatello_tier}"
+    )
+
+
+def test_route_tier_routed_cost_le_share_when_affordable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Routed tier's estimated cost ≤ per-task share when an affordable tier exists."""
+    monkeypatch.chdir(tmp_path)
+    ladder = load_ladder()
+    budget = 0.008
+    remaining = ["normal"]
+    total_w = sum(_effort_weight(e) for e in remaining)
+    per_task_share = budget * _effort_weight("normal") / total_w
+    tier_level = AdaptiveStrategy._route_tier("normal", ladder, budget, remaining)
+    tier = ladder.tier_by_level(tier_level)
+    assert estimate_tier_cost(tier, "normal") <= per_task_share
+
+
+def test_route_tier_effort_weighting_hard_gt_trivial() -> None:
+    """Hard effort gets a larger budget share than trivial effort in the same remaining set."""
+    budget = 0.020
+    remaining = ["trivial", "hard"]
+    total_w = sum(_effort_weight(e) for e in remaining)
+    trivial_share = budget * _effort_weight("trivial") / total_w
+    hard_share = budget * _effort_weight("hard") / total_w
+    assert hard_share > trivial_share
+    assert hard_share == pytest.approx(trivial_share * 3)  # weights 1 vs 3
 
 
 # ---------------------------------------------------------------------------

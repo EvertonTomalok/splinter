@@ -1,9 +1,10 @@
 """Donatello — the ``adaptive`` per-task cost-routing strategy.
 
-Flow: topological sort (like cascade), then for each task pick the *cheapest*
-ladder tier capable of handling its estimated effort. A soft budget is maintained
-across the session: when the target is exceeded, escalation is suppressed but tasks
-continue running at their current tier until completion.
+Flow: topological sort (like cascade), then for each task pick the cheapest tier
+that fits within its effort-weighted share of the remaining session budget. When
+the floor tier is affordable, it is used (same as cascade start). When budget is
+tight, tasks are down-routed below the floor to reduce cost, accepting higher
+escalation risk. Critical effort is never down-routed.
 
 Budget precedence: CLI ``--budget`` arg → session/config ``defaults.budget``.
 """
@@ -14,6 +15,7 @@ import logging
 
 from splinter.agents.runner import RunResult, Task
 from splinter.configure import configured_budget
+from splinter.enums import Effort
 from splinter.memory.knowledge import KnowledgeStore
 from splinter.memory.session import Session
 from splinter.models.pricing import estimate_tier_cost
@@ -23,6 +25,17 @@ from splinter.strategies.cascade import CascadeStrategy
 from splinter.strategies.registry import register
 
 log = logging.getLogger("splinter.loop")
+
+_EFFORT_WEIGHTS: dict[str, int] = {
+    Effort.TRIVIAL: 1,
+    Effort.NORMAL: 2,
+    Effort.HARD: 3,
+    Effort.CRITICAL: 4,
+}
+
+
+def _effort_weight(effort: str) -> int:
+    return _EFFORT_WEIGHTS.get(effort, 2)
 
 
 @register
@@ -71,14 +84,38 @@ class AdaptiveStrategy(CascadeStrategy):
                 continue
 
             task_effort = effort or task.effort
-            routed_tier = self._route_tier(task_effort, ladder)
+            remaining_budget = (
+                None if effective_budget is None
+                else max(0.0, effective_budget - trace.total_cost)
+            )
+            remaining_efforts = [
+                effort or t.effort
+                for t in ordered[i:]
+                if not (t.id and t.id in done)
+            ]
+            em = ladder.effort_mapping(task_effort)
+            floor = em.start_tier if em is not None else 0
+            efforts = remaining_efforts or [task_effort]
+            total_w = sum(_effort_weight(e) for e in efforts)
+            per_task_share: float | None = (
+                remaining_budget * _effort_weight(task_effort) / total_w
+                if remaining_budget is not None and total_w > 0
+                else None
+            )
+            routed_tier = self._route_tier(task_effort, ladder, remaining_budget, remaining_efforts)
+            down_routed = routed_tier < floor
             log.info(
-                "adaptive: task %d/%d effort=%s → T%d (%s)",
+                "adaptive: task %d/%d effort=%s → T%d (%s)"
+                " [budget=%s share=%s floor=T%d down_routed=%s]",
                 i + 1,
                 len(ordered),
                 task_effort,
                 routed_tier,
                 ladder.tier_by_level(routed_tier).name,
+                f"{remaining_budget:.4f}" if remaining_budget is not None else "n/a",
+                f"{per_task_share:.4f}" if per_task_share is not None else "n/a",
+                floor,
+                down_routed,
             )
 
             session.set_status(
@@ -122,15 +159,41 @@ class AdaptiveStrategy(CascadeStrategy):
         return results
 
     @staticmethod
-    def _route_tier(effort: str, ladder: Ladder) -> int:
-        """Pick cheapest capable tier for the given effort level.
+    def _route_tier(
+        effort: str,
+        ladder: Ladder,
+        remaining_budget: float | None = None,
+        remaining_efforts: list[str] | None = None,
+    ) -> int:
+        """Budget-aware start-tier selection.
 
-        Capable = tier level >= effort_mapping floor. Among candidates, pick
-        by lowest estimated cost (see splinter.models.pricing).
+        Without a budget: returns the effort floor (capability baseline).
+        With a budget: computes an effort-weighted per-task share and routes to
+        the floor if affordable; otherwise down-routes to the cheapest affordable
+        tier (level may be below floor). Critical effort is hard-floored — never
+        down-routed regardless of share.
         """
         em = ladder.effort_mapping(effort)
         floor = em.start_tier if em is not None else 0
-        candidates = [t for t in ladder.tiers if t.level >= floor]
-        if not candidates:
+
+        if remaining_budget is None:
             return floor
-        return min(candidates, key=lambda t: estimate_tier_cost(t, effort)).level
+
+        if effort == Effort.CRITICAL:
+            return floor
+
+        efforts = remaining_efforts or [effort]
+        total_w = sum(_effort_weight(e) for e in efforts)
+        if total_w <= 0:
+            return floor
+
+        per_task_share = remaining_budget * _effort_weight(effort) / total_w
+
+        floor_tier = ladder.tier_by_level(floor)
+        if estimate_tier_cost(floor_tier, effort) <= per_task_share:
+            return floor
+
+        candidates = [t for t in ladder.tiers if estimate_tier_cost(t, effort) <= per_task_share]
+        if candidates:
+            return min(candidates, key=lambda t: estimate_tier_cost(t, effort)).level
+        return min(t.level for t in ladder.tiers)
