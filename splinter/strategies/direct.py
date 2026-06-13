@@ -338,12 +338,16 @@ class DirectStrategy(Strategy):
         localization: str,
         trace: object = None,
         skip_planner: bool = False,
+        resume: bool = False,
     ) -> None:
         """Pre-generate plans for all tasks; reuses existing files on resume."""
         for i, task in enumerate(tasks):
             task_plan_file = f"knowledge/plan-{i + 1}.md"
             if session.read(task_plan_file).strip():
                 log.info("plan exists for task %d — reusing", i + 1)
+                continue
+            if resume:
+                log.info("plan missing for task %d on resume — deferring", i + 1)
                 continue
             if skip_planner:
                 log.info("plan skipped for task %d (skip_planner)", i + 1)
@@ -381,10 +385,17 @@ class DirectStrategy(Strategy):
         localization: str,
         trace: object = None,
         skip_planner: bool = False,
+        resume: bool = False,
     ) -> None:
         session.set_status("running", stage="plan")
         self._plan_all_tasks(
-            tasks, session, ladder, localization, trace=trace, skip_planner=skip_planner
+            tasks,
+            session,
+            ladder,
+            localization,
+            trace=trace,
+            skip_planner=skip_planner,
+            resume=resume,
         )
         session.set_status("running", stage="run")
 

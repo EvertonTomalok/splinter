@@ -84,6 +84,7 @@ def _parse_jsonl(stdout: str) -> dict[str, Any]:
     session_id: str | None = None
     text_parts: list[str] = []
     tokens: dict[str, int] = {}
+    error_text: str | None = None
     for line in stdout.splitlines():
         line = line.strip()
         if not line:
@@ -97,6 +98,12 @@ def _parse_jsonl(stdout: str) -> dict[str, Any]:
         event_type = obj.get("type")
         if event_type == "thread.started":
             session_id = str(obj["thread_id"]) if obj.get("thread_id") else None
+        elif event_type in {"error", "turn.failed", "response.error"}:
+            msg = obj.get("message") or obj.get("error") or obj.get("text")
+            if isinstance(msg, str) and msg.strip():
+                error_text = msg.strip()
+            else:
+                error_text = json.dumps(obj)
         elif event_type == "item.completed":
             item = obj.get("item")
             if isinstance(item, dict) and item.get("type") == "agent_message":
@@ -114,6 +121,7 @@ def _parse_jsonl(stdout: str) -> dict[str, Any]:
         "text": "\n".join(text_parts),
         "session_id": session_id,
         "tokens": tokens,
+        "error": error_text,
     }
 
 
@@ -153,6 +161,8 @@ def run(
         raise RuntimeError(f"codex exited {proc.returncode}: {proc.stderr.strip()}")
 
     parsed = _parse_jsonl(proc.stdout)
+    if parsed.get("error"):
+        raise RuntimeError(str(parsed["error"]))
     tokens = parsed["tokens"]
     cost, cost_indeterminate = _calc_cost(bare_model, tokens)
 
@@ -199,9 +209,6 @@ class CodexProvider(ModelProvider):
             if gap:
                 raise gap from exc
             raise
-        gap = detect_provider_gap(RuntimeError(result.text), self.name, model)
-        if gap:
-            raise gap from RuntimeError(result.text)
         return ProviderResponse(
             text=result.text,
             tokens=result.tokens,

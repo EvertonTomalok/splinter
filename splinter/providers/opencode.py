@@ -103,6 +103,9 @@ def run(
 
     # CLI output is always json now; extract text from it regardless of requested fmt.
     raw = _parse_output(proc.stdout, "json")
+    raw_error = raw.get("error")
+    if isinstance(raw_error, str) and raw_error.strip():
+        raise RuntimeError(raw_error.strip())
     text = _extract_text(raw)
     tokens = _extract_tokens(raw)
     cost, cost_indeterminate = _extract_cost(raw)
@@ -146,6 +149,7 @@ def _parse_output(stdout: str, fmt: str) -> dict[str, Any]:
     lines = stdout.splitlines()
     text_parts: list[str] = []
     metadata: dict[str, Any] = {}
+    error_text: str | None = None
     for line in lines:
         line = line.strip()
         if not line:
@@ -179,6 +183,20 @@ def _parse_output(stdout: str, fmt: str) -> dict[str, Any]:
         elif "messages" in obj:
             text_parts.append(_extract_text(obj))
 
+        if obj.get("type") in ("error", "failure", "step_error", "step-error"):
+            raw_msg = obj.get("error") or obj.get("message") or obj.get("text")
+            if isinstance(raw_msg, str) and raw_msg.strip():
+                error_text = raw_msg.strip()
+            else:
+                error_text = json.dumps(obj)
+        part_dict = obj.get("part")
+        if isinstance(part_dict, dict) and part_dict.get("type") == "error":
+            raw_msg = part_dict.get("error") or part_dict.get("message") or part_dict.get("text")
+            if isinstance(raw_msg, str) and raw_msg.strip():
+                error_text = raw_msg.strip()
+            else:
+                error_text = json.dumps(part_dict)
+
         # Extract metadata from step_finish
         if obj.get("type") == "step_finish" or obj.get("type") == "step-finish":
             part = obj.get("part", {})
@@ -191,6 +209,8 @@ def _parse_output(stdout: str, fmt: str) -> dict[str, Any]:
                     metadata["cost"] = part["cost"]
             metadata.update(obj)
 
+    if error_text:
+        metadata["error"] = error_text
     return {"text": "\n".join(text_parts), **metadata}
 
 
@@ -310,12 +330,6 @@ class OpencodeProvider(ModelProvider):
             if gap:
                 raise gap from exc
             raise
-        # opencode exits 0 even for billing/rate-limit errors — text-check too
-        gap = detect_provider_gap(RuntimeError(result.text), self.name, model)
-        if gap:
-            gap.tokens = result.tokens  # type: ignore[attr-defined]
-            gap.cost = result.cost  # type: ignore[attr-defined]
-            raise gap from RuntimeError(result.text)
         session_id = session or result.raw.get("session_id") or result.raw.get("session")
         return ProviderResponse(
             text=result.text,

@@ -359,8 +359,7 @@ def test_codex_provider_gap_on_text_error(monkeypatch: pytest.MonkeyPatch) -> No
 
     gap_jsonl = (
         '{"type":"thread.started","thread_id":"abc"}\n'
-        '{"type":"item.completed","item":{"id":"0","type":"agent_message",'
-        '"text":"insufficient balance, please top up"}}\n'
+        '{"type":"error","message":"insufficient balance, please top up"}\n'
         '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,'
         '"output_tokens":5,"reasoning_output_tokens":0}}\n'
     )
@@ -373,6 +372,24 @@ def test_codex_provider_gap_on_text_error(monkeypatch: pytest.MonkeyPatch) -> No
     with pytest.raises(ProviderGapError) as exc_info:
         provider.run("hi", "codex/gpt-5-codex", timeout=30)
     assert exc_info.value.kind == "insufficient_balance"
+
+
+def test_codex_provider_does_not_treat_normal_text_as_gap(monkeypatch: pytest.MonkeyPatch) -> None:
+    jsonl = (
+        '{"type":"thread.started","thread_id":"abc"}\n'
+        '{"type":"item.completed","item":{"id":"0","type":"agent_message",'
+        '"text":"Add classifyVendorError coverage for rate limit and timeout"}}\n'
+        '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,'
+        '"output_tokens":5,"reasoning_output_tokens":0}}\n'
+    )
+
+    def fake_subprocess(cmd: list[str], timeout: int = 0, on_line: object = None) -> object:
+        return _fake_proc(jsonl)
+
+    monkeypatch.setattr(codex_module, "run_subprocess", fake_subprocess)
+    provider = CodexProvider()
+    resp = provider.run("hi", "codex/gpt-5-codex", timeout=30)
+    assert "rate limit" in resp.text.lower()
 
 
 def test_codex_provider_passes_session_as_resume(monkeypatch: pytest.MonkeyPatch) -> None:
