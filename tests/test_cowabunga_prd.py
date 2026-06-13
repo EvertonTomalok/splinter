@@ -313,6 +313,56 @@ def test_resume_completed_session_opens_analyze(
     assert "Opening analyze" in out
 
 
+def test_resume_without_id_prefers_run_checkpoint_over_refining(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import splinter.tui as tui
+    from splinter.tui import resume_session
+
+    monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
+
+    refining = Session("ses_refining")
+    refining.write("prd.md", "---\nstrategy: cascade\n---\n# Stub")
+    refining.set_status("refining", source="prd", phase="chat")
+
+    interrupted = Session("ses_interrupted")
+    interrupted.write("prd.md", "---\nstrategy: cascade\n---\n### US-001: Story")
+    interrupted.write("checkpoint.json", '{"completed":["US-001"]}')
+    interrupted.set_status(
+        "running",
+        source=str(interrupted.dir / "prd.md"),
+        strategy="cascade",
+        pid=999999,
+    )
+
+    picked: list[str] = []
+    monkeypatch.setattr(tui, "_resume_run", lambda s, st, reset=False: picked.append(s.id) or 0)
+    monkeypatch.setattr(tui, "_resume_prd", lambda s, st: 0)
+
+    assert resume_session(None) == 0
+    assert picked == ["ses_interrupted"]
+
+
+def test_resume_without_id_uses_refining_when_no_run_checkpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import splinter.tui as tui
+    from splinter.tui import resume_session
+
+    monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
+
+    refining = Session("ses_refining")
+    refining.write("prd.md", "---\nstrategy: cascade\n---\n### US-001: Story")
+    refining.set_status("refining", source="prd", phase="review")
+
+    picked: list[str] = []
+    monkeypatch.setattr(tui, "_resume_prd", lambda s, st: picked.append(s.id) or 0)
+    monkeypatch.setattr(tui, "_resume_run", lambda s, st, reset=False: 0)
+
+    assert resume_session(None) == 0
+    assert picked == ["ses_refining"]
+
+
 # --- tui frontmatter helpers -------------------------------------------------
 
 

@@ -63,7 +63,7 @@ def run(
     """
     # Strip the ``cursor/`` namespace prefix before passing to the CLI.
     bare_model = model.removeprefix(_MODEL_PREFIX) if model else None
-    cmd: list[str] = ["agent", "-p"]
+    cmd: list[str] = ["agent", "-p", "--trust"]
     if bare_model and bare_model != "auto":
         cmd += ["--model", bare_model]
     cmd += ["--", prompt]

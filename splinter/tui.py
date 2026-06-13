@@ -4737,13 +4737,22 @@ def resume_session(session_id: str | None, *, reset: bool = False) -> int:
 
     sid = session_id
     if sid is None:
+        def _has_run_checkpoint(s: Session) -> bool:
+            return bool(
+                s.read("run_checkpoint.json").strip()
+                or s.read("checkpoint.json").strip()
+                or s.read("trace.md").strip()
+            )
+
+        # Prefer unfinished/paused runs (checkpoint continuity) over PRD refinement.
         for cand in sessions:
-            if Session(cand).read_status().get("state") == "refining":
+            sc = Session(cand)
+            if _run_state(sc) in resumable_run or _has_run_checkpoint(sc):
                 sid = cand
                 break
         if sid is None:
             for cand in sessions:
-                if _run_state(Session(cand)) in resumable_run:
+                if Session(cand).read_status().get("state") == "refining":
                     sid = cand
                     break
         if sid is None:
