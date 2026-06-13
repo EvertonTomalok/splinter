@@ -68,6 +68,19 @@ def resolve_session(session_id: str | None = None) -> str:
     return sid
 
 
+NEXT_CONFIG_KEYS: frozenset[str] = frozenset({
+    "next_planner_model",
+    "next_planner_effort",
+    "next_runner_model",
+    "next_runner_effort",
+    "next_eval_model",
+    "next_eval_effort",
+    "next_skip_planner",
+    "next_skip_eval",
+    "next_skip_final_eval",
+})
+
+
 class Session:
     def __init__(self, session_id: str | None = None) -> None:
         self.id = resolve_session(session_id)
@@ -121,6 +134,20 @@ class Session:
     def knowledge_dir(self) -> Path:
         self._ensure_dir()
         return self.dir / "knowledge"
+
+    def round_dir(self, n: int) -> Path:
+        rd = self.dir / f"eval-fix-{n}"
+        rd.mkdir(parents=True, exist_ok=True)
+        return rd
+
+    def read_next_config(self) -> dict[str, str]:
+        data = self.read_status()
+        return {k: v for k in NEXT_CONFIG_KEYS if (v := str(data.get(k, ""))) and v}
+
+    def clear_next_config(self) -> None:
+        data = self.read_status()
+        state = str(data.get("state", "running"))
+        self.set_status(state, **{k: "" for k in NEXT_CONFIG_KEYS})
 
     def status_path(self) -> Path:
         return self.dir / "status.json"

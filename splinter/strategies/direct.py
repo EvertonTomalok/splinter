@@ -269,6 +269,8 @@ class DirectStrategy(Strategy):
         claude_runner_fallback: bool = False,
         user_guidance: str | None = None,
         jump_premium: bool = False,
+        skip_planner: bool = False,
+        skip_eval: bool = False,
     ) -> list[RunResult]:
         existing_trace = session.read("trace.md")
         if resume and existing_trace.strip():
@@ -318,6 +320,8 @@ class DirectStrategy(Strategy):
             checkpoint=checkpoint,
             user_guidance=user_guidance if task_resume else None,
             jump_premium=jump_premium if task_resume else False,
+            skip_planner=skip_planner,
+            skip_eval=skip_eval,
         )
         results = [result] if result is not None else []
 
@@ -333,12 +337,16 @@ class DirectStrategy(Strategy):
         ladder: Ladder,
         localization: str,
         trace: object = None,
+        skip_planner: bool = False,
     ) -> None:
         """Pre-generate plans for all tasks; reuses existing files on resume."""
         for i, task in enumerate(tasks):
             task_plan_file = f"knowledge/plan-{i + 1}.md"
             if session.read(task_plan_file).strip():
                 log.info("plan exists for task %d — reusing", i + 1)
+                continue
+            if skip_planner:
+                log.info("plan skipped for task %d (skip_planner)", i + 1)
                 continue
             try:
                 log.info("planning task %d with %s", i + 1, ladder.planner_model)
@@ -366,9 +374,10 @@ class DirectStrategy(Strategy):
         ladder: Ladder,
         localization: str,
         trace: object = None,
+        skip_planner: bool = False,
     ) -> None:
         session.set_status("running", stage="plan")
-        self._plan_all_tasks(tasks, session, ladder, localization, trace=trace)
+        self._plan_all_tasks(tasks, session, ladder, localization, trace=trace, skip_planner=skip_planner)
         session.set_status("running", stage="run")
 
     def _run_task_loop(
@@ -392,6 +401,8 @@ class DirectStrategy(Strategy):
         checkpoint: RunCheckpoint | None = None,
         user_guidance: str | None = None,
         jump_premium: bool = False,
+        skip_planner: bool = False,
+        skip_eval: bool = False,
     ) -> RunResult | None:
         if checkpoint is not None:
             _clear_checkpoint(session)
@@ -443,6 +454,9 @@ class DirectStrategy(Strategy):
                 )
                 if not session.read(task_plan_file).strip():
                     session.write(task_plan_file, f"# Plan\n\n{plan}\n")
+            elif skip_planner:
+                log.info("planner skipped by user — using corrections/guidance as plan")
+                plan = corrections or user_guidance or ""
             else:
                 log.info("planning with %s (once)", ladder.planner_model)
                 prev_rounds = session.read("knowledge/previous_rounds.md")
@@ -488,6 +502,7 @@ class DirectStrategy(Strategy):
                 corrections=corrections,
                 eval_history=eval_history,
                 task_index=task_index,
+                skip_eval=skip_eval,
             )
 
             if iteration == start_iteration and resume_stage and checkpoint is not None:

@@ -11,6 +11,13 @@ import yaml
 from splinter.enums import FinalEvalKind, Variant
 from splinter.templating import TEMPLATE_NAMES, packaged_template
 
+_config_cache: dict[str, Any] | None = None
+
+
+def invalidate_config_cache() -> None:
+    global _config_cache
+    _config_cache = None
+
 
 @dataclass(frozen=True)
 class FinalEvalEntry:
@@ -271,13 +278,18 @@ def _config_path(scope: str = "project") -> Path:
 
 
 def load_config(scope: str = "project") -> dict[str, Any]:
+    global _config_cache
+    if _config_cache is not None:
+        return dict(_config_cache)
     for s in ("project", "user"):
         p = _config_path(s)
         if p.exists():
             with open(p) as f:
                 loaded: dict[str, Any] = yaml.safe_load(f) or {}
-                return loaded
-    return DEFAULT_CONFIG.copy()
+                _config_cache = loaded
+                return dict(loaded)
+    _config_cache = DEFAULT_CONFIG.copy()
+    return dict(_config_cache)
 
 
 # Per-step model knobs the configure TUI exposes: (role key, label, description).
@@ -567,6 +579,7 @@ def write_model_config(
     p.parent.mkdir(parents=True, exist_ok=True)
     with open(p, "w") as f:
         yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+    invalidate_config_cache()
     return p
 
 
@@ -580,6 +593,7 @@ def write_gate_checks(checks: list[dict[str, str]]) -> Path:
     p.parent.mkdir(parents=True, exist_ok=True)
     with open(p, "w") as f:
         yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+    invalidate_config_cache()
     return p
 
 
@@ -669,6 +683,7 @@ def _swap_config(source: str) -> int:
     import shutil
 
     shutil.copy2(src, dst)
+    invalidate_config_cache()
     print(f"config.yaml updated from {source}")
     return 0
 
@@ -739,6 +754,7 @@ def run_configure(
         p.parent.mkdir(parents=True, exist_ok=True)
         with open(p, "w") as f:
             yaml.dump(config, f, default_flow_style=False)
+        invalidate_config_cache()
         print(f"config written to {p}")
 
         if init_prompts:
