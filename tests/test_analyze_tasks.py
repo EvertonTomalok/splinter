@@ -105,7 +105,7 @@ FAIL
 
 
 class TestCapPayload:
-    """Test _cap_payload() truncation."""
+    """Test _cap_payload() passthrough behavior."""
 
     def test_short_text_unchanged(self) -> None:
         """Text under limit is returned unchanged."""
@@ -113,23 +113,17 @@ class TestCapPayload:
         result = _cap_payload(text, limit=100)
         assert result == text
 
-    def test_long_text_truncated(self) -> None:
-        """Text over limit is head + marker + tail."""
+    def test_long_text_unchanged(self) -> None:
+        """Text over limit is not truncated."""
         text = "a" * 1000
         result = _cap_payload(text, limit=200)
-        assert len(result) <= 250
-        assert "…[truncated" in result
-        assert "chars]…" in result
-        assert result.startswith("a")
-        assert result.endswith("a")
+        assert result == text
 
-    def test_truncation_preserves_counts(self) -> None:
-        """Truncated text mentions dropped char count."""
+    def test_limit_argument_ignored(self) -> None:
+        """Legacy limit arg remains accepted but no truncation is applied."""
         text = "x" * 10000
         result = _cap_payload(text, limit=500)
-        assert "truncated" in result
-        dropped = 10000 - result.count("x")
-        assert dropped > 0
+        assert result == text
 
 
 class TestIterations:

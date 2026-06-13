@@ -250,7 +250,7 @@ def run_gate(
             output = proc.stdout + proc.stderr
             if not passed:
                 all_passed = False
-            results.append((name, passed, output.strip()[:500]))
+            results.append((name, passed, output.strip()))
         except subprocess.TimeoutExpired:
             results.append((name, False, "timed out"))
             all_passed = False

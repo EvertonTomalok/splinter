@@ -320,3 +320,28 @@ def test_stages_evaluate_shim_still_works() -> None:
     ):
         verdict = _evaluate(task, "output", "sonnet", "high")
     assert verdict.decision == "PASS"
+
+
+# --- _skill_prompt eval_mode excludes task info ------------------------------
+
+
+def test_skill_prompt_eval_mode_excludes_task_info() -> None:
+    from splinter.agents.final_eval import FinalEvalEntry, _skill_prompt
+
+    entry = FinalEvalEntry(name="test-skill", kind="skill", skill="/gate")
+    task = Task(description="implement X", acceptance="X must work")
+    prompt = _skill_prompt(entry, task, eval_mode=True)
+    assert "implement X" not in prompt
+    assert "X must work" not in prompt
+    assert "VERDICT" not in prompt
+
+
+def test_skill_prompt_review_mode_includes_task_info() -> None:
+    from splinter.agents.final_eval import FinalEvalEntry, _skill_prompt
+
+    entry = FinalEvalEntry(name="test-review", kind="review", skill="code_review")
+    task = Task(description="implement Y", acceptance="Y passes tests")
+    prompt = _skill_prompt(entry, task, eval_mode=False)
+    assert "implement Y" in prompt
+    assert "Y passes tests" in prompt
+    assert "Review whether the following task has been completed correctly" in prompt

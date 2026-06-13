@@ -21,7 +21,13 @@ from splinter.agents.runner import RunResult
 from splinter.memory.knowledge import KnowledgeStore
 from splinter.memory.session import Session
 from splinter.models.roster import bump_effort
-from splinter.pipeline import _clear_round_caches, _load_round_history, run_pipeline
+from splinter.pipeline import (
+    _build_eval_fix_task,
+    _clear_round_caches,
+    _compose_eval_fix_prompt,
+    _load_round_history,
+    run_pipeline,
+)
 from splinter.strategies.base import AskUserPause
 
 # ── shared helpers ────────────────────────────────────────────────────────────
@@ -71,11 +77,23 @@ def task_yaml(tmp_path: Path) -> str:
 
 def _base_patches(monkeypatch: pytest.MonkeyPatch, *, fe_results: list) -> None:
     """Patch all expensive I/O so run_pipeline runs without real LLMs."""
+
+    def _capturing_execute(
+        self_: object,
+        tasks: list,
+        sess: Session,
+        ladder: object,
+        **kwargs: object,
+    ) -> list[RunResult]:
+        return [_run_result()]
+
     monkeypatch.setattr("splinter.pipeline.localize", lambda *a, **kw: [])
     monkeypatch.setattr("splinter.pipeline._resolve_gate", lambda *a, **kw: None)
     from splinter.strategies.cascade import CascadeStrategy
+    from splinter.strategies.direct import DirectStrategy
 
-    monkeypatch.setattr(CascadeStrategy, "execute", _fake_execute)
+    monkeypatch.setattr(CascadeStrategy, "execute", _capturing_execute)
+    monkeypatch.setattr(DirectStrategy, "execute", _capturing_execute)
     monkeypatch.setattr("splinter.configure.load_config", lambda *a, **kw: _config_with_fe())
     fe_iter = iter(fe_results)
     monkeypatch.setattr(
@@ -223,6 +241,19 @@ class TestFinalEvalRetry:
         status = session.read_status()
         assert "assertion failed" in status.get("ask_corrections", "")
 
+    def test_manual_validation_defaults_to_skip_flags(
+        self,
+        session: Session,
+        task_yaml: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _base_patches(monkeypatch, fe_results=[_fail_fe()])
+        run_pipeline(task_path=task_yaml, session=session)
+        status = session.read_status()
+        assert status.get("next_skip_planner") == "true"
+        assert status.get("next_skip_eval") == "true"
+        assert status.get("next_skip_final_eval") == "true"
+
 
 # ── 3. Resume with round_index > 0 ───────────────────────────────────────────
 
@@ -339,6 +370,128 @@ class TestResumeNewRound:
         run_pipeline(task_path=task_yaml, session=session, resume=True)
         assert calls, "localize must NOT use the cache when force_rerun=True"
 
+    def test_final_eval_resume_forces_direct_and_skips_localize(
+        self,
+        session: Session,
+        task_yaml: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        session.set_status(
+            "awaiting_user",
+            stage="final_eval",
+            round_index=1,
+            next_effort="hard",
+            ask_corrections="skill findings from final eval",
+        )
+        calls: list[int] = []
+        captured: list[dict] = []
+
+        def _capturing_direct_execute(self_, tasks, sess, ladder, **kwargs):
+            captured.append({"tasks": tasks, "kwargs": kwargs})
+            return [_run_result()]
+
+        monkeypatch.setattr("splinter.pipeline.localize", lambda *a, **kw: calls.append(1) or [])
+        monkeypatch.setattr("splinter.pipeline._resolve_gate", lambda *a, **kw: None)
+        from splinter.strategies.direct import DirectStrategy
+
+        monkeypatch.setattr(DirectStrategy, "execute", _capturing_direct_execute)
+        monkeypatch.setattr("splinter.configure.load_config", lambda *a, **kw: _config_with_fe())
+        monkeypatch.setattr(
+            "splinter.agents.final_eval.run_all_final_evals",
+            lambda *a, **kw: _pass_fe(),
+        )
+
+        run_pipeline(
+            task_path=task_yaml,
+            session=session,
+            resume=True,
+            user_guidance="fix all findings",
+        )
+
+        assert calls == []
+        assert len(captured) == 1
+        assert len(captured[0]["tasks"]) == 1
+        assert "Final Eval Findings" in captured[0]["tasks"][0].description
+        assert "fix all findings" in captured[0]["tasks"][0].description
+
+    def test_final_eval_resume_skip_planner_uses_eval_plus_user_text(
+        self,
+        session: Session,
+        task_yaml: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        session.set_status(
+            "awaiting_user",
+            stage="final_eval",
+            round_index=1,
+            next_effort="hard",
+            ask_corrections="skill findings from final eval",
+            next_skip_planner="true",
+        )
+        captured: list[dict] = []
+
+        def _capturing_direct_execute(self_, tasks, sess, ladder, **kwargs):
+            captured.append(kwargs)
+            return [_run_result()]
+
+        monkeypatch.setattr("splinter.pipeline.localize", lambda *a, **kw: [])
+        monkeypatch.setattr("splinter.pipeline._resolve_gate", lambda *a, **kw: None)
+        from splinter.strategies.direct import DirectStrategy
+
+        monkeypatch.setattr(DirectStrategy, "execute", _capturing_direct_execute)
+        monkeypatch.setattr("splinter.configure.load_config", lambda *a, **kw: _config_with_fe())
+        monkeypatch.setattr(
+            "splinter.agents.final_eval.run_all_final_evals",
+            lambda *a, **kw: _pass_fe(),
+        )
+
+        run_pipeline(
+            task_path=task_yaml,
+            session=session,
+            resume=True,
+            user_guidance="apply urgently",
+        )
+
+        assert len(captured) == 1
+        assert "Final Eval Findings" in str(captured[0]["user_guidance"])
+        assert "apply urgently" in str(captured[0]["user_guidance"])
+
+    def test_final_eval_resume_skip_final_eval_skips_tail_check(
+        self,
+        session: Session,
+        task_yaml: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        session.set_status(
+            "awaiting_user",
+            stage="final_eval",
+            round_index=1,
+            next_effort="hard",
+            ask_corrections="skill findings from final eval",
+            next_skip_final_eval="true",
+        )
+        called: list[int] = []
+
+        monkeypatch.setattr("splinter.pipeline.localize", lambda *a, **kw: [])
+        monkeypatch.setattr("splinter.pipeline._resolve_gate", lambda *a, **kw: None)
+        from splinter.strategies.direct import DirectStrategy
+
+        monkeypatch.setattr(DirectStrategy, "execute", _fake_execute)
+        monkeypatch.setattr("splinter.configure.load_config", lambda *a, **kw: _config_with_fe())
+        monkeypatch.setattr(
+            "splinter.agents.final_eval.run_all_final_evals",
+            lambda *a, **kw: called.append(1) or _pass_fe(),
+        )
+
+        rc = run_pipeline(
+            task_path=task_yaml,
+            session=session,
+            resume=True,
+            user_guidance="fix all",
+        )
+        assert rc == 0
+        assert called == []
+
 
 class TestAskUserStateSanitization:
     def test_ask_user_pause_clears_round_metadata(
@@ -351,7 +504,7 @@ class TestAskUserStateSanitization:
             "awaiting_user",
             round_index=2,
             next_effort="hard",
-            stage="final_eval",
+            stage="run",
             final_eval_summary="stale",
             final_eval_passed=False,
         )
@@ -550,6 +703,52 @@ class TestHelpers:
         assert "second failure" in hist
 
 
+# ── 4b. eval-fix prompt / task builders ───────────────────────────────────────
+
+
+class TestEvalFixBuilders:
+    def test_compose_both_parts(self) -> None:
+        prompt = _compose_eval_fix_prompt("eval findings", "user notes")
+        assert "## Final Eval Findings" in prompt
+        assert "eval findings" in prompt
+        assert "## User Guidance" in prompt
+        assert "user notes" in prompt
+
+    def test_compose_only_eval(self) -> None:
+        prompt = _compose_eval_fix_prompt("only eval", "")
+        assert "## Final Eval Findings" in prompt
+        assert "## User Guidance" not in prompt
+
+    def test_compose_only_user(self) -> None:
+        prompt = _compose_eval_fix_prompt("", "only user")
+        assert "## Final Eval Findings" not in prompt
+        assert "## User Guidance" in prompt
+
+    def test_compose_both_empty_falls_back(self) -> None:
+        prompt = _compose_eval_fix_prompt("", "")
+        assert prompt == "Address the latest final eval findings and return for user review."
+
+    def test_compose_whitespace_only_treats_as_empty(self) -> None:
+        prompt = _compose_eval_fix_prompt("   ", "\n  \t")
+        assert "Address the latest final eval findings" in prompt
+
+    def test_build_eval_fix_task_default_effort(self) -> None:
+        task = _build_eval_fix_task("fix stuff", None)
+        assert task.description == "fix stuff"
+        assert task.acceptance == "Apply the fixes and pass all configured final eval checks."
+        assert task.effort == "normal"
+
+    def test_build_eval_fix_task_custom_effort(self) -> None:
+        task = _build_eval_fix_task("apply corrections", "hard")
+        assert task.description == "apply corrections"
+        assert task.acceptance == "Apply the fixes and pass all configured final eval checks."
+        assert task.effort == "hard"
+
+    def test_build_eval_fix_task_empty_effort_treated_as_none(self) -> None:
+        task = _build_eval_fix_task("fix", "")
+        assert task.effort == "normal"
+
+
 # ── 5. next_* config override round-trip ─────────────────────────────────────
 
 
@@ -705,8 +904,10 @@ class TestNextConfigOverrides:
         monkeypatch.setattr("splinter.pipeline.localize", lambda *a, **kw: [])
         monkeypatch.setattr("splinter.pipeline._resolve_gate", lambda *a, **kw: None)
         from splinter.strategies.cascade import CascadeStrategy
+        from splinter.strategies.direct import DirectStrategy
 
         monkeypatch.setattr(CascadeStrategy, "execute", _capturing_execute)
+        monkeypatch.setattr(DirectStrategy, "execute", _capturing_execute)
         monkeypatch.setattr("splinter.configure.load_config", lambda *a, **kw: _config_with_fe())
 
         fe_iter = iter([_fail_fe(), _pass_fe()])

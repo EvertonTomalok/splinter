@@ -250,7 +250,7 @@ def _run_phase_loop_stdin(
             f"{result.run_result.model} · ${result.run_result.cost:.4f}\n"
         )
         if not result.gate_passed:
-            print(f"Gate output:\n{result.gate_output[:500]}")
+            print(f"Gate output:\n{result.gate_output}")
         print()
 
     session.set_status("completed", stage="done")
@@ -280,6 +280,24 @@ def _merge_stories_into_task(prd_text: str, stories: list[Task]) -> Task:
         description=body.strip(),
         acceptance=acceptance or "implementation matches the PRD",
         effort=hardest,
+    )
+
+
+def _compose_eval_fix_prompt(eval_output: str, user_reply: str) -> str:
+    parts: list[str] = []
+    if eval_output.strip():
+        parts.append(f"## Final Eval Findings\n\n{eval_output.strip()}")
+    if user_reply.strip():
+        parts.append(f"## User Guidance\n\n{user_reply.strip()}")
+    merged = "\n\n".join(parts).strip()
+    return merged or "Address the latest final eval findings and return for user review."
+
+
+def _build_eval_fix_task(fix_prompt: str, effort: str | None) -> Task:
+    return Task(
+        description=fix_prompt,
+        acceptance="Apply the fixes and pass all configured final eval checks.",
+        effort=effort or "normal",
     )
 
 
@@ -382,6 +400,8 @@ def run_pipeline(
     _next_skip_planner: bool = False
     _next_skip_eval: bool = False
     _next_skip_final_eval: bool = False
+    resume_from_final_eval = False
+    resume_eval_findings = ""
     if resume:
         _cur = session.read_status()
         resume_round = int(_cur.get("round_index", 0))
@@ -395,6 +415,13 @@ def run_pipeline(
         _next_skip_planner = str(_cur.get("next_skip_planner", "")).lower() == "true"
         _next_skip_eval = str(_cur.get("next_skip_eval", "")).lower() == "true"
         _next_skip_final_eval = str(_cur.get("next_skip_final_eval", "")).lower() == "true"
+        resume_from_final_eval = (
+            str(_cur.get("stage", "")) == "final_eval"
+            and str(_cur.get("state", "")) in {"awaiting_user", "awaiting_validation"}
+            and resume_round > 0
+        )
+        if resume_from_final_eval:
+            resume_eval_findings = str(_cur.get("ask_corrections", "")).strip()
     effective_effort = effort or resume_effort
 
     if _next_planner_model:
@@ -443,6 +470,24 @@ def run_pipeline(
         return 1
 
     strategy_name = strategy or DEFAULT_STRATEGY
+    eval_fix_prompt = ""
+    effective_user_guidance = user_guidance
+    if resume_from_final_eval:
+        eval_fix_prompt = _compose_eval_fix_prompt(resume_eval_findings, user_guidance or "")
+        tasks = [_build_eval_fix_task(eval_fix_prompt, effective_effort)]
+        strategy_name = "direct"
+        if _next_skip_planner:
+            effective_user_guidance = eval_fix_prompt
+        else:
+            effective_user_guidance = None
+        session.write(
+            f"knowledge/eval-fix-input-{resume_round}.md",
+            f"# Eval Fix Input — Round {resume_round}\n\n{eval_fix_prompt}\n",
+        )
+        log.info(
+            "final-eval resume round %d: forcing direct single-task eval-fix flow",
+            resume_round,
+        )
     try:
         strat = get_strategy(strategy_name)
     except ValueError:
@@ -512,11 +557,9 @@ def run_pipeline(
 
         localization = ""
         anchors: list[CodeAnchor] = []
-        if prd_text:
-            # On a new round (resume_round > 0), clear stale caches and force re-localize.
+        if prd_text and not resume_from_final_eval:
             if resume and resume_round > 0:
                 _clear_round_caches(session)
-            # Reuse localization cache only on first-round resume.
             if resume and resume_round == 0 and session.has("knowledge/localization.md"):
                 log.info("resume: reusing existing localization")
                 localization = session.read("knowledge/localization.md")
@@ -613,7 +656,7 @@ def run_pipeline(
             cowabunga=cowabunga,
             resume=resume,
             claude_runner_fallback=claude_runner_fallback,
-            user_guidance=user_guidance,
+            user_guidance=effective_user_guidance,
             jump_premium=jump_premium,
             skip_planner=_next_skip_planner,
             skip_eval=_next_skip_eval,
@@ -645,6 +688,7 @@ def run_pipeline(
             fe_verbatim = "\n\n---\n\n".join(r.output for r in fe_results)
             session.write("final_eval.md", fe_verbatim + "\n")
             round_content = f"# Final Eval — Round {resume_round + 1}\n\n{fe_verbatim}\n"
+            session.write(f"round-final-eval-{resume_round}.md", round_content)
             session.write(f"knowledge/final-eval-{resume_round}.md", round_content)
             rd = session.round_dir(resume_round)
             (rd / "final-eval.md").write_text(round_content)
@@ -698,6 +742,9 @@ def run_pipeline(
             round_index=resume_round + 1,
             next_effort=bump_effort(cur_effort),
             ask_corrections=val_exc.summary,
+            next_skip_planner="true",
+            next_skip_eval="true",
+            next_skip_final_eval="true",
         )
         log.info("run paused — awaiting manual validation")
         print(f"run complete — awaiting manual validation.\n{val_exc.summary}")
@@ -749,7 +796,7 @@ def run_pipeline(
         return 2
     except BaseException as exc:
         fail_class = _classify_failure(exc)
-        err_msg = f"{type(exc).__name__}: {str(exc).split(chr(10))[0][:200]}"
+        err_msg = f"{type(exc).__name__}: {str(exc)}"
         session.set_status("failed", fail_class=fail_class, error=err_msg)
         log.error("pipeline failed (%s): %s", fail_class, exc)
         raise

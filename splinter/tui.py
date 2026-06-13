@@ -86,16 +86,9 @@ _STATE_EMOJI = {
 
 
 def _cap_payload(text: str, limit: int = 20_000) -> str:
-    """Cap long text at limit; preserve head + tail with ellipsis marker in between."""
-    if len(text) <= limit:
-        return text
-    marker_len = 50
-    head_size = (limit - marker_len) // 2
-    tail_size = (limit - marker_len) // 2
-    head = text[:head_size]
-    tail = text[-tail_size:]
-    dropped = len(text) - len(head) - len(tail)
-    return f"{head}\n\n…[truncated {dropped} chars]…\n\n{tail}"
+    """Return full payload unchanged."""
+    _ = limit
+    return text
 
 
 _SPLINTER = """\
@@ -2375,8 +2368,25 @@ class RunApp(App[int]):
         splog.addHandler(self._handler)
         logging.getLogger("splinter.live").setLevel(logging.INFO)
 
-        _state = self.session.read_status().get("state")
-        if _state == "awaiting_user":
+        _status = self.session.read_status()
+        for key, status_key in (
+            ("planner_model", "next_planner_model"),
+            ("planner_effort", "next_planner_effort"),
+            ("runner_model", "next_runner_model"),
+            ("runner_effort", "next_runner_effort"),
+            ("eval_model", "next_eval_model"),
+            ("eval_effort", "next_eval_effort"),
+            ("skip_planner", "next_skip_planner"),
+            ("skip_eval", "next_skip_eval"),
+            ("skip_final_eval", "next_skip_final_eval"),
+        ):
+            value = str(_status.get(status_key, "")).strip()
+            if value:
+                self._run_config[key] = value
+        _state = _status.get("state")
+        if _state == "awaiting_user" and _status.get("stage") == "final_eval":
+            self.call_after_refresh(self._show_manual_validation_modal)
+        elif _state == "awaiting_user":
             self.call_after_refresh(self._show_ask_user_modal)
         elif _state == "awaiting_validation":
             self.call_after_refresh(self._show_manual_validation_modal)
