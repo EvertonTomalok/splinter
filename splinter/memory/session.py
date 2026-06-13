@@ -206,6 +206,26 @@ class Session:
                 pass
         return {}
 
+    def queue_live_command(self, text: str) -> None:
+        """Append a live user directive to the pending queue (TUI → pipeline)."""
+        self._ensure_dir()
+        p = self.dir / "pending_directive.txt"
+        with open(p, "a") as f:
+            f.write(text.strip())
+            f.write("\n---\n")
+
+    def pop_live_commands(self) -> str:
+        """Read and clear all pending live directives. Returns empty string if none."""
+        p = self.dir / "pending_directive.txt"
+        if not p.exists():
+            return ""
+        try:
+            content = p.read_text().strip()
+            p.unlink()
+            return content
+        except Exception:
+            return ""
+
     def is_empty(self) -> bool:
         """No real work captured — only a status stamp / blank scaffolding.
 

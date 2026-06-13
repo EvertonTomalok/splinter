@@ -441,6 +441,7 @@ _MAXIMIZE_CSS = """
         #overview { display: none; }
         #draftpane { display: none; }
         #run-left { display: none; }
+        #cmd-bar { display: none; }
     }
 """
 
@@ -2269,6 +2270,15 @@ class RunApp(App[int]):
     RichLog {
         padding: 0 1;
     }
+    #run-right { width: 1fr; }
+    #cmd-bar {
+        height: 3;
+        border-top: solid $primary;
+        padding: 0 1;
+        align: left middle;
+    }
+    #user-cmd-input { width: 1fr; height: 3; }
+    #cmd-send { width: 10; height: 3; margin-left: 1; border: none; text-style: bold; }
     """
         + _PALETTE_CSS
         + _SCROLL_LEFT_PANE_CSS
@@ -2301,7 +2311,14 @@ class RunApp(App[int]):
         with Horizontal():
             with Vertical(id="run-left"):
                 yield VerticalScroll(Static(id="overview"), id="overview-scroll")
-            yield RichLog(id="log", markup=True, wrap=True, highlight=True)
+            with Vertical(id="run-right"):
+                yield RichLog(id="log", markup=True, wrap=True, highlight=True)
+                with Horizontal(id="cmd-bar"):
+                    yield Input(
+                        placeholder="Send command to runner…",
+                        id="user-cmd-input",
+                    )
+                    yield Button("Send", id="cmd-send", variant="primary")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -2570,6 +2587,25 @@ class RunApp(App[int]):
         safe = escape(msg)
         color = {logging.ERROR: "red", logging.WARNING: "yellow"}.get(level)
         self.query_one("#log", RichLog).write(f"[{color}]{safe}[/]" if color else safe)
+
+    def _send_live_command(self) -> None:
+        inp = self.query_one("#user-cmd-input", Input)
+        text = inp.value.strip()
+        if not text:
+            return
+        self.session.queue_live_command(text)
+        log = self.query_one("#log", RichLog)
+        log.write(f"[bold cyan]👤 User → runner:[/] [cyan]{escape(text)}[/]")
+        inp.value = ""
+        inp.focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "user-cmd-input":
+            self._send_live_command()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "cmd-send":
+            self._send_live_command()
 
     def _write_run_complete(self) -> None:
         summary = format_run_completion(self.session)

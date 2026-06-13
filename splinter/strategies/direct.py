@@ -493,6 +493,16 @@ class DirectStrategy(Strategy):
 
         for iteration in range(start_iteration, max_iterations + 1):
             tier_tries += 1
+
+            live_cmd = session.pop_live_commands()
+            if live_cmd:
+                log.info("live directive received from TUI — injecting into corrections")
+                session.append(
+                    "loop.md",
+                    f"## Live directive (iter {iteration})\n{live_cmd}\n\n",
+                )
+                corrections = _merge_guidance(corrections, live_cmd)
+
             if iteration == start_iteration and resume_stage:
                 chain = build_chain_from(
                     resume_stage, RunStage(), GateStage(), EvalStage(resolved_skill=resolved)
