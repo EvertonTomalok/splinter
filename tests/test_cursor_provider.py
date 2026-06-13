@@ -32,6 +32,7 @@ def test_run_cmd_basic(monkeypatch: pytest.MonkeyPatch) -> None:
     cmd = captured["cmd"]
     assert cmd[0] == "agent"
     assert "-p" in cmd
+    assert "--trust" in cmd
     assert "--" in cmd
     assert cmd[-1] == "hello"
 
