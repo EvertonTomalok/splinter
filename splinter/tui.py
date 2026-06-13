@@ -1744,9 +1744,8 @@ class _ManualValidationModal(ModalScreen[tuple[str, str] | None]):
         background: $background 60%;
     }
     _ManualValidationModal > Vertical#val-dialog {
-        width: 84;
-        height: auto;
-        max-height: 92%;
+        width: 95%;
+        height: 95%;
         border: round $primary;
         background: $surface;
         padding: 1 2;
@@ -1755,15 +1754,20 @@ class _ManualValidationModal(ModalScreen[tuple[str, str] | None]):
         text-style: bold;
         color: $primary;
         margin-bottom: 1;
+        height: auto;
     }
-    _ManualValidationModal #val-summary {
-        color: $text-muted;
+    _ManualValidationModal #val-summary-scroll {
+        height: 1fr;
+        border: round $panel;
         margin-bottom: 1;
-        max-height: 20;
-        overflow-y: auto;
+        padding: 0 1;
+    }
+    _ManualValidationModal #val-response-label {
+        height: auto;
+        margin-bottom: 0;
     }
     _ManualValidationModal #val-response {
-        height: 6;
+        height: 8;
         margin-bottom: 1;
     }
     _ManualValidationModal #val-actions {
@@ -1803,9 +1807,10 @@ class _ManualValidationModal(ModalScreen[tuple[str, str] | None]):
         with Vertical(id="val-dialog"):
             yield Static(f"🔍  Final Eval · {status}", id="val-title")
             yield Rule()
-            yield Static(self._summary or "Final eval complete.", id="val-summary")
+            with VerticalScroll(id="val-summary-scroll"):
+                yield Markdown(self._summary or "_Final eval complete._")
             yield Rule()
-            yield Label("Describe changes (leave blank to approve as-is):")
+            yield Label("Your response (leave blank to approve as-is):", id="val-response-label")
             yield TextArea("", id="val-response")
             with Horizontal(id="val-actions"):
                 yield Button("  Approve  (a)", id="approve", variant="success")

@@ -329,9 +329,9 @@ def test_event_summaries_tool_detail_truncation(
     assert len(summary) <= 110  # "🔧 Edit " + 90 chars max
 
 
-def test_event_summaries_text_truncation(
+def test_event_summaries_text_full(
 ) -> None:
-    """Text summaries truncated to ≤120 chars."""
+    """Text summaries include full content — no truncation."""
     long_text = "B" * 300
     line = json.dumps({
         "type": "assistant",
@@ -347,7 +347,7 @@ def test_event_summaries_text_truncation(
     summaries = _event_summaries(line)
     assert len(summaries) == 1
     summary = summaries[0][1]
-    assert len(summary) <= 130  # "💬 " + 120 chars max
+    assert summary == f"💬 {long_text}"
 
 
 def test_event_summaries_malformed_json(
