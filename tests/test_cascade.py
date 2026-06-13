@@ -197,6 +197,26 @@ class TestExecuteResume:
         assert "US-001" in checkpoints_after[0]
         assert {"US-001", "US-002"} == checkpoints_after[1]
 
+    def test_resume_plan_phase_reuses_only_and_defers_missing(self, tmp_path: Path) -> None:
+        session = self._make_session(tmp_path)
+        session.write("knowledge/plan-1.md", "# Plan\n\nexisting\n")
+        # Task 1 is checkpointed/done; task 2 has no precomputed plan.
+        CascadeStrategy._save_checkpoint(session, {"US-001"})
+
+        t1 = _task("US-001")
+        t2 = _task("US-002")
+
+        strategy = CascadeStrategy()
+        fake_ladder = MagicMock()
+
+        with patch("splinter.strategies.direct._make_plan") as make_plan:
+            with patch.object(strategy, "_run_task_loop", return_value=_fake_result()):
+                with patch.object(strategy, "_start_tier", return_value=0):
+                    strategy.execute([t1, t2], session, fake_ladder, resume=True, cowabunga=True)
+
+        # Resume bulk-plan must not proactively generate missing plans.
+        make_plan.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # execute — budget short-circuit
