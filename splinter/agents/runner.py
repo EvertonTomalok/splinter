@@ -101,8 +101,6 @@ def _build_prompt(
             )
         return render(
             "run_fix",
-            task_section=section("Original Task", task.description),
-            acceptance_section=section("Acceptance Criteria", task.acceptance),
             corrections_section=section("Corrections from Evaluator", corrections),
             code_context_section=section("Code Context", code_ctx),
         )
