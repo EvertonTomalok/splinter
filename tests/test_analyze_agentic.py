@@ -44,22 +44,16 @@ def test_render_agentic_groups_by_task_orders_by_stage(
     task2_idx = next(i for i, line in enumerate(lines) if "Task 2" in line)
     assert task1_idx < task2_idx
 
-    task1_section = "\n".join(lines[task1_idx : task2_idx])
+    task1_section = "\n".join(lines[task1_idx:task2_idx])
     run_idx = next(
-        i
-        for i, line in enumerate(task1_section.split("\n"))
-        if line.startswith("run ·")
+        i for i, line in enumerate(task1_section.split("\n")) if line.startswith("run ·")
     )
     eval_idx = next(
-        i
-        for i, line in enumerate(task1_section.split("\n"))
-        if line.startswith("eval ·")
+        i for i, line in enumerate(task1_section.split("\n")) if line.startswith("eval ·")
     )
     assert run_idx < eval_idx
 
-    eval_line = next(
-        line for line in lines if line.startswith("eval ·")
-    )
+    eval_line = next(line for line in lines if line.startswith("eval ·"))
     assert "fast" in eval_line, "variant should appear in header"
 
 

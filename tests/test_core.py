@@ -677,6 +677,7 @@ def test_get_provider_returns_codex() -> None:
 
 def test_provider_for_codex_resolution(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
     from splinter.models.roster import provider_for
+
     assert provider_for("codex/gpt-5") == "codex"
     assert provider_for("opencode/foo") == "opencode"
     assert provider_for("opencode-go/bar") == "opencode"
@@ -747,6 +748,7 @@ def test_available_models_by_provider_keys(
     assert "opencode-go/foo" in result["opencode"]
     assert "opencode/bar" in result["opencode"]
     assert "other/baz" not in result["opencode"]
+
 
 def test_available_models_by_provider_isolates_failure(
     tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
@@ -1135,9 +1137,7 @@ def test_trajectory_lines_collapse_phases(
     assert "x3" in out
 
 
-def test_structure_renders_at_run_entry(
-    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
-) -> None:
+def test_structure_renders_at_run_entry(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
     """Verify folder structure anchor writes at RunStage entry, before run_task."""
     monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
     session = Session("ses_test")
@@ -1169,6 +1169,7 @@ def test_structure_renders_at_run_entry(
         loop_content = session.read("loop.md")
         call_log.append(f"loop.md has: {repr(loop_content[:50])}")
         from splinter.agents.runner import RunResult
+
         return RunResult(
             text="test output",
             model="test-model",
@@ -1217,6 +1218,7 @@ def test_no_duplicate_structure_after_eval(
 
     def stub_run_task(*args, **kwargs):  # type: ignore
         from splinter.agents.runner import RunResult
+
         return RunResult(
             text="test output",
             model="test-model",
@@ -1238,9 +1240,7 @@ def test_no_duplicate_structure_after_eval(
     assert count == 1, f"Expected 1 '## Iteration 1', found {count}"
 
 
-def test_trajectory_independent_of_eval(
-    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
-) -> None:
+def test_trajectory_independent_of_eval(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
     """Verify trajectory renders after RunStage only, without EvalStage."""
     monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
     session = Session("ses_test")
@@ -1267,6 +1267,7 @@ def test_trajectory_independent_of_eval(
 
     def stub_run_task(*args, **kwargs):  # type: ignore
         from splinter.agents.runner import RunResult
+
         return RunResult(
             text="test output",
             model="test-model",
@@ -1312,9 +1313,7 @@ def test_overview_md_trajectory_task_bullets(
     assert "T0·PASS" not in out
 
 
-def test_overview_md_trajectory_prd_line(
-    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
-) -> None:
+def test_overview_md_trajectory_prd_line(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
     from splinter.tui import _overview_md
 
     monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
@@ -2267,8 +2266,7 @@ def test_append_language_preset_rust(tmp_path: Path, monkeypatch: "pytest.Monkey
             await pilot.pause()
             assert len(app._gate_checks) == original_count + len(rust_preset)
             rust_in_checks = any(
-                c["name"] == "clippy" and "cargo clippy" in c["cmd"]
-                for c in app._gate_checks
+                c["name"] == "clippy" and "cargo clippy" in c["cmd"] for c in app._gate_checks
             )
             assert rust_in_checks
             await pilot.press("s")
@@ -2278,9 +2276,7 @@ def test_append_language_preset_rust(tmp_path: Path, monkeypatch: "pytest.Monkey
     asyncio.run(drive())
     config = load_config()
     rust_checks = gate_default_for("rust")
-    assert len(config["gate_checks"]) == len(DEFAULT_CONFIG["gate_checks"]) + len(
-        rust_checks
-    )
+    assert len(config["gate_checks"]) == len(DEFAULT_CONFIG["gate_checks"]) + len(rust_checks)
 
 
 def test_append_two_languages_rust_then_go(
@@ -2520,9 +2516,7 @@ def test_configured_gate_checks_backward_compat(
         assert check["language"] == "all"
 
 
-def test_configure_tui_add_custom_gate(
-    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
-) -> None:
+def test_configure_tui_add_custom_gate(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
     import asyncio
 
     from textual.widgets import Button, Input, Select
@@ -2561,9 +2555,7 @@ def test_configure_tui_add_custom_gate(
     assert added_check["language"] == "javascript-npm"
 
 
-def test_configure_tui_edit_gate_cmd(
-    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
-) -> None:
+def test_configure_tui_edit_gate_cmd(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
     import asyncio
 
     from textual.widgets import Input, Select
@@ -2595,9 +2587,7 @@ def test_configure_tui_edit_gate_cmd(
     assert config["gate_checks"][2] == DEFAULT_CONFIG["gate_checks"][2]
 
 
-def test_configure_tui_delete_all_gates(
-    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
-) -> None:
+def test_configure_tui_delete_all_gates(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
     import asyncio
 
     from textual.widgets import Button
@@ -2705,7 +2695,8 @@ def test_model_opts_for_filter_narrows(tmp_path: Path, monkeypatch: "pytest.Monk
 
 
 def test_model_opts_for_codex_includes_roster_ids(
-    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch",
+    tmp_path: Path,
+    monkeypatch: "pytest.MonkeyPatch",
 ) -> None:
     from splinter.models.roster import CODEX_MODELS as ROSTER_CODEX_MODELS
     from splinter.tui import ConfigureApp
@@ -2724,7 +2715,8 @@ def test_model_opts_for_codex_includes_roster_ids(
 
 
 def test_model_opts_for_default_shows_all(
-    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch",
+    tmp_path: Path,
+    monkeypatch: "pytest.MonkeyPatch",
 ) -> None:
     from splinter.tui import ConfigureApp
 
@@ -2744,7 +2736,8 @@ def test_model_opts_for_default_shows_all(
 
 
 def test_model_opts_for_default_filter_narrows(
-    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch",
+    tmp_path: Path,
+    monkeypatch: "pytest.MonkeyPatch",
 ) -> None:
     from splinter.tui import ConfigureApp
 
@@ -2760,7 +2753,8 @@ def test_model_opts_for_default_filter_narrows(
 
 
 def test_current_model_selections_returns_providers_block(
-    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch",
+    tmp_path: Path,
+    monkeypatch: "pytest.MonkeyPatch",
 ) -> None:
     from splinter.configure import current_model_selections
     from splinter.models.roster import provider_for
@@ -2785,7 +2779,8 @@ def test_current_model_selections_returns_providers_block(
 
 
 def test_write_model_config_providers_roundtrip(
-    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch",
+    tmp_path: Path,
+    monkeypatch: "pytest.MonkeyPatch",
 ) -> None:
     from splinter.configure import load_config, write_model_config
 
@@ -2805,7 +2800,8 @@ def test_write_model_config_providers_roundtrip(
 
 
 def test_write_model_config_providers_none_preserves_existing(
-    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch",
+    tmp_path: Path,
+    monkeypatch: "pytest.MonkeyPatch",
 ) -> None:
     from splinter.configure import load_config, write_model_config
 
@@ -2818,7 +2814,8 @@ def test_write_model_config_providers_none_preserves_existing(
 
 
 def test_configure_tui_model_trigger_toggles_overlay(
-    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch",
+    tmp_path: Path,
+    monkeypatch: "pytest.MonkeyPatch",
 ) -> None:
     import asyncio
 
@@ -2858,7 +2855,8 @@ def test_configure_tui_rows_use_compact_height() -> None:
 
 
 def test_configure_tui_row_description_tooltips(
-    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch",
+    tmp_path: Path,
+    monkeypatch: "pytest.MonkeyPatch",
 ) -> None:
     import asyncio
 
@@ -2888,7 +2886,8 @@ def test_configure_tui_row_description_tooltips(
 
 
 def test_configure_tui_provider_change_repopulates_model_list(
-    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch",
+    tmp_path: Path,
+    monkeypatch: "pytest.MonkeyPatch",
 ) -> None:
     import asyncio
 
@@ -2928,7 +2927,8 @@ def test_configure_tui_provider_change_repopulates_model_list(
 
 
 def test_configure_tui_provider_filter_persists_across_switch(
-    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch",
+    tmp_path: Path,
+    monkeypatch: "pytest.MonkeyPatch",
 ) -> None:
     import asyncio
 
@@ -3077,10 +3077,13 @@ def test_run_gate_skips_other_language_check(
 
     session_dir = tmp_path / "session"
     session_dir.mkdir()
-    save_gate_checks(session_dir, [
-        {"name": "ruff", "cmd": "ruff check", "when": "always", "language": "python"},
-        {"name": "cargo-test", "cmd": "cargo test", "when": "always", "language": "go"},
-    ])
+    save_gate_checks(
+        session_dir,
+        [
+            {"name": "ruff", "cmd": "ruff check", "when": "always", "language": "python"},
+            {"name": "cargo-test", "cmd": "cargo test", "when": "always", "language": "go"},
+        ],
+    )
 
     result = run_gate(session_dir=session_dir, languages={"python"})
     check_names = [name for name, _, _ in result.checks]
@@ -3102,10 +3105,13 @@ def test_run_gate_runs_all_when_no_language(
 
     session_dir = tmp_path / "session"
     session_dir.mkdir()
-    save_gate_checks(session_dir, [
-        {"name": "ruff", "cmd": "ruff check", "when": "always", "language": "python"},
-        {"name": "go-test", "cmd": "go test ./...", "when": "always", "language": "go"},
-    ])
+    save_gate_checks(
+        session_dir,
+        [
+            {"name": "ruff", "cmd": "ruff check", "when": "always", "language": "python"},
+            {"name": "go-test", "cmd": "go test ./...", "when": "always", "language": "go"},
+        ],
+    )
 
     for langs in (None, set()):
         result = run_gate(session_dir=session_dir, languages=langs)
@@ -3114,9 +3120,7 @@ def test_run_gate_runs_all_when_no_language(
         assert "go-test" in check_names, f"go-test missing with languages={langs}"
 
 
-def test_run_gate_runs_all_tagged_check(
-    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
-) -> None:
+def test_run_gate_runs_all_tagged_check(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
     from splinter.agents.gate import run_gate, save_gate_checks
 
     class _FakeProc:
@@ -3128,10 +3132,13 @@ def test_run_gate_runs_all_tagged_check(
 
     session_dir = tmp_path / "session"
     session_dir.mkdir()
-    save_gate_checks(session_dir, [
-        {"name": "always-check", "cmd": "always-cmd", "when": "always", "language": "all"},
-        {"name": "go-check", "cmd": "go-cmd", "when": "always", "language": "go"},
-    ])
+    save_gate_checks(
+        session_dir,
+        [
+            {"name": "always-check", "cmd": "always-cmd", "when": "always", "language": "all"},
+            {"name": "go-check", "cmd": "go-cmd", "when": "always", "language": "go"},
+        ],
+    )
 
     result = run_gate(session_dir=session_dir, languages={"python"})
     check_names = [name for name, _, _ in result.checks]
@@ -3179,17 +3186,33 @@ def _make_fake_provider(name: str, resp_text: str = "ok", session_id: str | None
         name = ""  # overridden below
 
         def run(  # type: ignore[override]
-            self, prompt, model, *, variant=None, output_format="json",
-            session=None, timeout=None, agent="build",
+            self,
+            prompt,
+            model,
+            *,
+            variant=None,
+            output_format="json",
+            session=None,
+            timeout=None,
+            agent="build",
         ):
-            calls.append(dict(
-                prompt=prompt, model=model, variant=variant,
-                output_format=output_format, session=session,
-                timeout=timeout, agent=agent,
-            ))
+            calls.append(
+                dict(
+                    prompt=prompt,
+                    model=model,
+                    variant=variant,
+                    output_format=output_format,
+                    session=session,
+                    timeout=timeout,
+                    agent=agent,
+                )
+            )
             return ProviderResponse(
-                text=resp_text, tokens={"input": 1, "output": 1},
-                cost=0.01, raw={}, session_id=session_id,
+                text=resp_text,
+                tokens={"input": 1, "output": 1},
+                cost=0.01,
+                raw={},
+                session_id=session_id,
             )
 
     p = FakeProvider()
@@ -3218,7 +3241,9 @@ def test_dispatch_run_text_opencode_routes_correctly(monkeypatch: "pytest.Monkey
     assert fake.calls[0]["agent"] == "build"  # type: ignore[attr-defined]
 
 
-def test_dispatch_run_text_calls_log_when_session_present(monkeypatch: "pytest.MonkeyPatch") -> None:  # noqa: E501
+def test_dispatch_run_text_calls_log_when_session_present(
+    monkeypatch: "pytest.MonkeyPatch",
+) -> None:  # noqa: E501
     from splinter.providers import dispatch
 
     fake = _make_fake_provider("claude")
@@ -3249,7 +3274,9 @@ def test_dispatch_run_text_no_log_when_session_none(monkeypatch: "pytest.MonkeyP
     assert logged == []
 
 
-def test_dispatch_run_text_session_returns_sid_from_provider(monkeypatch: "pytest.MonkeyPatch") -> None:  # noqa: E501
+def test_dispatch_run_text_session_returns_sid_from_provider(
+    monkeypatch: "pytest.MonkeyPatch",
+) -> None:  # noqa: E501
     from splinter.providers import dispatch
 
     fake = _make_fake_provider("claude", session_id="new-sid")
@@ -3259,7 +3286,9 @@ def test_dispatch_run_text_session_returns_sid_from_provider(monkeypatch: "pytes
     assert sid == "new-sid"
 
 
-def test_dispatch_run_text_session_fallback_to_passed_session(monkeypatch: "pytest.MonkeyPatch") -> None:  # noqa: E501
+def test_dispatch_run_text_session_fallback_to_passed_session(
+    monkeypatch: "pytest.MonkeyPatch",
+) -> None:  # noqa: E501
     """When provider returns session_id=None, sid falls back to passed-in session."""
     from splinter.providers import dispatch
 
@@ -3270,7 +3299,9 @@ def test_dispatch_run_text_session_fallback_to_passed_session(monkeypatch: "pyte
     assert sid == "prior-sid"
 
 
-def test_dispatch_run_provider_session_resp_sid_matches_returned_sid(monkeypatch: "pytest.MonkeyPatch") -> None:  # noqa: E501
+def test_dispatch_run_provider_session_resp_sid_matches_returned_sid(
+    monkeypatch: "pytest.MonkeyPatch",
+) -> None:  # noqa: E501
     from splinter.providers import dispatch
     from splinter.providers.base import ProviderResponse
 
@@ -3341,9 +3372,7 @@ def test_save_writes_selected_models_per_row(
     assert len(config["timeouts"]["tiers"]) == len(TIER_STEPS)
 
 
-def test_blank_model_omitted(
-    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
-) -> None:
+def test_blank_model_omitted(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
     from splinter.configure import current_model_selections, load_config, write_model_config
 
     monkeypatch.chdir(tmp_path)
@@ -3364,9 +3393,7 @@ def test_blank_model_omitted(
     assert selections["models"]["planner"] != ""
 
 
-def test_save_load_roundtrip(
-    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
-) -> None:
+def test_save_load_roundtrip(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
     from splinter.configure import current_model_selections, write_model_config
 
     monkeypatch.chdir(tmp_path)
@@ -3430,8 +3457,9 @@ def test_log_trace_appends_entry_for_billable_call() -> None:
     from splinter.providers.dispatch import _log_trace
 
     trace = Trace()
-    _log_trace(trace, "test-model", {"input": 100}, 0.01,
-               tier=0, iteration=1, task_index=0, role="run")
+    _log_trace(
+        trace, "test-model", {"input": 100}, 0.01, tier=0, iteration=1, task_index=0, role="run"
+    )
     assert len(trace.entries) == 1
     assert trace.entries[0].model == "test-model"
     assert trace.entries[0].cost == 0.01
@@ -3446,8 +3474,7 @@ def test_log_trace_skips_non_billable_call() -> None:
     from splinter.providers.dispatch import _log_trace
 
     trace = Trace()
-    _log_trace(trace, "test-model", {}, 0.0,
-               tier=0, iteration=1, task_index=0, role="run")
+    _log_trace(trace, "test-model", {}, 0.0, tier=0, iteration=1, task_index=0, role="run")
     assert len(trace.entries) == 0
 
 
@@ -3458,8 +3485,16 @@ def test_log_trace_skips_zero_sum_token_dict() -> None:
     from splinter.providers.dispatch import _log_trace
 
     trace = Trace()
-    _log_trace(trace, "test-model", {"input": 0, "output": 0}, 0.0,
-               tier=0, iteration=1, task_index=0, role="run")
+    _log_trace(
+        trace,
+        "test-model",
+        {"input": 0, "output": 0},
+        0.0,
+        tier=0,
+        iteration=1,
+        task_index=0,
+        role="run",
+    )
     assert len(trace.entries) == 0
 
 
@@ -3469,8 +3504,16 @@ def test_log_trace_logs_cost_only_when_tokens_zero_sum() -> None:
     from splinter.providers.dispatch import _log_trace
 
     trace = Trace()
-    _log_trace(trace, "test-model", {"input": 0, "output": 0}, 0.01,
-               tier=0, iteration=1, task_index=0, role="run")
+    _log_trace(
+        trace,
+        "test-model",
+        {"input": 0, "output": 0},
+        0.01,
+        tier=0,
+        iteration=1,
+        task_index=0,
+        role="run",
+    )
     assert len(trace.entries) == 1
     assert trace.entries[0].cost == 0.01
 
@@ -3488,14 +3531,17 @@ def test_billed_error_raises_and_logs_usage_to_trace(
     trace = Trace()
 
     billing_gap = ProviderGapError(
-        kind="rate_limit", provider="opencode", model="test-model",
+        kind="rate_limit",
+        provider="opencode",
+        model="test-model",
         original=RuntimeError("billed then rate-limited"),
     )
     billing_gap.tokens = {"input": 200, "output": 80}  # type: ignore[attr-defined]
     billing_gap.cost = 0.05  # type: ignore[attr-defined]
 
     monkeypatch.setattr(
-        dispatch_mod, "get_provider",
+        dispatch_mod,
+        "get_provider",
         lambda _name: type(
             "P",
             (),
@@ -3505,8 +3551,13 @@ def test_billed_error_raises_and_logs_usage_to_trace(
 
     try:
         dispatch_mod.run_provider_session(
-            "prompt", "test-model",
-            trace=trace, iteration=2, tier=1, task_index=0, role="run",
+            "prompt",
+            "test-model",
+            trace=trace,
+            iteration=2,
+            tier=1,
+            task_index=0,
+            role="run",
         )
     except ProviderGapError:
         pass
@@ -3525,14 +3576,20 @@ def test_run_provider_session_logs_to_trace(monkeypatch: "pytest.MonkeyPatch") -
     from splinter.providers import dispatch as dispatch_mod
 
     monkeypatch.setattr(
-        dispatch_mod, "get_provider",
+        dispatch_mod,
+        "get_provider",
         lambda _name: type("P", (), {"run": lambda *a, **kw: _make_provider_response()})(),
     )
 
     trace = Trace()
     dispatch_mod.run_provider_session(
-        "prompt", "test-model",
-        trace=trace, iteration=1, tier=0, task_index=0, role="run",
+        "prompt",
+        "test-model",
+        trace=trace,
+        iteration=1,
+        tier=0,
+        task_index=0,
+        role="run",
     )
     assert len(trace.entries) == 1
     assert trace.entries[0].role == "run"
@@ -3550,7 +3607,8 @@ def test_multi_retry_each_billable_call_appends_one_entry(
     from splinter.providers import dispatch as dispatch_mod
 
     monkeypatch.setattr(
-        dispatch_mod, "get_provider",
+        dispatch_mod,
+        "get_provider",
         lambda _name: type("P", (), {"run": lambda *a, **kw: _make_provider_response(cost=0.01)})(),
     )
     monkeypatch.setattr("splinter.agents.runner.resolve_model", lambda t, _lad: ("t0", "opencode"))
@@ -3587,10 +3645,9 @@ def test_billable_failed_retry_is_logged(monkeypatch: "pytest.MonkeyPatch") -> N
     from splinter.providers import dispatch as dispatch_mod
 
     monkeypatch.setattr(
-        dispatch_mod, "get_provider",
-        lambda _name: type(
-            "P", (), {"run": lambda *a, **kw: _make_provider_response(cost=0.03)}
-        )(),
+        dispatch_mod,
+        "get_provider",
+        lambda _name: type("P", (), {"run": lambda *a, **kw: _make_provider_response(cost=0.03)})(),
     )
     monkeypatch.setattr("splinter.agents.runner.resolve_model", lambda t, _lad: ("t0", "opencode"))
     monkeypatch.setattr("splinter.agents.runner.resolve_variant", lambda *a, **kw: "low")
@@ -3620,14 +3677,18 @@ def test_non_billable_call_excluded_from_trace(monkeypatch: "pytest.MonkeyPatch"
     from splinter.providers.base import ProviderResponse
 
     monkeypatch.setattr(
-        dispatch_mod, "get_provider",
+        dispatch_mod,
+        "get_provider",
         lambda _name: type(
             "P",
             (),
             {
                 "run": lambda *a, **kw: ProviderResponse(
-                    text="empty", tokens={"input": 0, "output": 0}, cost=0.0,
-                    raw={}, session_id=None,
+                    text="empty",
+                    tokens={"input": 0, "output": 0},
+                    cost=0.0,
+                    raw={},
+                    session_id=None,
                 ),
             },
         )(),
@@ -3648,7 +3709,8 @@ def test_non_billable_call_excluded_from_trace(monkeypatch: "pytest.MonkeyPatch"
 
 
 def test_no_double_log_stages_dont_append_independently(
-    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch",
+    tmp_path: Path,
+    monkeypatch: "pytest.MonkeyPatch",
 ) -> None:
     """RunStage does not add a second trace entry — dispatch is the single
     logging point. The stage calls run_task (which calls dispatch internally);
@@ -3713,18 +3775,31 @@ def test_compute_summary_cost_uses_trace_when_entries_present() -> None:
 
     trace = Trace()
     trace.entries.append(
-        RunEntry(model="m1", tier=0, iteration=0, tokens={"input": 10}, cost=0.02,
-                 latency_s=0.0, task=0, role="plan")
+        RunEntry(
+            model="m1",
+            tier=0,
+            iteration=0,
+            tokens={"input": 10},
+            cost=0.02,
+            latency_s=0.0,
+            task=0,
+            role="plan",
+        )
     )
     trace.entries.append(
-        RunEntry(model="m1", tier=0, iteration=1, tokens={"input": 20}, cost=0.05,
-                 latency_s=0.0, task=0, role="run")
+        RunEntry(
+            model="m1",
+            tier=0,
+            iteration=1,
+            tokens={"input": 20},
+            cost=0.05,
+            latency_s=0.0,
+            task=0,
+            role="run",
+        )
     )
 
-    results = [
-        RunResult(text="out", model="m1", tier=0, tokens={"input": 20},
-                  cost=0.05, raw={})
-    ]
+    results = [RunResult(text="out", model="m1", tier=0, tokens={"input": 20}, cost=0.05, raw={})]
 
     total, runs = _compute_summary_cost(trace, results)
     assert total == pytest.approx(0.07)
@@ -3749,6 +3824,7 @@ def test_compute_summary_cost_falls_back_to_results_when_trace_empty() -> None:
 
 
 # ── US-003: indeterminate-cost flagging ──────────────────────────────────────
+
 
 def test_calc_cost_known_model_returns_correct_cost() -> None:
     """Known model produces (cost, False) — no indeterminate flag."""

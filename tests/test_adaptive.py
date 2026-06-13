@@ -296,9 +296,7 @@ def test_adaptive_passes_config_soft_budget_to_loop(
     assert captured and captured[0] is False
 
 
-def test_adaptive_default_soft_budget_true(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_adaptive_default_soft_budget_true(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """With no config, AdaptiveStrategy passes soft_budget=True to _run_task_loop."""
     monkeypatch.chdir(tmp_path)
 
@@ -452,9 +450,7 @@ def test_adaptive_detailed_log_format(
     task = Task(description="Test task", acceptance="AC", effort="normal", id="T1")
 
     strategy = AdaptiveStrategy()
-    strategy._run_task_loop = MagicMock(
-        return_value=MagicMock(spec=RunResult, text="done")
-    )
+    strategy._run_task_loop = MagicMock(return_value=MagicMock(spec=RunResult, text="done"))
     strategy._run_plan_phase = MagicMock()
 
     strategy.execute([task], session, ladder, budget=10.0)
@@ -487,9 +483,7 @@ def test_adaptive_uses_self_name_prefix(
     task = Task(description="Test task", acceptance="AC", effort="normal", id="T1")
 
     strategy = AdaptiveStrategy()
-    strategy._run_task_loop = MagicMock(
-        return_value=MagicMock(spec=RunResult, text="done")
-    )
+    strategy._run_task_loop = MagicMock(return_value=MagicMock(spec=RunResult, text="done"))
     strategy._run_plan_phase = MagicMock()
 
     strategy.execute([task], session, ladder, budget=10.0)
@@ -520,9 +514,7 @@ def test_adaptive_logs_adaptive_prefix(
     task = Task(description="Test task", acceptance="AC", effort="normal", id="T1")
 
     strategy = AdaptiveStrategy()
-    strategy._run_task_loop = MagicMock(
-        return_value=MagicMock(spec=RunResult, text="done")
-    )
+    strategy._run_task_loop = MagicMock(return_value=MagicMock(spec=RunResult, text="done"))
     strategy._run_plan_phase = MagicMock()
 
     strategy.execute([task], session, ladder)

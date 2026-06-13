@@ -89,6 +89,7 @@ def run_all_final_evals(
 
 # ── kind implementations ──────────────────────────────────────────────────────
 
+
 def _run_ask_user(
     entry: FinalEvalEntry,
     *,
@@ -143,9 +144,7 @@ def _run_command(
         reason=output,
         corrections="" if passed else output,
     )
-    return FinalEvalResult(
-        name=entry.name, passed=passed, output=output, verdict=verdict
-    )
+    return FinalEvalResult(name=entry.name, passed=passed, output=output, verdict=verdict)
 
 
 def _resolve_model(entry: FinalEvalEntry, ladder: "Ladder | None") -> tuple[str, str]:
@@ -160,8 +159,10 @@ def _resolve_model(entry: FinalEvalEntry, ladder: "Ladder | None") -> tuple[str,
     _CODEX_DEFAULT = "codex/gpt-5-codex"
     _claude_default = (ladder.eval_model if ladder else None) or _DEFAULT_MODEL
 
-    variant = str(entry.variant) if entry.variant else (
-        ladder.eval_effort if ladder else _DEFAULT_VARIANT
+    variant = (
+        str(entry.variant)
+        if entry.variant
+        else (ladder.eval_effort if ladder else _DEFAULT_VARIANT)
     )
 
     if entry.provider:
@@ -226,9 +227,7 @@ def _run_skill(
     log.info("skill final_eval '%s' → %s @ %s", entry.name, model, variant)
 
     try:
-        response, sid = run_provider_session(
-            prompt, model, variant=variant, timeout=timeout
-        )
+        response, sid = run_provider_session(prompt, model, variant=variant, timeout=timeout)
         raw_text = response.text
         passed = "VERDICT: PASS" in raw_text.upper() or raw_text.upper().strip().startswith("PASS")
         verdict = EvalVerdict(
@@ -274,9 +273,7 @@ def _run_review(
     log.info("review final_eval '%s' → %s @ %s", entry.name, model, variant)
 
     try:
-        response, sid = run_provider_session(
-            prompt, model, variant=variant, timeout=timeout
-        )
+        response, sid = run_provider_session(prompt, model, variant=variant, timeout=timeout)
         raw_text = response.text
         verdict = EvalVerdict(
             decision=Decision.ASK_USER,

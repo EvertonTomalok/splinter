@@ -70,10 +70,7 @@ def task_languages(task: Task) -> set[str]:
 
 def _with_language(checks: list[dict[str, str]]) -> list[dict[str, str]]:
     """Normalize checks by adding 'language' field if missing."""
-    return [
-        {**check, "language": check.get("language", "all")}
-        for check in checks
-    ]
+    return [{**check, "language": check.get("language", "all")} for check in checks]
 
 
 def _config_gate_checks(project_dir: str) -> list[dict[str, str]] | None:
@@ -137,12 +134,14 @@ def parse_gate_spec(spec: str, language: str) -> list[dict[str, str]]:
     for cmd in re.split(r"[;\n]+", spec):
         cmd = cmd.strip()
         if cmd:
-            checks.append({
-                "name": cmd.split()[0],
-                "cmd": cmd,
-                "when": "always",
-                "language": language,
-            })
+            checks.append(
+                {
+                    "name": cmd.split()[0],
+                    "cmd": cmd,
+                    "when": "always",
+                    "language": language,
+                }
+            )
     return checks
 
 
@@ -166,17 +165,30 @@ def _should_run(check: dict[str, str], project_dir: str) -> bool:
             return False
         gen_patterns = [
             # Go
-            "*.pb.go", "*_grpc.pb.go", "*.twirp.go", "wire_gen.go",
+            "*.pb.go",
+            "*_grpc.pb.go",
+            "*.twirp.go",
+            "wire_gen.go",
             # Python
-            "*_pb2.py", "*_pb2_grpc.py", "*.pb.py",
+            "*_pb2.py",
+            "*_pb2_grpc.py",
+            "*.pb.py",
             # JS/TS
-            "*.pb.js", "*.pb.ts", "*.grpc.pb.js", "*.grpc.pb.ts",
+            "*.pb.js",
+            "*.pb.ts",
+            "*.grpc.pb.js",
+            "*.grpc.pb.ts",
             # Ruby
-            "*_pb.rb", "*_services_pb.rb",
+            "*_pb.rb",
+            "*_services_pb.rb",
             # C++
-            "*.pb.cc", "*.pb.h", "*.grpc.pb.cc", "*.grpc.pb.h",
+            "*.pb.cc",
+            "*.pb.h",
+            "*.grpc.pb.cc",
+            "*.grpc.pb.h",
             # Swift
-            "*.pb.swift", "*.grpc.swift",
+            "*.pb.swift",
+            "*.grpc.swift",
             # C#
             "*.g.cs",
             # PHP
@@ -187,13 +199,11 @@ def _should_run(check: dict[str, str], project_dir: str) -> bool:
         # Rust: tonic/prost output has no distinctive extension — scan known gen dirs
         _GEN_DIRS = {"gen", "generated", "proto_gen", "src/gen", "src/proto"}
         root = Path(project_dir)
-        gen_files = [f for pat in gen_patterns for f in root.rglob(pat)
-                     if "target" not in f.parts]
+        gen_files = [f for pat in gen_patterns for f in root.rglob(pat) if "target" not in f.parts]
         # Rust .rs files inside known gen directories
         for f in root.rglob("*.rs"):
             if "target" not in f.parts and any(
-                part in _GEN_DIRS or part in {"gen", "generated", "proto_gen"}
-                for part in f.parts
+                part in _GEN_DIRS or part in {"gen", "generated", "proto_gen"} for part in f.parts
             ):
                 gen_files.append(f)
         if not gen_files:

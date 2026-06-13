@@ -9,9 +9,7 @@ if TYPE_CHECKING:
     import pytest
 
 
-def test_live_logger_routes_into_richlog(
-    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
-) -> None:
+def test_live_logger_routes_into_richlog(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
     import pytest
 
     pytest.importorskip("textual")
@@ -49,9 +47,7 @@ def test_live_logger_routes_into_richlog(
             await pilot.pause()
             for _ in range(20):
                 await pilot.pause(0.05)
-                if app.workers and all(
-                    w.state.name in ("SUCCESS", "ERROR") for w in app.workers
-                ):
+                if app.workers and all(w.state.name in ("SUCCESS", "ERROR") for w in app.workers):
                     break
             await pilot.pause()
             await pilot.press("q")
@@ -69,9 +65,7 @@ def test_live_logger_routes_into_richlog(
     assert tool_idx < text_idx < edit_idx, "lines not in emission order"
 
 
-def test_no_double_logging(
-    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
-) -> None:
+def test_no_double_logging(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
     import pytest
 
     pytest.importorskip("textual")
@@ -106,9 +100,7 @@ def test_no_double_logging(
             await pilot.pause()
             for _ in range(20):
                 await pilot.pause(0.05)
-                if app.workers and all(
-                    w.state.name in ("SUCCESS", "ERROR") for w in app.workers
-                ):
+                if app.workers and all(w.state.name in ("SUCCESS", "ERROR") for w in app.workers):
                     break
             await pilot.pause()
             await pilot.press("q")
@@ -119,9 +111,7 @@ def test_no_double_logging(
     assert count == 1, f"expected 1 delivery, got {count} — double-logging guard failed"
 
 
-def test_overview_renders_at_run_start(
-    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
-) -> None:
+def test_overview_renders_at_run_start(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
     import pytest
 
     pytest.importorskip("textual")
@@ -155,9 +145,7 @@ def test_overview_renders_at_run_start(
             await pilot.pause()
             for _ in range(20):
                 await pilot.pause(0.05)
-                if app.workers and all(
-                    w.state.name in ("SUCCESS", "ERROR") for w in app.workers
-                ):
+                if app.workers and all(w.state.name in ("SUCCESS", "ERROR") for w in app.workers):
                     break
             await pilot.pause()
             await pilot.press("q")
@@ -198,9 +186,7 @@ def test_propagation_restored_after_unmount(
             await pilot.pause()
             for _ in range(20):
                 await pilot.pause(0.05)
-                if app.workers and all(
-                    w.state.name in ("SUCCESS", "ERROR") for w in app.workers
-                ):
+                if app.workers and all(w.state.name in ("SUCCESS", "ERROR") for w in app.workers):
                     break
             await pilot.pause()
             await pilot.press("q")

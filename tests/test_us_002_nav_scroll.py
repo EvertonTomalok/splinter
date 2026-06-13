@@ -8,9 +8,7 @@ if TYPE_CHECKING:
     import pytest
 
 
-def test_long_tree_shows_scrollbar(
-    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
-) -> None:
+def test_long_tree_shows_scrollbar(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
     import pytest
 
     pytest.importorskip("textual")
@@ -69,17 +67,13 @@ def test_long_tree_shows_scrollbar(
 
             await pilot.pause(0.2)
             max_scroll = tree.max_scroll_y
-            assert (
-                max_scroll > 0
-            ), f"scrollbar not present — max_scroll_y = {max_scroll}"
+            assert max_scroll > 0, f"scrollbar not present — max_scroll_y = {max_scroll}"
             await pilot.press("q")
 
     asyncio.run(drive())
 
 
-def test_short_tree_no_scrollbar(
-    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
-) -> None:
+def test_short_tree_no_scrollbar(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
     import pytest
 
     pytest.importorskip("textual")
@@ -106,9 +100,9 @@ def test_short_tree_no_scrollbar(
             await pilot.pause()
             tree = app.query_one("#nav", Tree)
             max_scroll = tree.max_scroll_y
-            assert (
-                max_scroll == 0
-            ), f"scrollbar present but should not be — max_scroll_y = {max_scroll}"
+            assert max_scroll == 0, (
+                f"scrollbar present but should not be — max_scroll_y = {max_scroll}"
+            )
             await pilot.press("q")
 
     asyncio.run(drive())
@@ -174,9 +168,9 @@ def test_nav_scroll_reaches_top_and_bottom(
 
             await pilot.press("end")
             await pilot.pause()
-            assert (
-                tree.scroll_offset.y == max_scroll
-            ), f"end key should reach bottom — {tree.scroll_offset.y} != {max_scroll}"
+            assert tree.scroll_offset.y == max_scroll, (
+                f"end key should reach bottom — {tree.scroll_offset.y} != {max_scroll}"
+            )
 
             await pilot.press("home")
             await pilot.pause()
@@ -187,9 +181,7 @@ def test_nav_scroll_reaches_top_and_bottom(
     asyncio.run(drive())
 
 
-def test_nav_pagedown_pageup_scroll(
-    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
-) -> None:
+def test_nav_pagedown_pageup_scroll(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
     import pytest
 
     pytest.importorskip("textual")
@@ -251,9 +243,9 @@ def test_nav_pagedown_pageup_scroll(
                 await pilot.pause(0.05)
 
             after_pagedown = tree.scroll_offset.y
-            assert (
-                after_pagedown > start_offset
-            ), f"pagedown should scroll — {after_pagedown} <= {start_offset}"
+            assert after_pagedown > start_offset, (
+                f"pagedown should scroll — {after_pagedown} <= {start_offset}"
+            )
 
             # Press pageup to scroll back
             for _ in range(3):
@@ -261,9 +253,9 @@ def test_nav_pagedown_pageup_scroll(
                 await pilot.pause(0.05)
 
             after_pageup = tree.scroll_offset.y
-            assert (
-                after_pageup < after_pagedown
-            ), f"pageup should scroll back — {after_pageup} >= {after_pagedown}"
+            assert after_pageup < after_pagedown, (
+                f"pageup should scroll back — {after_pageup} >= {after_pagedown}"
+            )
 
             await pilot.press("q")
 
@@ -317,17 +309,13 @@ def test_analyze_keybindings_not_shadowed(
 
     asyncio.run(drive())
 
-    assert (
-        "reload" in actions_called
-    ), f"r key did not trigger reload — got: {actions_called}"
-    assert (
-        "toggle_auto" in actions_called
-    ), f"R key did not trigger toggle_auto — got: {actions_called}"
+    assert "reload" in actions_called, f"r key did not trigger reload — got: {actions_called}"
+    assert "toggle_auto" in actions_called, (
+        f"R key did not trigger toggle_auto — got: {actions_called}"
+    )
 
 
-def test_detail_pane_unchanged(
-    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
-) -> None:
+def test_detail_pane_unchanged(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
     import pytest
 
     pytest.importorskip("textual")
@@ -359,9 +347,9 @@ def test_detail_pane_unchanged(
             parent = detail.parent
             while parent is not None:
                 if isinstance(parent, VerticalScroll):
-                    assert (
-                        isinstance(parent, VerticalScroll)
-                    ), "detail pane should be inside VerticalScroll"
+                    assert isinstance(parent, VerticalScroll), (
+                        "detail pane should be inside VerticalScroll"
+                    )
                     break
                 parent = parent.parent
             else:

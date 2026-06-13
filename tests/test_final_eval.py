@@ -190,3 +190,72 @@ def test_run_all_final_evals_fail_fast_stops_after_failure() -> None:
     assert len(results) == 2
     # Verify gate-2 failed
     assert not results[1].passed
+
+
+# ── _AskUserModal Edit Config integration ─────────────────────────────────────
+
+
+def test_ask_user_modal_has_edit_config_binding() -> None:
+    """_AskUserModal BINDINGS include 'd' → edit_config."""
+    from splinter.tui import _AskUserModal
+
+    binding_keys = {b[0] if isinstance(b, tuple) else b.key for b in _AskUserModal.BINDINGS}
+    assert "d" in binding_keys, "binding 'd' (edit_config) must exist in _AskUserModal"
+
+
+def test_ask_user_modal_dismiss_edit_config() -> None:
+    """on_button_pressed with id='edit_config' dismisses with ('edit_config', '')."""
+    from splinter.tui import _AskUserModal
+
+    modal = _AskUserModal(reason="test", corrections="")
+    dismissed: list = []
+
+    modal.dismiss = lambda v: dismissed.append(v)  # type: ignore[method-assign]
+
+    class _FakeButton:
+        id = "edit_config"
+
+    class _FakeTextArea:
+        text = ""
+
+    class _FakeEvent:
+        button = _FakeButton()
+
+    modal.query_one = lambda sel, cls=None: _FakeTextArea()  # type: ignore[method-assign]
+
+    modal.on_button_pressed(_FakeEvent())  # type: ignore[arg-type]
+
+    assert len(dismissed) == 1
+    assert dismissed[0] == ("edit_config", "")
+
+
+def test_edit_config_modal_confirm_maps_default_to_none() -> None:
+    """_EditConfigModal._pick returns None when index=0 ('(default)')."""
+    from splinter.tui import _EditConfigModal
+
+    modal = _EditConfigModal()
+    efforts = ["(default)", "low", "medium", "high", "max"]
+
+    class _FakeOptionList:
+        def __init__(self, idx: int | None) -> None:
+            self.highlighted = idx
+
+    modal.query_one = lambda sel, cls=None: _FakeOptionList(0)  # type: ignore[method-assign]
+    result = modal._pick("ec-plan-effort", efforts)
+    assert result is None, "(default) must map to None"
+
+
+def test_edit_config_modal_confirm_maps_selected_effort() -> None:
+    """_EditConfigModal._pick returns the selected effort string."""
+    from splinter.tui import _EditConfigModal
+
+    modal = _EditConfigModal()
+    efforts = ["(default)", "low", "medium", "high", "max"]
+
+    class _FakeOptionList:
+        def __init__(self, idx: int) -> None:
+            self.highlighted = idx
+
+    modal.query_one = lambda sel, cls=None: _FakeOptionList(3)  # type: ignore[method-assign]
+    result = modal._pick("ec-plan-effort", efforts)
+    assert result == "high"

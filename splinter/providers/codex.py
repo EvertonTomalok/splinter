@@ -59,7 +59,7 @@ def _normalize_effort(effort: str | None) -> str | None:
 
 
 def _strip_prefix(model: str) -> str:
-    return model[len("codex/"):] if model.startswith("codex/") else model
+    return model[len("codex/") :] if model.startswith("codex/") else model
 
 
 def _stream_codex_event(line: str) -> None:

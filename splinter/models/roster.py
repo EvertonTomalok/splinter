@@ -117,6 +117,19 @@ def bump_effort(effort: str) -> str:
     return _EFFORT_ORDER[min(idx + 1, len(_EFFORT_ORDER) - 1)]
 
 
+def rewrite_runner_tiers(
+    ladder: Ladder,
+    *,
+    model: str,
+    variant: str,
+) -> None:
+    """Rewrite all runner tiers to the given model and variant."""
+    for tier in ladder.tiers:
+        tier.models = [model]
+        tier.provider = provider_for(model)
+        ladder.tier_variants[tier.level] = variant
+
+
 def rewrite_runners_claude(
     ladder: Ladder,
     *,
@@ -124,10 +137,7 @@ def rewrite_runners_claude(
     variant: str = "high",
 ) -> None:
     """Rewrite all runner tiers to Claude for one pipeline invocation."""
-    for tier in ladder.tiers:
-        tier.models = [model]
-        tier.provider = provider_for(model)
-        ladder.tier_variants[tier.level] = variant
+    rewrite_runner_tiers(ladder, model=model, variant=variant)
 
 
 def _load_raw() -> dict[str, Any]:

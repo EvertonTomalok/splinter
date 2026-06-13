@@ -68,17 +68,19 @@ def resolve_session(session_id: str | None = None) -> str:
     return sid
 
 
-NEXT_CONFIG_KEYS: frozenset[str] = frozenset({
-    "next_planner_model",
-    "next_planner_effort",
-    "next_runner_model",
-    "next_runner_effort",
-    "next_eval_model",
-    "next_eval_effort",
-    "next_skip_planner",
-    "next_skip_eval",
-    "next_skip_final_eval",
-})
+NEXT_CONFIG_KEYS: frozenset[str] = frozenset(
+    {
+        "next_planner_model",
+        "next_planner_effort",
+        "next_runner_model",
+        "next_runner_effort",
+        "next_eval_model",
+        "next_eval_effort",
+        "next_skip_planner",
+        "next_skip_eval",
+        "next_skip_final_eval",
+    }
+)
 
 
 class Session:

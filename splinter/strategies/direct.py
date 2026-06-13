@@ -357,8 +357,14 @@ class DirectStrategy(Strategy):
                 )
                 with agentic_scope(session, "plan", i, 0):
                     plan = _make_plan(
-                        task, ladder, code_ctx, session=session,
-                        trace=trace, iteration=0, tier=0, task_index=i,
+                        task,
+                        ladder,
+                        code_ctx,
+                        session=session,
+                        trace=trace,
+                        iteration=0,
+                        tier=0,
+                        task_index=i,
                     )
                 session.write(task_plan_file, f"# Plan\n\n{plan}\n")
                 if i == 0:
@@ -377,7 +383,9 @@ class DirectStrategy(Strategy):
         skip_planner: bool = False,
     ) -> None:
         session.set_status("running", stage="plan")
-        self._plan_all_tasks(tasks, session, ladder, localization, trace=trace, skip_planner=skip_planner)
+        self._plan_all_tasks(
+            tasks, session, ladder, localization, trace=trace, skip_planner=skip_planner
+        )
         session.set_status("running", stage="run")
 
     def _run_task_loop(
@@ -465,8 +473,14 @@ class DirectStrategy(Strategy):
                 )
                 with agentic_scope(session, "plan", task_index, 0):
                     plan = _make_plan(
-                        task, ladder, code_ctx, session=session,
-                        trace=trace, iteration=0, tier=tier, task_index=task_index,
+                        task,
+                        ladder,
+                        code_ctx,
+                        session=session,
+                        trace=trace,
+                        iteration=0,
+                        tier=tier,
+                        task_index=task_index,
                     )
                 session.write("knowledge/plan.md", f"# Plan\n\n{plan}\n")
                 session.write(task_plan_file, f"# Plan\n\n{plan}\n")

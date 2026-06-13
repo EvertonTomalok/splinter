@@ -102,9 +102,7 @@ class AgenticContext:
     iteration: int
 
 
-_ctx: ContextVar[AgenticContext | None] = ContextVar(
-    "agentic_ctx", default=None
-)
+_ctx: ContextVar[AgenticContext | None] = ContextVar("agentic_ctx", default=None)
 
 
 @contextmanager
@@ -126,9 +124,7 @@ def agentic_scope(
         _ctx.reset(token)
 
 
-def record_exchange(
-    prompt: str, response: str, *, model: str = ""
-) -> None:
+def record_exchange(prompt: str, response: str, *, model: str = "") -> None:
     """Record prompt+response pair within an agentic_scope."""
     ctx = _ctx.get()
     if ctx is None:
@@ -181,9 +177,7 @@ def record_action(kind: str, summary: str, *, provider: str = "claude") -> None:
     append_jsonl(ctx.session, event)
 
 
-def _persist_exchange(
-    session: Session, event: ExchangeEvent
-) -> None:
+def _persist_exchange(session: Session, event: ExchangeEvent) -> None:
     """Persist exchange event to agentic/task-{n}.jsonl."""
     try:
         session._ensure_dir()
@@ -192,23 +186,24 @@ def _persist_exchange(
         file_path = agentic_dir / f"task-{event.task_index}.jsonl"
         with open(file_path, "a") as f:
             f.write(
-                json.dumps({
-                    "stage": event.stage,
-                    "task_index": event.task_index,
-                    "iteration": event.iteration,
-                    "prompt": event.prompt,
-                    "response": event.response,
-                    "model": event.model,
-                    "variant": event.variant,
-                }) + "\n"
+                json.dumps(
+                    {
+                        "stage": event.stage,
+                        "task_index": event.task_index,
+                        "iteration": event.iteration,
+                        "prompt": event.prompt,
+                        "response": event.response,
+                        "model": event.model,
+                        "variant": event.variant,
+                    }
+                )
+                + "\n"
             )
     except Exception:
         pass
 
 
-def read_events(
-    session: Session, task_index: int
-) -> list[ExchangeEvent]:
+def read_events(session: Session, task_index: int) -> list[ExchangeEvent]:
     """Read verbatim exchange events for one task."""
     file_path = session.dir / "agentic" / f"task-{task_index}.jsonl"
     if not file_path.exists():
@@ -226,9 +221,7 @@ def read_events(
     return events
 
 
-_STAGE_ORDER: tuple[str, ...] = (
-    "localize", "filter", "plan", "run", "gate", "eval"
-)
+_STAGE_ORDER: tuple[str, ...] = ("localize", "filter", "plan", "run", "gate", "eval")
 
 
 def _stage_index(stage: str) -> int:
@@ -280,9 +273,7 @@ def render_agentic(session: Session) -> str:
     for task_id in sorted(by_task.keys()):
         out.append(f"===== Task {task_id} =====")
         task_exchanges = by_task[task_id]
-        task_exchanges.sort(
-            key=lambda e: (_stage_index(e.stage), e.iteration)
-        )
+        task_exchanges.sort(key=lambda e: (_stage_index(e.stage), e.iteration))
 
         for ex in task_exchanges:
             header = (

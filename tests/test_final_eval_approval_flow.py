@@ -20,6 +20,7 @@ from splinter.strategies.base import ManualValidationPause
 
 # ── fake session ──────────────────────────────────────────────────────────────
 
+
 class _FakeSession:
     def __init__(self) -> None:
         self.status_calls: list[tuple[str, dict]] = []
@@ -55,8 +56,10 @@ _TASK = Task(
 
 # ── 1. config loads ask_user entry (session-level final_eval.yaml) ────────────
 
+
 def test_session_final_eval_yaml_loads_ask_user_entry(tmp_path) -> None:
     import yaml
+
     fe_path = tmp_path / "final_eval.yaml"
     fe_path.write_text("final_eval:\n- name: user-review\n  kind: ask_user\n")
     config = yaml.safe_load(fe_path.read_text()) or {}
@@ -76,6 +79,7 @@ def test_config_final_eval_loads_ask_user_entry() -> None:
 
 # ── 2. ask_user final_eval returns passed=False + ASK_USER verdict ────────────
 
+
 def test_ask_user_final_eval_never_auto_passes() -> None:
     entry = FinalEvalEntry(name="user-review", kind=FinalEvalKind.ASK_USER)
     results = run_all_final_evals([entry], task=_TASK)
@@ -91,13 +95,13 @@ def test_ask_user_final_eval_never_auto_passes() -> None:
 
 # ── 3. pipeline raises ManualValidationPause when any result fails ─────────────
 
+
 def test_pipeline_raises_manual_validation_pause_for_ask_user() -> None:
     entry = FinalEvalEntry(name="user-review", kind=FinalEvalKind.ASK_USER)
     results = run_all_final_evals([entry], task=_TASK)
     all_passed = all(r.passed for r in results)
     fe_summary = "\n".join(
-        f"- {r.name}: {'PASS' if r.passed else 'FAIL'} — {r.output[:200]}"
-        for r in results
+        f"- {r.name}: {'PASS' if r.passed else 'FAIL'} — {r.output[:200]}" for r in results
     )
 
     assert not all_passed
@@ -112,14 +116,14 @@ def test_pipeline_raises_manual_validation_pause_for_ask_user() -> None:
 
 # ── 4. except handler sets awaiting_validation status ─────────────────────────
 
+
 def test_except_handler_sets_awaiting_validation_status() -> None:
     session = _FakeSession()
     entry = FinalEvalEntry(name="user-review", kind=FinalEvalKind.ASK_USER)
     results = run_all_final_evals([entry], task=_TASK)
     all_passed = all(r.passed for r in results)
     fe_summary = "\n".join(
-        f"- {r.name}: {'PASS' if r.passed else 'FAIL'} — {r.output[:200]}"
-        for r in results
+        f"- {r.name}: {'PASS' if r.passed else 'FAIL'} — {r.output[:200]}" for r in results
     )
 
     try:
@@ -140,6 +144,7 @@ def test_except_handler_sets_awaiting_validation_status() -> None:
 
 
 # ── 5. TUI approve click → session transitions to completed ───────────────────
+
 
 def test_tui_approve_transitions_session_to_completed() -> None:
     session = _FakeSession()
@@ -168,6 +173,7 @@ def test_tui_approve_transitions_session_to_completed() -> None:
 
 # ── 6. full end-to-end simulation ─────────────────────────────────────────────
 
+
 def test_full_ask_user_final_eval_approve_flow() -> None:
     """Simulate complete flow: config → run_all → pause → approve → completed."""
     session = _FakeSession()
@@ -179,8 +185,7 @@ def test_full_ask_user_final_eval_approve_flow() -> None:
     # run_all_final_evals (pipeline line ~349)
     fe_results = run_all_final_evals(entries, task=_TASK)
     fe_summary = "\n".join(
-        f"- {r.name}: {'PASS' if r.passed else 'FAIL'} — {r.output[:200]}"
-        for r in fe_results
+        f"- {r.name}: {'PASS' if r.passed else 'FAIL'} — {r.output[:200]}" for r in fe_results
     )
     all_passed = all(r.passed for r in fe_results)
 
@@ -219,3 +224,83 @@ def test_full_ask_user_final_eval_approve_flow() -> None:
 
     assert session.read_status()["state"] == "completed"
     assert session.read_status()["stage"] == "done"
+
+
+# ── 7. _ManualValidationModal exposes edit_config action ──────────────────────
+
+
+def test_manual_validation_modal_has_edit_config_binding() -> None:
+    """_ManualValidationModal BINDINGS include 'c' → edit_config."""
+    from splinter.tui import _ManualValidationModal
+
+    binding_keys = {
+        b[0] if isinstance(b, tuple) else b.key for b in _ManualValidationModal.BINDINGS
+    }
+    assert "c" in binding_keys, "binding 'c' (edit_config) must exist in _ManualValidationModal"
+
+
+def test_manual_validation_modal_dismiss_edit_config() -> None:
+    """on_button_pressed with id='edit_config' dismisses with ('edit_config', '')."""
+    from splinter.tui import _ManualValidationModal
+
+    modal = _ManualValidationModal(summary="eval failed", all_passed=False)
+    dismissed: list = []
+
+    modal.dismiss = lambda v: dismissed.append(v)  # type: ignore[method-assign]
+
+    class _FakeButton:
+        id = "edit_config"
+
+    class _FakeEvent:
+        button = _FakeButton()
+
+    modal.query_one = lambda sel, cls=None: type(  # type: ignore[method-assign]
+        "_FakeTextArea", (), {"text": ""}
+    )()
+
+    modal.on_button_pressed(_FakeEvent())  # type: ignore[arg-type]
+
+    assert len(dismissed) == 1
+    assert dismissed[0] == ("edit_config", "")
+
+
+def test_store_config_overrides_writes_next_keys(tmp_path) -> None:
+    """_store_config_overrides persists next_* keys to session status."""
+    import os
+
+    from splinter.memory.session import Session
+
+    os.environ["SPLINTER_HOME"] = str(tmp_path)
+    s = Session("ses_sc_test")
+    s.set_status("awaiting_user", round_index=1)
+
+    cfg = {
+        "planner_model": "opus",
+        "planner_effort": "high",
+        "runner_model": "sonnet",
+        "runner_effort": "medium",
+        "eval_model": "haiku",
+        "eval_effort": "low",
+    }
+
+    st = s.read_status()
+    state = st.get("state", "running")
+    s.set_status(
+        state,
+        next_planner_model=cfg.get("planner_model") or "",
+        next_planner_effort=cfg.get("planner_effort") or "",
+        next_runner_model=cfg.get("runner_model") or "",
+        next_runner_effort=cfg.get("runner_effort") or "",
+        next_eval_model=cfg.get("eval_model") or "",
+        next_eval_effort=cfg.get("eval_effort") or "",
+    )
+
+    nc = s.read_next_config()
+    assert nc["next_planner_model"] == "opus"
+    assert nc["next_planner_effort"] == "high"
+    assert nc["next_runner_model"] == "sonnet"
+    assert nc["next_runner_effort"] == "medium"
+    assert nc["next_eval_model"] == "haiku"
+    assert nc["next_eval_effort"] == "low"
+
+    del os.environ["SPLINTER_HOME"]

@@ -32,7 +32,8 @@ def test_loading_transition(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -
 
 
 def test_per_provider_failure_isolates(
-    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch",
+    tmp_path: Path,
+    monkeypatch: "pytest.MonkeyPatch",
 ) -> None:
     from splinter.configure import CODEX_MODELS, available_models_by_provider
 
@@ -49,7 +50,8 @@ def test_per_provider_failure_isolates(
 
 
 def test_configure_saves_after_loading(
-    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch",
+    tmp_path: Path,
+    monkeypatch: "pytest.MonkeyPatch",
 ) -> None:
     from textual.widgets import Select
 
@@ -80,7 +82,8 @@ def test_configure_saves_after_loading(
 
 
 def test_loading_state_before_fetch(
-    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch",
+    tmp_path: Path,
+    monkeypatch: "pytest.MonkeyPatch",
 ) -> None:
     from textual.containers import VerticalScroll
 

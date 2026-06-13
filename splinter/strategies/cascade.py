@@ -63,7 +63,9 @@ class CascadeStrategy(DirectStrategy):
         if done:
             log.info("cascade resume: %d task(s) already checkpointed", len(done))
 
-        self._run_plan_phase(ordered, session, ladder, localization, trace=trace, skip_planner=skip_planner)
+        self._run_plan_phase(
+            ordered, session, ladder, localization, trace=trace, skip_planner=skip_planner
+        )
 
         for i, task in enumerate(ordered):
             if task.id and task.id in done:

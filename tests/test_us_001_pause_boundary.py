@@ -8,6 +8,7 @@ Unit tests for:
 - _pause_graceful raises GracefulPause with correct stage
 - User guidance carried in corrections on resume
 """
+
 from __future__ import annotations
 
 import os
@@ -17,6 +18,7 @@ import pytest
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_fake_stages():
     from splinter.strategies.stages import Stage
@@ -77,6 +79,7 @@ def _make_ctx():
 @pytest.fixture(autouse=True)
 def _clear_stop():
     from splinter import procreg
+
     procreg.clear_stop()
     yield
     procreg.clear_stop()
@@ -85,6 +88,7 @@ def _clear_stop():
 # ---------------------------------------------------------------------------
 # 1. Stage-boundary stop check
 # ---------------------------------------------------------------------------
+
 
 def test_stage_boundary_stop_sets_pause_at_stage():
     from splinter import procreg
@@ -142,6 +146,7 @@ def test_stop_after_gate_stage_pauses_before_eval():
 # ---------------------------------------------------------------------------
 # 2. Checkpoint round-trip with new fields
 # ---------------------------------------------------------------------------
+
 
 def test_checkpoint_roundtrip_with_new_fields(tmp_path):
     os.environ["SPLINTER_HOME"] = str(tmp_path)
@@ -232,6 +237,7 @@ def test_checkpoint_backcompat_missing_new_fields(tmp_path):
 # 3. build_chain_from returns correct head
 # ---------------------------------------------------------------------------
 
+
 def test_build_chain_from_returns_gate_head():
     from splinter.strategies.stages import EvalStage, GateStage, RunStage, build_chain_from
 
@@ -286,6 +292,7 @@ def test_build_chain_from_unknown_returns_first():
 # 4. GracefulPause exception type and fields
 # ---------------------------------------------------------------------------
 
+
 def test_graceful_pause_is_exception():
     from splinter.strategies.base import GracefulPause
 
@@ -307,6 +314,7 @@ def test_graceful_pause_stage_default_empty():
 # ---------------------------------------------------------------------------
 # 5. _pause_graceful raises GracefulPause with correct stage
 # ---------------------------------------------------------------------------
+
 
 def test_pause_graceful_raises_with_stage(tmp_path):
 
@@ -383,15 +391,22 @@ def test_pause_graceful_saves_checkpoint(tmp_path):
 # 6. User guidance carried in corrections on resume
 # ---------------------------------------------------------------------------
 
+
 def test_user_guidance_merged_into_corrections():
     """corrections variable on resume merges checkpoint.corrections + user_guidance."""
     from splinter.strategies.direct import RunCheckpoint
 
     cp = RunCheckpoint(
-        tier=1, iteration=2, task_index=0,
-        oc_session=None, eval_session=None,
+        tier=1,
+        iteration=2,
+        task_index=0,
+        oc_session=None,
+        eval_session=None,
         corrections="existing fix notes",
-        eval_history=[], reason="paused", gate_output="", stage="gate",
+        eval_history=[],
+        reason="paused",
+        gate_output="",
+        stage="gate",
     )
     user_guidance = "please focus on the retry logic"
 
@@ -408,9 +423,16 @@ def test_user_guidance_empty_leaves_corrections_unchanged():
     from splinter.strategies.direct import RunCheckpoint
 
     cp = RunCheckpoint(
-        tier=1, iteration=1, task_index=0,
-        oc_session=None, eval_session=None,
-        corrections="fix abc", eval_history=[], reason="paused", gate_output="", stage="",
+        tier=1,
+        iteration=1,
+        task_index=0,
+        oc_session=None,
+        eval_session=None,
+        corrections="fix abc",
+        eval_history=[],
+        reason="paused",
+        gate_output="",
+        stage="",
     )
     user_guidance = ""
 
@@ -424,6 +446,7 @@ def test_user_guidance_empty_leaves_corrections_unchanged():
 # ---------------------------------------------------------------------------
 # 7. Stage name attributes
 # ---------------------------------------------------------------------------
+
 
 def test_stage_name_attributes():
     from splinter.strategies.stages import EvalStage, GateStage, RunStage

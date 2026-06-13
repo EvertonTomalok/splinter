@@ -353,6 +353,7 @@ def run_pipeline(
     phase_run_effort: str | None = None,
 ) -> int:
     from splinter import procreg as _procreg
+
     _procreg.clear_stop()
 
     ladder = load_ladder()
@@ -414,9 +415,19 @@ def run_pipeline(
         )
         _eff = _next_runner_effort or "high"
         log.info("runtime: runner tiers rewritten to %s @ %s", _next_runner_model, _eff)
-    if any([_next_planner_model, _next_planner_effort, _next_runner_model,
-            _next_runner_effort, _next_eval_model, _next_eval_effort,
-            _next_skip_planner, _next_skip_eval, _next_skip_final_eval]):
+    if any(
+        [
+            _next_planner_model,
+            _next_planner_effort,
+            _next_runner_model,
+            _next_runner_effort,
+            _next_eval_model,
+            _next_eval_effort,
+            _next_skip_planner,
+            _next_skip_eval,
+            _next_skip_final_eval,
+        ]
+    ):
         session.clear_next_config()
 
     tasks: list[Task] = []
@@ -628,8 +639,7 @@ def run_pipeline(
                 ladder=ladder,
             )
             fe_summary = "\n".join(
-                f"- {r.name}: {'PASS' if r.passed else 'FAIL'} — {r.output}"
-                for r in fe_results
+                f"- {r.name}: {'PASS' if r.passed else 'FAIL'} — {r.output}" for r in fe_results
             )
             fe_verbatim = "\n\n---\n\n".join(r.output for r in fe_results)
             session.write("final_eval.md", fe_verbatim + "\n")

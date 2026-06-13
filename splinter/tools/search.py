@@ -41,7 +41,6 @@ class SearchResult:
         return self.output.startswith("[unavailable:")
 
 
-
 def _has_rtk() -> bool:
     return shutil.which("rtk") is not None
 
@@ -154,8 +153,12 @@ def file_list(path: str = ".", pattern: str = "*", *, timeout: int = _GIT_TIMEOU
         if _is_git_repo(path):
             # git ls-files only lists tracked files — no node_modules / build artefacts.
             proc = subprocess.run(
-                ["git", "ls-files", "--",
-                 f"*{Path(pattern).suffix}" if "*." in pattern else pattern],
+                [
+                    "git",
+                    "ls-files",
+                    "--",
+                    f"*{Path(pattern).suffix}" if "*." in pattern else pattern,
+                ],
                 capture_output=True,
                 text=True,
                 timeout=timeout,
@@ -166,11 +169,7 @@ def file_list(path: str = ".", pattern: str = "*", *, timeout: int = _GIT_TIMEOU
                 return SearchResult(output="\n".join(files), tool="file-list", exit_code=0)
             # fall through to rglob on git failure
 
-        files = sorted(
-            str(f.relative_to(p))
-            for f in p.rglob(pattern)
-            if f.is_file()
-        )
+        files = sorted(str(f.relative_to(p)) for f in p.rglob(pattern) if f.is_file())
         return SearchResult(output="\n".join(files), tool="file-list", exit_code=0)
     except Exception as exc:
         return _error("file-list", exc)

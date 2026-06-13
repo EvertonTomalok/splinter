@@ -195,8 +195,7 @@ def _iteration_md(session: Session, task_no: int, n: int) -> str:
     _, _, task_body = tasks[task_no - 1]
     summary = _loop_block(task_body, n)
     run_out = (
-        session.read(f"runs/phase-{n}.md").strip()
-        or session.read(f"runs/iter-{n}.md").strip()
+        session.read(f"runs/phase-{n}.md").strip() or session.read(f"runs/iter-{n}.md").strip()
     )
 
     eval_segments = _eval_segments(session.read("eval.md"), len(tasks))
@@ -294,10 +293,14 @@ def _trace_md(session: Session) -> str:
 def _final_eval_rounds_md(session: Session) -> str:
     """Render all final eval rounds — LLM review + user decision, split by PRD round."""
     kdir = session.dir / "knowledge"
-    round_files = sorted(kdir.glob("final-eval-*.md"), key=lambda p: int(
-        re.match(r"final-eval-(\d+)", p.stem).group(1)  # type: ignore[union-attr]
-        if re.match(r"final-eval-(\d+)", p.stem) else 0
-    ))
+    round_files = sorted(
+        kdir.glob("final-eval-*.md"),
+        key=lambda p: int(
+            re.match(r"final-eval-(\d+)", p.stem).group(1)  # type: ignore[union-attr]
+            if re.match(r"final-eval-(\d+)", p.stem)
+            else 0
+        ),
+    )
 
     if round_files:
         parts = ["# Final Eval"]
@@ -366,9 +369,7 @@ def _story_md(session: Session, us_id: str, title: str) -> str:
     prd = session.read("prd.md")
     if not prd.strip():
         return f"_{title or us_id}_\n\n_no PRD on disk_"
-    block = re.search(
-        rf"(###\s+{re.escape(us_id)}\b.*?)(?=###\s+US-\d+|\Z)", prd, re.DOTALL
-    )
+    block = re.search(rf"(###\s+{re.escape(us_id)}\b.*?)(?=###\s+US-\d+|\Z)", prd, re.DOTALL)
     if not block:
         return f"# {title or us_id}\n\n_story block not found_"
     return block.group(1).strip()
@@ -554,9 +555,7 @@ class AnalyzeApp(App[None]):
             _build_plan_label(self._plan_idx, len(plans)),
             data={"kind": "file", "label": "Plan", "file": "knowledge/plan.md"},
         )
-        steps.add_leaf(
-            "eval", data={"kind": "file", "label": "Eval", "file": "eval.md"}
-        )
+        steps.add_leaf("eval", data={"kind": "file", "label": "Eval", "file": "eval.md"})
         has_fe_yaml = (self.session.dir / "final_eval.yaml").exists()
         has_fe_md = bool(self.session.read("final_eval.md"))
         if has_fe_yaml or has_fe_md:
@@ -650,9 +649,7 @@ class AnalyzeApp(App[None]):
                 )
                 for st in stories:
                     sid = st.split(":", 1)[0].strip()
-                    task_node.add_leaf(
-                        f"📋 {st}", data={"kind": "story", "id": sid, "title": st}
-                    )
+                    task_node.add_leaf(f"📋 {st}", data={"kind": "story", "id": sid, "title": st})
                 for n, tier, verdict in iters:
                     task_node.add_leaf(
                         f"#{n} · {tier} · {verdict}",
@@ -1565,35 +1562,41 @@ class _FinalEvalModal(ModalScreen[dict[str, str | None] | None]):
         raw_effort = self._EFFORTS[effort_idx] if effort_idx is not None else "(default)"
         effort = None if raw_effort == "(default)" else raw_effort
         if kind_idx == 0:
-            self.dismiss({
-                "kind": "ask_user",
-                "name": "review",
-                "cmd": None,
-                "skill": None,
-                "provider": None,
-                "model": None,
-                "effort": None,
-            })
+            self.dismiss(
+                {
+                    "kind": "ask_user",
+                    "name": "review",
+                    "cmd": None,
+                    "skill": None,
+                    "provider": None,
+                    "model": None,
+                    "effort": None,
+                }
+            )
         elif kind_idx == 1:
-            self.dismiss({
-                "kind": "skill",
-                "name": detail or "skill-eval",
-                "cmd": None,
-                "skill": detail or None,
-                "provider": provider,
-                "model": model,
-                "effort": effort,
-            })
+            self.dismiss(
+                {
+                    "kind": "skill",
+                    "name": detail or "skill-eval",
+                    "cmd": None,
+                    "skill": detail or None,
+                    "provider": provider,
+                    "model": model,
+                    "effort": effort,
+                }
+            )
         else:
-            self.dismiss({
-                "kind": "command",
-                "name": detail.split()[0] if detail else "cmd",
-                "cmd": detail or None,
-                "skill": None,
-                "provider": provider,
-                "model": model,
-                "effort": effort,
-            })
+            self.dismiss(
+                {
+                    "kind": "command",
+                    "name": detail.split()[0] if detail else "cmd",
+                    "cmd": detail or None,
+                    "skill": None,
+                    "provider": provider,
+                    "model": model,
+                    "effort": effort,
+                }
+            )
 
 
 class _ConfirmStopModal(ModalScreen[str | None]):
@@ -1780,7 +1783,9 @@ class _EditConfigModal(ModalScreen["dict[str, str | None] | None"]):
                 with Vertical(classes="ec-skip-section"):
                     yield Checkbox("Skip Planner  (run without replanning)", id="ec-skip-planner")
                     yield Checkbox("Skip Eval  (auto-pass, no LLM judge)", id="ec-skip-eval")
-                    yield Checkbox("Skip Final Eval  (bypass final eval gate)", id="ec-skip-final-eval")
+                    yield Checkbox(
+                        "Skip Final Eval  (bypass final eval gate)", id="ec-skip-final-eval"
+                    )
 
                 yield Label("── Planner ──", classes="ec-section")
                 yield Label("Model:", classes="ec-label")
@@ -1832,17 +1837,21 @@ class _EditConfigModal(ModalScreen["dict[str, str | None] | None"]):
         if bid != "ec-confirm":
             return
         all_models = ["(default)"] + _load_all_models_flat()
-        self.dismiss({
-            "skip_planner": str(self.query_one("#ec-skip-planner", Checkbox).value).lower(),
-            "skip_eval": str(self.query_one("#ec-skip-eval", Checkbox).value).lower(),
-            "skip_final_eval": str(self.query_one("#ec-skip-final-eval", Checkbox).value).lower(),
-            "planner_model": self._pick("ec-plan-model", all_models),
-            "planner_effort": self._pick("ec-plan-effort", self._EFFORTS),
-            "runner_model": self._pick("ec-run-model", all_models),
-            "runner_effort": self._pick("ec-run-effort", self._EFFORTS),
-            "eval_model": self._pick("ec-eval-model", all_models),
-            "eval_effort": self._pick("ec-eval-effort", self._EFFORTS),
-        })
+        self.dismiss(
+            {
+                "skip_planner": str(self.query_one("#ec-skip-planner", Checkbox).value).lower(),
+                "skip_eval": str(self.query_one("#ec-skip-eval", Checkbox).value).lower(),
+                "skip_final_eval": str(
+                    self.query_one("#ec-skip-final-eval", Checkbox).value
+                ).lower(),
+                "planner_model": self._pick("ec-plan-model", all_models),
+                "planner_effort": self._pick("ec-plan-effort", self._EFFORTS),
+                "runner_model": self._pick("ec-run-model", all_models),
+                "runner_effort": self._pick("ec-run-effort", self._EFFORTS),
+                "eval_model": self._pick("ec-eval-model", all_models),
+                "eval_effort": self._pick("ec-eval-effort", self._EFFORTS),
+            }
+        )
 
 
 class _RunErrorModal(ModalScreen[bool]):
@@ -2185,7 +2194,8 @@ class _PhaseConfigModal(ModalScreen[dict[str, str] | None]):
             with Horizontal(classes="phase-row"):
                 run_opts = [(m, m) for m in self._RUN_MODELS] or [("haiku", "haiku")]
                 run_defaults = [
-                    m for m in (self._PLAN_MODELS or ["opus"])
+                    m
+                    for m in (self._PLAN_MODELS or ["opus"])
                     if "flash" in m.lower() or "haiku" in m.lower()
                 ]
                 run_def = self._default_run_model or (
@@ -2360,10 +2370,12 @@ class RunApp(App[int]):
                     resume=True, user_guidance=None, jump_premium=False, cowabunga=True
                 )
             elif action == "edit_config":
+
                 def _on_cfg(cfg: "dict[str, str | None] | None") -> None:
                     if cfg is not None:
                         self._store_config_overrides(cfg)
                     self.call_after_refresh(self._show_ask_user_modal)
+
                 self.push_screen(_EditConfigModal(), callback=_on_cfg)
             else:
                 self.exit(3)
@@ -2404,9 +2416,7 @@ class RunApp(App[int]):
             elif action == "changes":
                 guidance = text or summary
                 _append_decision("Requested Changes", guidance)
-                self.write_log(
-                    f"— planning corrections: {guidance[:80]}… —", logging.INFO
-                )
+                self.write_log(f"— planning corrections: {guidance[:80]}… —", logging.INFO)
                 if self._timer is None:
                     self._timer = self.set_interval(0.5, self._refresh)
                 self._run_pipeline_worker(resume=True, user_guidance=guidance)
@@ -2417,16 +2427,16 @@ class RunApp(App[int]):
                     self._timer = self.set_interval(0.5, self._refresh)
                 self.call_after_refresh(self._show_phase_modal)
             elif action == "edit_config":
+
                 def _on_cfg(cfg: "dict[str, str | None] | None") -> None:
                     if cfg is not None:
                         self._store_config_overrides(cfg)
                     self.call_after_refresh(self._show_manual_validation_modal)
+
                 self.push_screen(_EditConfigModal(), callback=_on_cfg)
 
         self.push_screen(
-            _ManualValidationModal(
-                summary, all_passed, show_phase=self._phased
-            ),
+            _ManualValidationModal(summary, all_passed, show_phase=self._phased),
             callback=_on_choice,
         )
 
@@ -2447,12 +2457,27 @@ class RunApp(App[int]):
             from splinter.pipeline import run_pipeline
 
             _pipeline_keys = {
-                "strategy", "prd_path", "task_path", "effort", "budget",
-                "max_iterations", "eval_skill", "eval_model", "eval_effort",
-                "cowabunga", "resume", "session", "claude_runner_fallback",
-                "user_guidance", "jump_premium", "no_ground", "phased",
-                "phase_plan_model", "phase_plan_effort",
-                "phase_run_model", "phase_run_effort",
+                "strategy",
+                "prd_path",
+                "task_path",
+                "effort",
+                "budget",
+                "max_iterations",
+                "eval_skill",
+                "eval_model",
+                "eval_effort",
+                "cowabunga",
+                "resume",
+                "session",
+                "claude_runner_fallback",
+                "user_guidance",
+                "jump_premium",
+                "no_ground",
+                "phased",
+                "phase_plan_model",
+                "phase_plan_effort",
+                "phase_run_model",
+                "phase_run_effort",
             }
             kwargs = {
                 **{k: v for k, v in self.run_kwargs.items() if k in _pipeline_keys},
@@ -2506,10 +2531,12 @@ class RunApp(App[int]):
 
     async def action_pause_graceful(self) -> None:
         """p — finish current iteration then pause."""
+
         def _on_choice(result: str | None) -> None:
             if result != "pause":
                 return
             from splinter import procreg
+
             procreg.request_stop()
             self.write_log(
                 "— graceful pause requested — will stop after current iteration —",
@@ -2520,15 +2547,15 @@ class RunApp(App[int]):
 
     async def action_pause_kill(self) -> None:
         """ESC — kill subprocesses immediately and pause."""
+
         def _on_choice(result: str | None) -> None:
             if result != "kill":
                 return
             from splinter import procreg
+
             procreg.terminate_all()
             self.session.set_status("paused", reason="user_kill")
-            self.write_log(
-                "— killed by user — resume with: splinter resume —", logging.WARNING
-            )
+            self.write_log("— killed by user — resume with: splinter resume —", logging.WARNING)
             self.rc = 2
             self.exit(2)
 
@@ -2584,12 +2611,7 @@ class RunApp(App[int]):
         from splinter.phases import phase_count
 
         ladder = load_ladder()
-        plan_models = sorted(
-            set(
-                [ladder.planner_model]
-                + [t.models[0] for t in ladder.tiers]
-            )
-        )
+        plan_models = sorted(set([ladder.planner_model] + [t.models[0] for t in ladder.tiers]))
         run_models = sorted(set(t.models[0] for t in ladder.tiers))
         next_num = phase_count(self.session) + 1
 
@@ -2632,9 +2654,8 @@ class RunApp(App[int]):
                 description=cfg["description"],
                 plan_model=cfg["plan_model"] or ladder.planner_model,
                 plan_effort=cfg["plan_effort"] or ladder.planner_effort,
-                run_model=cfg["run_model"] or (
-                    ladder.tiers[0].models[0] if ladder.tiers else "haiku"
-                ),
+                run_model=cfg["run_model"]
+                or (ladder.tiers[0].models[0] if ladder.tiers else "haiku"),
                 run_effort=cfg["run_effort"] or "auto",
             )
             try:
@@ -2901,19 +2922,25 @@ class ConfigureApp(App[bool]):
         info = Vertical(name_label, desc_label, classes="step-info")
         info.tooltip = desc
         provider_sel = self._select(
-            prov_opts, prov, self._PROVIDER_CHOICES,
-            id=f"{sid}__prov", classes="provider-sel", tooltip="provider",
+            prov_opts,
+            prov,
+            self._PROVIDER_CHOICES,
+            id=f"{sid}__prov",
+            classes="provider-sel",
+            tooltip="provider",
         )
         trigger_label = str(model) if isinstance(model, str) and model else ""
         trigger = Button(trigger_label, id=f"{sid}__trigger", classes="model-trigger")
         hidden_filter = Input(
             value=self._row_filters.get(sid, ""),
-            id=f"{sid}__filter", classes="model-state",
+            id=f"{sid}__filter",
+            classes="model-state",
         )
         model_opts = self._model_opts_for(prov, "")
         model_list = OptionList(
             *[opt[0] for opt in model_opts],
-            id=sid, classes="model-state",
+            id=sid,
+            classes="model-state",
         )
         if model and isinstance(model, str):
             for i, (label, _value) in enumerate(model_opts):
@@ -2959,11 +2986,7 @@ class ConfigureApp(App[bool]):
                 candidates.update(models)
         else:
             candidates.update(self._models_by_provider.get(provider, []))
-        return [
-            (m, m)
-            for m in sorted(candidates)
-            if flt.lower() in m.lower()
-        ]
+        return [(m, m) for m in sorted(candidates) if flt.lower() in m.lower()]
 
     def _gate_row(self, index: int, check: dict[str, str]) -> Horizontal:
         from splinter.configure import gate_default_languages
@@ -3042,12 +3065,14 @@ class ConfigureApp(App[bool]):
                 continue
             if cmd:
                 name = original["name"] if cmd == original["cmd"] else cmd.split()[0]
-                checks.append({
-                    "name": name,
-                    "cmd": cmd,
-                    "when": when,
-                    "language": language,
-                })
+                checks.append(
+                    {
+                        "name": name,
+                        "cmd": cmd,
+                        "when": when,
+                        "language": language,
+                    }
+                )
         self._gate_checks = checks
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
@@ -3068,7 +3093,7 @@ class ConfigureApp(App[bool]):
             self._rebuild_gates()
         elif bid.startswith("gate_del_"):
             self._capture_gates()
-            index = int(bid[len("gate_del_"):])
+            index = int(bid[len("gate_del_") :])
             self._gate_checks = [c for j, c in enumerate(self._gate_checks) if j != index]
             self._rebuild_gates()
         elif bid.endswith("__trigger"):
@@ -3237,7 +3262,8 @@ class ConfigureApp(App[bool]):
                 current = str(getattr(opt, "prompt", ""))
         filter_inp = Input(
             value=flt,
-            id=f"{sid}__overlay_filter", placeholder="filter…",
+            id=f"{sid}__overlay_filter",
+            placeholder="filter…",
             classes="model-float-filter",
         )
         ol = OptionList(*opts, id=f"{sid}__overlay_list", classes="model-float-list")
@@ -3247,8 +3273,10 @@ class ConfigureApp(App[bool]):
                     ol.highlighted = i
                     break
         overlay = Vertical(
-            filter_inp, ol,
-            id=f"{sid}__overlay", classes="model-float",
+            filter_inp,
+            ol,
+            id=f"{sid}__overlay",
+            classes="model-float",
         )
         overlay.styles.layer = "above"
         self.mount(overlay)
@@ -3295,9 +3323,7 @@ class ConfigureApp(App[bool]):
         from splinter.configure import available_models_by_provider
 
         self._models_by_provider = available_models_by_provider()
-        self._models = sorted(
-            {m for models in self._models_by_provider.values() for m in models}
-        )
+        self._models = sorted({m for models in self._models_by_provider.values() for m in models})
         self.call_from_thread(self._rebuild_rows)
 
     def _rebuild_rows(self) -> None:
@@ -3400,7 +3426,10 @@ class ConfigureApp(App[bool]):
 
         self.saved_path = str(
             write_model_config(
-                models, efforts, timeouts=timeouts, gate_checks=self._gate_checks,
+                models,
+                efforts,
+                timeouts=timeouts,
+                gate_checks=self._gate_checks,
                 providers=providers,
             )
         )
@@ -4176,6 +4205,7 @@ class PrdSessionApp(App[int | None]):
             fe_path = self.session.dir / "final_eval.yaml"
             if fe_path.exists():
                 import yaml as _yaml
+
                 _fe_cfg = _yaml.safe_load(fe_path.read_text()) or {}
                 entries = load_final_eval(_fe_cfg)
             else:
@@ -4304,15 +4334,13 @@ class PrdSessionApp(App[int | None]):
                 self._say("[green]Gate set:[/] " + ", ".join(c["cmd"] for c in checks))
             else:
                 self._say("[yellow]Gate disabled — no mechanical checks this run.[/]")
-            msg = (
-                "accept / edit / gate: <cmds> / "
-                "final_eval: ask_user|<cmd>|none / cowabunga"
-            )
+            msg = "accept / edit / gate: <cmds> / final_eval: ask_user|<cmd>|none / cowabunga"
             self._set_busy(False, msg)
             return
 
         if text.lower().startswith("final_eval:"):
             import yaml as _yaml
+
             spec = text.split(":", 1)[1].strip()
             fe_path = self.session.dir / "final_eval.yaml"
             if spec.lower() == "none":
@@ -4334,10 +4362,7 @@ class PrdSessionApp(App[int | None]):
                     )
                 )
                 self._say(f"[green]Final eval set:[/] {spec}")
-            msg = (
-                "accept / edit / gate: <cmds> / "
-                "final_eval: ask_user|<cmd>|none / cowabunga"
-            )
+            msg = "accept / edit / gate: <cmds> / final_eval: ask_user|<cmd>|none / cowabunga"
             self._set_busy(False, msg)
             return
 
@@ -4355,10 +4380,12 @@ class PrdSessionApp(App[int | None]):
 
     def _open_final_eval_modal(self) -> None:
         """Open the Set Final Eval modal and persist the user's choice."""
+
         def _on_result(result: dict[str, str | None] | None) -> None:
             if result is None:
                 return
             import yaml as _yaml
+
             fe_path = self.session.dir / "final_eval.yaml"
             entry: dict[str, str | None] = {"name": result["name"], "kind": result["kind"]}
             for key in ("cmd", "skill", "provider", "model", "effort"):
@@ -4403,7 +4430,6 @@ class PrdSessionApp(App[int | None]):
         self.phase = "run"
         self._save_state()
         self.exit(0)
-
 
     def action_abort(self) -> None:
         # Confirm first — the draft is recoverable, but a stray ESC shouldn't nuke the run.

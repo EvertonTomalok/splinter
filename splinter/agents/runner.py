@@ -142,9 +142,16 @@ def run_task(
     for attempt in range(_MAX_GAP_RETRIES + 1):
         try:
             response, _sid = run_provider_session(
-                prompt, model_id, variant=variant, session=opencode_session, timeout=timeout,
-                trace=trace, iteration=iteration, tier=tier_level,
-                task_index=task_index, role="run",
+                prompt,
+                model_id,
+                variant=variant,
+                session=opencode_session,
+                timeout=timeout,
+                trace=trace,
+                iteration=iteration,
+                tier=tier_level,
+                task_index=task_index,
+                role="run",
             )
             break
         except Exception as exc:

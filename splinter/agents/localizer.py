@@ -70,7 +70,6 @@ def _strip_frontmatter(text: str) -> str:
     return text.strip()
 
 
-
 def _parse_anchors(text: str, *, hot: float = 0.8, medium: float = 0.4) -> list[CodeAnchor]:
     anchors: list[CodeAnchor] = []
 
@@ -183,7 +182,7 @@ def _find_meta_files(repo_path: str = ".") -> list[str]:
     return found
 
 
-_LS_MAX_LINES = 3000   # file listing cap passed to recall model
+_LS_MAX_LINES = 3000  # file listing cap passed to recall model
 
 
 def _run_search_tools(prd_text: str, repo_path: str = ".") -> str:
@@ -266,7 +265,12 @@ def _recall_phase(
         "Output ONLY the JSON array."
     )
     text = run_text(
-        prompt, model, variant=variant, output_format="text", timeout=timeout, agent=agent,
+        prompt,
+        model,
+        variant=variant,
+        output_format="text",
+        timeout=timeout,
+        agent=agent,
         session=session,
     )
     record_exchange(prompt, text, model=model)
@@ -471,14 +475,11 @@ def localize(
     # Prefer structured anchors (file + symbol + reason) so per-task targeting in
     # assign_target_files can actually match; fall back to bare file paths if the
     # cheap model didn't emit parseable JSON.
-    anchors = (
-        _parse_anchors(
-            recall_output,
-            hot=ladder.localizer_relevance_hot,
-            medium=ladder.localizer_relevance_medium,
-        )
-        or _anchors_from_recall(recall_output)
-    )
+    anchors = _parse_anchors(
+        recall_output,
+        hot=ladder.localizer_relevance_hot,
+        medium=ladder.localizer_relevance_medium,
+    ) or _anchors_from_recall(recall_output)
 
     # Deterministically inject AGENTS.md / CLAUDE.md / skill files the LLM missed.
     existing_files = {a.file for a in anchors}
