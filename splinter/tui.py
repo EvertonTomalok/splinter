@@ -2433,11 +2433,16 @@ class RunApp(App[int]):
                 )
             elif action == "accept":
                 self.write_log("— ✓ accepted by user — marking done and continuing —", logging.INFO)
+                self.run_kwargs["cowabunga"] = True
                 self._run_pipeline_worker(
                     resume=True, user_guidance=None, jump_premium=False, cowabunga=True
                 )
             elif action == "cowabunga":
                 self.write_log("— cowabunga — proceeding autonomously —", logging.WARNING)
+                self.run_kwargs["cowabunga"] = True
+                st = self.session.read_status()
+                state = str(st.get("state", "awaiting_user"))
+                self.session.set_status(state, cowabunga=True)
                 self._run_pipeline_worker(
                     resume=True, user_guidance=None, jump_premium=False, cowabunga=True
                 )

@@ -471,6 +471,7 @@ def run_pipeline(
         source=prd_path or task_path or "",
         started=datetime.now(timezone.utc).isoformat(),
         stage="localize",
+        cowabunga=cowabunga,
     )
 
     idx_lines = [
@@ -724,6 +725,12 @@ def run_pipeline(
             ask_tier=ask_exc.tier,
             ask_iteration=ask_exc.iteration,
             task_index=ask_exc.task_index,
+            stage="run",
+            round_index=0,
+            next_effort="",
+            final_eval_summary="",
+            final_eval_passed="",
+            cowabunga=cowabunga,
         )
         log.warning("run paused — needs your input: %s", ask_exc.reason)
         print(f"run paused — needs your input.\n  {ask_exc.reason}")

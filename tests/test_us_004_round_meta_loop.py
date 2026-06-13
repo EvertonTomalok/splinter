@@ -22,6 +22,7 @@ from splinter.memory.knowledge import KnowledgeStore
 from splinter.memory.session import Session
 from splinter.models.roster import bump_effort
 from splinter.pipeline import _clear_round_caches, _load_round_history, run_pipeline
+from splinter.strategies.base import AskUserPause
 
 # ── shared helpers ────────────────────────────────────────────────────────────
 
@@ -337,6 +338,60 @@ class TestResumeNewRound:
 
         run_pipeline(task_path=task_yaml, session=session, resume=True)
         assert calls, "localize must NOT use the cache when force_rerun=True"
+
+
+class TestAskUserStateSanitization:
+    def test_ask_user_pause_clears_round_metadata(
+        self,
+        session: Session,
+        task_yaml: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        session.set_status(
+            "awaiting_user",
+            round_index=2,
+            next_effort="hard",
+            stage="final_eval",
+            final_eval_summary="stale",
+            final_eval_passed=False,
+        )
+
+        monkeypatch.setattr("splinter.pipeline.localize", lambda *a, **kw: [])
+        monkeypatch.setattr("splinter.pipeline._resolve_gate", lambda *a, **kw: None)
+        from splinter.strategies.cascade import CascadeStrategy
+
+        def _raise_ask_user(self_, tasks, sess, ladder, **kwargs):
+            raise AskUserPause(
+                reason="need human input",
+                corrections="fix X",
+                tier=1,
+                iteration=1,
+                task_index=0,
+            )
+
+        monkeypatch.setattr(CascadeStrategy, "execute", _raise_ask_user)
+        monkeypatch.setattr("splinter.configure.load_config", lambda *a, **kw: _config_with_fe())
+
+        rc = run_pipeline(task_path=task_yaml, session=session, resume=True)
+        assert rc == 3
+        st = session.read_status()
+        assert st["state"] == "awaiting_user"
+        assert st["stage"] == "run"
+        assert st["round_index"] == 0
+        assert st["next_effort"] == ""
+        assert st["final_eval_summary"] == ""
+        assert st["final_eval_passed"] == ""
+
+    def test_cowabunga_flag_is_persisted_in_status(
+        self,
+        session: Session,
+        task_yaml: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _base_patches(monkeypatch, fe_results=[_pass_fe()])
+        rc = run_pipeline(task_path=task_yaml, session=session, cowabunga=True)
+        assert rc == 0
+        assert session.read_status()["cowabunga"] is True
 
 
 # ── 4. Round eval history in plan context ─────────────────────────────────────
