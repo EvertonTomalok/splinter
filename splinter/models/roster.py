@@ -24,6 +24,8 @@ def provider_for(model_id: str) -> str:
         return "codex"
     if model_id.startswith("opencode-go/") or model_id.startswith("opencode/"):
         return "opencode"
+    if model_id.startswith("cursor/"):
+        return "cursor"
     return "claude"
 
 

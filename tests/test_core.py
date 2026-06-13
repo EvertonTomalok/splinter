@@ -271,7 +271,7 @@ def test_configure_tui_saves_models_and_efforts(
             await pilot.pause()
             await pilot.pause()
             assert app._models_by_provider
-            assert set(app._models_by_provider.keys()) == {"claude", "opencode", "codex"}
+            assert set(app._models_by_provider.keys()) == {"claude", "opencode", "codex", "cursor"}
             app.query_one("#planner__eff", Select).value = "max"
             await pilot.pause()
             await pilot.press("s")
@@ -661,7 +661,7 @@ def test_opencode_extract_tokens_handles_nested() -> None:
 
 
 def test_provider_registry() -> None:
-    assert set(available_providers()) == {"claude", "opencode", "codex"}
+    assert set(available_providers()) == {"claude", "opencode", "codex", "cursor"}
     assert get_provider("claude").name == "claude"
     with pytest.raises(ValueError):
         get_provider("bogus")
@@ -737,7 +737,7 @@ def test_available_models_by_provider_keys(
         lambda timeout=30: ["opencode-go/foo", "opencode/bar", "other/baz"],
     )
     result = available_models_by_provider()
-    assert set(result.keys()) == {"claude", "opencode", "codex"}
+    assert set(result.keys()) == {"claude", "opencode", "codex", "cursor"}
     assert result["codex"] == sorted(CODEX_MODELS)
     assert "sonnet" in result["claude"]
     assert "opus" in result["claude"]
@@ -2772,7 +2772,7 @@ def test_current_model_selections_returns_providers_block(
     assert isinstance(providers["tiers"], list)
     assert len(providers["tiers"]) == 6
     for p in providers["tiers"]:
-        assert p in {"claude", "opencode", "codex"}
+        assert p in {"claude", "opencode", "codex", "cursor"}
     ladder = load_ladder()
     assert providers["planner"] == provider_for(ladder.planner_model)
     assert providers["eval"] == provider_for(ladder.eval_model)

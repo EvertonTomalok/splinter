@@ -264,7 +264,7 @@ class TestCursorProvider:
             result = cursor_run("hello")
         assert result.text == "ok"
         cmd = mock_sub.call_args[0][0]
-        assert "cursor" in cmd
+        assert "agent" in cmd
         assert "hello" in cmd
 
     def test_nonzero_exit_raises(self) -> None:
@@ -273,7 +273,7 @@ class TestCursorProvider:
 
         completed = CompletedProcess(returncode=1, stdout="", stderr="err")
         with patch("splinter.providers.cursor.run_subprocess", return_value=completed):
-            with pytest.raises(RuntimeError, match="cursor exited 1"):
+            with pytest.raises(RuntimeError, match="agent exited 1"):
                 cursor_run("hello")
 
     def test_provider_class_wraps_run(self) -> None:

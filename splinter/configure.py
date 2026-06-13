@@ -383,8 +383,17 @@ CODEX_MODELS: list[str] = [
 ]
 
 
+def _cursor_models() -> list[str]:
+    try:
+        from splinter.providers.cursor import list_models as _cursor_list
+
+        return _cursor_list()
+    except Exception:
+        return ["cursor/auto"]
+
+
 def available_models() -> list[str]:
-    """All selectable model ids: claude + opencode + ladder + codex."""
+    """All selectable model ids: claude + opencode + ladder + codex + cursor."""
     from splinter.models.roster import load_ladder
 
     models: set[str] = set(CLAUDE_MODELS)
@@ -400,11 +409,17 @@ def available_models() -> list[str]:
         pass
     models.update(load_ladder().all_model_ids())
     models.update(CODEX_MODELS)
+    try:
+        models.update(_cursor_models())
+    except Exception:
+        pass
     return sorted(models)
 
 
 def available_models_by_provider() -> dict[str, list[str]]:
-    """Model ids grouped by provider. Each provider fetch is independent."""
+    """Model ids grouped by provider. Remote fetches (opencode, cursor) run in parallel."""
+    import concurrent.futures
+
     from splinter.models.roster import load_ladder, provider_for
 
     claude: set[str] = set()
@@ -421,20 +436,34 @@ def available_models_by_provider() -> dict[str, list[str]]:
     except Exception:
         claude = set()
 
-    try:
-        from splinter.providers import opencode
+    def _fetch_opencode() -> list[str]:
+        try:
+            from splinter.providers import opencode
 
-        opencode_set.update(
-            m
-            for m in opencode.list_models()
-            if m.startswith("opencode-go/") or m.startswith("opencode/")
-        )
-    except Exception:
-        pass
+            return [
+                m
+                for m in opencode.list_models()
+                if m.startswith("opencode-go/") or m.startswith("opencode/")
+            ]
+        except Exception:
+            return []
+
+    def _fetch_cursor() -> list[str]:
+        try:
+            return _cursor_models()
+        except Exception:
+            return []
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        oc_future = pool.submit(_fetch_opencode)
+        cursor_future = pool.submit(_fetch_cursor)
+        opencode_set.update(oc_future.result())
+        cursor_set = cursor_future.result()
 
     return {
         "claude": sorted(claude),
         "codex": sorted(CODEX_MODELS),
+        "cursor": sorted(cursor_set),
         "opencode": sorted(opencode_set),
     }
 

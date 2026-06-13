@@ -439,6 +439,10 @@ class DirectStrategy(Strategy):
 
         corrections = _merge_guidance(corrections, user_guidance)
 
+        if user_guidance:
+            log.info("user guidance injected: %s…", user_guidance[:120])
+            session.append("events.md", f"[USER GUIDANCE] {user_guidance}\n")
+
         task_plan_file = f"knowledge/plan-{task_index + 1}.md"
 
         from_ask_user = checkpoint is not None and not checkpoint.stage

@@ -1293,6 +1293,7 @@ class _AskUserModal(ModalScreen[tuple[str, str] | None]):
 
     BINDINGS = [
         ("a", "submit_answer", "Answer"),
+        ("f", "accept_done", "Accept / Done"),
         ("p", "jump_premium", "Jump Premium"),
         ("c", "action_cowabunga", "Cowabunga"),
         ("d", "edit_config", "Edit Config"),
@@ -1317,6 +1318,7 @@ class _AskUserModal(ModalScreen[tuple[str, str] | None]):
             yield TextArea("", id="ask-response")
             with Horizontal(id="ask-actions"):
                 yield Button("  Answer  (a)", id="answer", variant="success")
+                yield Button("  ✓ Accept / Done  (f)", id="accept_done", variant="success")
                 yield Button("  Jump Premium  (p)", id="jump_premium", variant="primary")
                 yield Button("  Cowabunga  (c)", id="cowabunga", variant="warning")
                 yield Button("  Edit Config  (d)", id="edit_config", variant="default")
@@ -1327,6 +1329,9 @@ class _AskUserModal(ModalScreen[tuple[str, str] | None]):
 
     def action_submit_answer(self) -> None:
         self.query_one("#answer", Button).press()
+
+    def action_accept_done(self) -> None:
+        self.query_one("#accept_done", Button).press()
 
     def action_jump_premium(self) -> None:
         self.query_one("#jump_premium", Button).press()
@@ -1348,6 +1353,8 @@ class _AskUserModal(ModalScreen[tuple[str, str] | None]):
         elif bid == "jump_premium":
             text = self.query_one("#ask-response", TextArea).text.strip()
             self.dismiss(("jump_premium", text))
+        elif bid == "accept_done":
+            self.dismiss(("accept", ""))
         elif bid == "cowabunga":
             self.dismiss(("cowabunga", ""))
         elif bid == "edit_config":
@@ -1434,7 +1441,7 @@ class _FinalEvalModal(ModalScreen[dict[str, str | None] | None]):
     ]
 
     _KINDS = ["User Review (ask_user)", "Run Skill", "Run Command"]
-    _PROVIDERS = ["(default)", "claude", "opencode", "codex"]
+    _PROVIDERS = ["(default)", "claude", "opencode", "codex", "cursor"]
     _EFFORTS = ["(default)", "low", "medium", "high", "max"]
 
     def __init__(self, current: dict[str, str | None] | None = None) -> None:
@@ -1496,6 +1503,7 @@ class _FinalEvalModal(ModalScreen[dict[str, str | None] | None]):
             "claude": by_provider.get("claude", []),
             "opencode": by_provider.get("opencode", []),
             "codex": by_provider.get("codex", []),
+            "cursor": by_provider.get("cursor", []),
         }
 
     def _rebuild_model_list(self, options: list[str]) -> None:
@@ -1685,7 +1693,12 @@ def _load_all_models_flat() -> list[str]:
 
         by_provider = available_models_by_provider()
     except Exception:
-        by_provider = {"claude": ["sonnet", "opus"], "opencode": [], "codex": ["codex/gpt-5-codex"]}
+        by_provider = {
+            "claude": ["sonnet", "opus"],
+            "opencode": [],
+            "codex": ["codex/gpt-5-codex"],
+            "cursor": ["cursor/composer-2.5", "cursor/opus-4.8", "cursor/sonnet-4.6"],
+        }
     return sorted({m for models in by_provider.values() for m in models})
 
 
@@ -1773,6 +1786,11 @@ class _EditConfigModal(ModalScreen["dict[str, str | None] | None"]):
     ]
 
     _EFFORTS = ["(default)", "low", "medium", "high", "max"]
+    _current: dict[str, str | None]
+
+    def __init__(self, current: dict[str, str | None] | None = None) -> None:
+        super().__init__()
+        self._current = current or {}
 
     def compose(self) -> ComposeResult:
         with Vertical(id="ec-dialog"):
@@ -1812,11 +1830,32 @@ class _EditConfigModal(ModalScreen["dict[str, str | None] | None"]):
     def on_mount(self) -> None:
         all_models = _load_all_models_flat()
         opts = ["(default)"] + all_models
-        for list_id in ("ec-plan-model", "ec-run-model", "ec-eval-model"):
+        model_keys = {
+            "ec-plan-model": self._current.get("planner_model"),
+            "ec-run-model": self._current.get("runner_model"),
+            "ec-eval-model": self._current.get("eval_model"),
+        }
+        for list_id, cur in model_keys.items():
             ml = self.query_one(f"#{list_id}", OptionList)
             ml.clear_options()
             for opt in opts:
                 ml.add_option(opt)
+            if cur and cur in opts:
+                ml.highlighted = opts.index(cur)
+        effort_keys = {
+            "ec-plan-effort": self._current.get("planner_effort"),
+            "ec-run-effort": self._current.get("runner_effort"),
+            "ec-eval-effort": self._current.get("eval_effort"),
+        }
+        for list_id, cur in effort_keys.items():
+            if cur and cur in self._EFFORTS:
+                self.query_one(f"#{list_id}", OptionList).highlighted = self._EFFORTS.index(cur)
+        if self._current.get("skip_planner") == "true":
+            self.query_one("#ec-skip-planner", Checkbox).value = True
+        if self._current.get("skip_eval") == "true":
+            self.query_one("#ec-skip-eval", Checkbox).value = True
+        if self._current.get("skip_final_eval") == "true":
+            self.query_one("#ec-skip-final-eval", Checkbox).value = True
         self.query_one("#ec-plan-model", OptionList).focus()
 
     def action_cancel(self) -> None:
@@ -2305,6 +2344,7 @@ class RunApp(App[int]):
         self._timer: Any = None
         self._handler: logging.Handler | None = None
         self._prev_propagate: bool = True
+        self._run_config: dict[str, str | None] = {}
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -2369,17 +2409,32 @@ class RunApp(App[int]):
                 return
             action, text = result
             if action == "answer":
+                if text:
+                    self.query_one("#log", RichLog).write(
+                        f"[bold cyan]👤 User guidance:[/] [cyan]{escape(text)}[/]"
+                    )
+                    self.session.append("events.md", f"[USER GUIDANCE] {text}\n")
                 self.write_log("— continuing with your answer —", logging.WARNING)
                 self._run_pipeline_worker(
                     resume=True, user_guidance=text or None, jump_premium=False, cowabunga=False
                 )
             elif action == "jump_premium":
+                if text:
+                    self.query_one("#log", RichLog).write(
+                        f"[bold cyan]👤 User guidance:[/] [cyan]{escape(text)}[/]"
+                    )
+                    self.session.append("events.md", f"[USER GUIDANCE] {text}\n")
                 self.write_log("— jumping to premium tier —", logging.WARNING)
                 self._run_pipeline_worker(
                     resume=True,
                     user_guidance=text or None,
                     jump_premium=True,
                     cowabunga=False,
+                )
+            elif action == "accept":
+                self.write_log("— ✓ accepted by user — marking done and continuing —", logging.INFO)
+                self._run_pipeline_worker(
+                    resume=True, user_guidance=None, jump_premium=False, cowabunga=True
                 )
             elif action == "cowabunga":
                 self.write_log("— cowabunga — proceeding autonomously —", logging.WARNING)
@@ -2393,7 +2448,7 @@ class RunApp(App[int]):
                         self._store_config_overrides(cfg)
                     self.call_after_refresh(self._show_ask_user_modal)
 
-                self.push_screen(_EditConfigModal(), callback=_on_cfg)
+                self.push_screen(_EditConfigModal(self._run_config), callback=_on_cfg)
             else:
                 self.exit(3)
 
@@ -2450,7 +2505,7 @@ class RunApp(App[int]):
                         self._store_config_overrides(cfg)
                     self.call_after_refresh(self._show_manual_validation_modal)
 
-                self.push_screen(_EditConfigModal(), callback=_on_cfg)
+                self.push_screen(_EditConfigModal(self._run_config), callback=_on_cfg)
 
         self.push_screen(
             _ManualValidationModal(summary, all_passed, show_phase=self._phased),
@@ -2517,6 +2572,8 @@ class RunApp(App[int]):
         self.run_worker(_run, thread=True, name="pipeline", exclusive=True)
 
     def _store_config_overrides(self, cfg: dict[str, str | None]) -> None:
+        # Accumulate into run-scoped config so re-opening EditConfig shows current values.
+        self._run_config.update({k: v for k, v in cfg.items() if v})
         data = self.session.read_status()
         state = str(data.get("state", "running"))
         self.session.set_status(
@@ -2531,6 +2588,18 @@ class RunApp(App[int]):
             next_skip_eval=cfg.get("skip_eval") or "",
             next_skip_final_eval=cfg.get("skip_final_eval") or "",
         )
+        parts = []
+        if cfg.get("runner_model"):
+            eff = cfg.get("runner_effort") or "default"
+            parts.append(f"runner → {cfg['runner_model']} @ {eff}")
+        if cfg.get("planner_model"):
+            eff = cfg.get("planner_effort") or "default"
+            parts.append(f"planner → {cfg['planner_model']} @ {eff}")
+        if cfg.get("eval_model"):
+            eff = cfg.get("eval_effort") or "default"
+            parts.append(f"eval → {cfg['eval_model']} @ {eff}")
+        if parts:
+            self.write_log(f"— config override: {' · '.join(parts)} —", logging.WARNING)
 
     def on_unmount(self) -> None:
         if self._handler is not None:
@@ -3011,7 +3080,7 @@ class ConfigureApp(App[bool]):
         )
 
     _WHEN_CHOICES: list[str] = ["always", "tests_exist", "proto_changed"]
-    _PROVIDER_CHOICES: list[str] = ["(default)", "claude", "opencode", "codex"]
+    _PROVIDER_CHOICES: list[str] = ["(default)", "claude", "opencode", "codex", "cursor"]
 
     def _model_opts_for(self, provider: str, flt: str) -> list[tuple[str, str]]:
         if not self._models_by_provider:
