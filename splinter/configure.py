@@ -230,6 +230,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # never killed mid-thought. Override with `splinter configure --timeout`.
         "timeout": 3600,
         "budget": None,
+        "soft_budget": True,
     },
 }
 
@@ -252,6 +253,15 @@ def configured_budget() -> float | None:
         return float(value)
     except (ValueError, TypeError):
         return None
+
+
+def configured_soft_budget() -> bool:
+    """Whether budget caps escalation softly (True) or hard-stops (False); defaults True."""
+    try:
+        value = load_config().get("defaults", {}).get("soft_budget", True)
+        return bool(value)
+    except (ValueError, TypeError):
+        return True
 
 
 def _config_path(scope: str = "project") -> Path:
@@ -602,6 +612,7 @@ DEFAULT_CC_CONFIG: dict[str, Any] = {
         "max_iterations": 5,
         "timeout": 3600,
         "budget": None,
+        "soft_budget": True,
     },
     "gate_checks": DEFAULT_CONFIG["gate_checks"],
     "models": {

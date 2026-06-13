@@ -186,7 +186,7 @@ def run_phase(
 
     session.write(
         f"runs/phase-{n}.md",
-        f"# Phase {n} — {cfg.description.splitlines()[0][:80]}\n"
+        f"# Phase {n} — {cfg.description.splitlines()[0]}\n"
         f"- model: {result.model}\n"
         f"- tokens: {result.tokens}\n"
         f"- cost: ${result.cost:.4f}\n\n"
@@ -234,6 +234,6 @@ def _write_phase_trajectory(session: Session, result: PhaseResult) -> None:
         f"{result.run_result.model} · "
         f"${result.run_result.cost:.4f} · "
         f"[{now}]",
-        f"  {result.description.splitlines()[0][:120]}",
+        f"  {result.description.splitlines()[0]}",
     ]
     session.append("phases.md", "\n".join(lines))

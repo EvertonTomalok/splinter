@@ -296,7 +296,7 @@ class DirectStrategy(Strategy):
             stage="run",
             task_index=0,
             task_total=1,
-            task=task.description.splitlines()[0][:80],
+            task=task.description.splitlines()[0],
         )
         session.append("loop.md", _single_task_header(session, task, n_stories))
 
@@ -420,34 +420,42 @@ class DirectStrategy(Strategy):
 
         corrections = _merge_guidance(corrections, user_guidance)
 
-        # Reuse any existing plan — opus calls are expensive and the plan is
-        # deterministic for this task. Always check the task-specific file first.
         task_plan_file = f"knowledge/plan-{task_index + 1}.md"
-        existing_plan = (
-            session.read(task_plan_file).strip() or session.read("knowledge/plan.md").strip()
-        )
-        if existing_plan:
-            log.info("plan exists for task %d — reusing (skipping planner)", task_index + 1)
-            plan = (
-                existing_plan[len("# Plan") :].lstrip("\n")
-                if existing_plan.startswith("# Plan")
-                else existing_plan
-            )
-            if not session.read(task_plan_file).strip():
-                session.write(task_plan_file, f"# Plan\n\n{plan}\n")
+
+        from_ask_user = checkpoint is not None and not checkpoint.stage
+        if from_ask_user and corrections.strip():
+            # Resuming after ASK_USER (skill/command/user): corrections = skill findings
+            # + user guidance. That IS the plan — what to fix is already known.
+            log.info("ASK_USER resume — using corrections as plan (skill output + user guidance)")
+            plan = corrections
         else:
-            log.info("planning with %s (once)", ladder.planner_model)
-            prev_rounds = session.read("knowledge/previous_rounds.md")
-            code_ctx = "\n\n".join(
-                filter(None, [prev_rounds, task.filtered_context or localization])
+            # Reuse any existing plan — opus calls are expensive and the plan is
+            # deterministic for this task. Always check the task-specific file first.
+            existing_plan = (
+                session.read(task_plan_file).strip() or session.read("knowledge/plan.md").strip()
             )
-            with agentic_scope(session, "plan", task_index, 0):
-                plan = _make_plan(
-                    task, ladder, code_ctx, session=session,
-                    trace=trace, iteration=0, tier=tier, task_index=task_index,
+            if existing_plan:
+                log.info("plan exists for task %d — reusing (skipping planner)", task_index + 1)
+                plan = (
+                    existing_plan[len("# Plan") :].lstrip("\n")
+                    if existing_plan.startswith("# Plan")
+                    else existing_plan
                 )
-            session.write("knowledge/plan.md", f"# Plan\n\n{plan}\n")
-            session.write(task_plan_file, f"# Plan\n\n{plan}\n")
+                if not session.read(task_plan_file).strip():
+                    session.write(task_plan_file, f"# Plan\n\n{plan}\n")
+            else:
+                log.info("planning with %s (once)", ladder.planner_model)
+                prev_rounds = session.read("knowledge/previous_rounds.md")
+                code_ctx = "\n\n".join(
+                    filter(None, [prev_rounds, task.filtered_context or localization])
+                )
+                with agentic_scope(session, "plan", task_index, 0):
+                    plan = _make_plan(
+                        task, ladder, code_ctx, session=session,
+                        trace=trace, iteration=0, tier=tier, task_index=task_index,
+                    )
+                session.write("knowledge/plan.md", f"# Plan\n\n{plan}\n")
+                session.write(task_plan_file, f"# Plan\n\n{plan}\n")
 
         resolved = resolve_eval_skill(eval_skill or task.eval_skill)
         evaluator = Evaluator(ladder)
@@ -688,7 +696,7 @@ def _feature_name(session: Session, task: Task) -> str:
         if feat:
             return str(feat)
     first = task.description.strip().splitlines()
-    return first[0][:80] if first else "task"
+    return first[0] if first else "task"
 
 
 def _single_task_header(session: Session, task: Task, n_stories: int) -> str:
