@@ -7,25 +7,102 @@ from types import SimpleNamespace
 import pytest
 
 from splinter.providers import cursor as cursor_module
+from splinter.providers.cursor import CursorProvider
+from splinter.providers.cursor import list_models as _real_list_models
 
 
 def _fake_proc(stdout: str, returncode: int = 0) -> SimpleNamespace:
     return SimpleNamespace(returncode=returncode, stdout=stdout, stderr="")
 
 
-def test_run_cmd_construction(monkeypatch: pytest.MonkeyPatch) -> None:
+def _capture(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
     captured: dict[str, object] = {}
 
     def fake_subprocess(cmd: list[str], timeout: int = 0, cwd: str = ".") -> object:
-        captured["cmd"] = cmd
+        captured["cmd"] = list(cmd)
         return _fake_proc("ok")
 
     monkeypatch.setattr(cursor_module, "run_subprocess", fake_subprocess)
-    cursor_module.run("hello", timeout=60)
+    return captured
 
+
+def test_run_cmd_basic(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured = _capture(monkeypatch)
+    cursor_module.run("hello", timeout=60)
     cmd = captured["cmd"]
-    assert isinstance(cmd, list)
     assert cmd[0] == "agent"
-    assert cmd[1] == "-p"
+    assert "-p" in cmd
     assert "--" in cmd
     assert cmd[-1] == "hello"
+
+
+def test_run_passes_model_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+    """cursor/ prefix stripped; --model passed with bare id."""
+    captured = _capture(monkeypatch)
+    cursor_module.run("do it", model="cursor/gpt-5.3-codex")
+    cmd = captured["cmd"]
+    assert "--model" in cmd
+    idx = cmd.index("--model")
+    assert cmd[idx + 1] == "gpt-5.3-codex"
+
+
+def test_run_omits_model_flag_for_auto(monkeypatch: pytest.MonkeyPatch) -> None:
+    """cursor/auto should not add --model (Cursor picks its own default)."""
+    captured = _capture(monkeypatch)
+    cursor_module.run("do it", model="cursor/auto")
+    assert "--model" not in captured["cmd"]
+
+
+def test_run_omits_model_flag_when_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured = _capture(monkeypatch)
+    cursor_module.run("do it", model=None)
+    assert "--model" not in captured["cmd"]
+
+
+def test_provider_run_passes_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CursorProvider.run() forwards model to the module-level run()."""
+    captured = _capture(monkeypatch)
+    provider = CursorProvider()
+    provider.run("prompt", "cursor/claude-opus-4-8-high")
+    cmd = captured["cmd"]
+    assert "--model" in cmd
+    assert cmd[cmd.index("--model") + 1] == "claude-opus-4-8-high"
+
+
+def test_provider_routing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """provider_for('cursor/X') resolves to the CursorProvider."""
+    from splinter.models.roster import provider_for
+    from splinter.providers.dispatch import get_provider
+
+    assert provider_for("cursor/gpt-5.3-codex") == "cursor"
+    p = get_provider("cursor")
+    assert isinstance(p, CursorProvider)
+
+
+def test_run_raises_on_nonzero(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_subprocess(cmd: list[str], timeout: int = 0, cwd: str = ".") -> object:
+        return _fake_proc("", returncode=1)
+
+    monkeypatch.setattr(cursor_module, "run_subprocess", fake_subprocess)
+    with pytest.raises(RuntimeError, match="agent exited 1"):
+        cursor_module.run("fail")
+
+
+def test_list_models_parses_output(monkeypatch: pytest.MonkeyPatch) -> None:
+    sample = (
+        "Available models\n\n"
+        "auto - Auto\n"
+        "gpt-5.3-codex - Codex 5.3\n"
+        "claude-opus-4-8-high - Opus 4.8 1M\n"
+    )
+
+    def fake_run(*args: object, **kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(stdout=sample, returncode=0)
+
+    monkeypatch.setattr(cursor_module.subprocess, "run", fake_run)
+    models = _real_list_models()
+    assert "cursor/auto" in models
+    assert "cursor/gpt-5.3-codex" in models
+    assert "cursor/claude-opus-4-8-high" in models
+    # all prefixed
+    assert all(m.startswith("cursor/") for m in models)
