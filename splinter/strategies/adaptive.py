@@ -61,6 +61,8 @@ class AdaptiveStrategy(CascadeStrategy):
         claude_runner_fallback: bool = False,
         user_guidance: str | None = None,
         jump_premium: bool = False,
+        skip_planner: bool = False,
+        skip_eval: bool = False,
     ) -> list[RunResult]:
         effective_budget = budget if budget is not None else configured_budget()
         effective_soft_budget = configured_soft_budget()
@@ -79,7 +81,7 @@ class AdaptiveStrategy(CascadeStrategy):
         if done:
             log.info("adaptive resume: %d task(s) already checkpointed", len(done))
 
-        self._run_plan_phase(ordered, session, ladder, localization, trace=trace)
+        self._run_plan_phase(ordered, session, ladder, localization, trace=trace, skip_planner=skip_planner)
 
         for i, task in enumerate(ordered):
             if task.id and task.id in done:
@@ -157,6 +159,8 @@ class AdaptiveStrategy(CascadeStrategy):
                 resume=False,
                 soft_budget=effective_soft_budget,
                 start_tier_override=routed_tier,
+                skip_planner=skip_planner,
+                skip_eval=skip_eval,
             )
 
             if result is not None:

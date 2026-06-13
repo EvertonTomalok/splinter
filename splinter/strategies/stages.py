@@ -48,6 +48,7 @@ class IterationContext:
     corrections: str = ""
     eval_history: list[str] = field(default_factory=list)
     task_index: int = 0
+    skip_eval: bool = False
     # produced by the stages
     run_result: RunResult | None = None
     gate_passed: bool = True
@@ -269,6 +270,22 @@ class EvalStage(Stage):
 
     def process(self, ctx: IterationContext) -> bool:
         assert ctx.run_result is not None
+
+        if ctx.skip_eval:
+            from splinter.enums import Decision
+            ctx.verdict = EvalVerdict(
+                decision=Decision.PASS,
+                reason="eval skipped by user",
+                corrections="",
+            )
+            ctx._loop_lines.append("- verdict: PASS (eval skipped)")
+            ctx.flush_loop()
+            ctx.session.append(
+                "eval.md",
+                f"### Iter {ctx.iteration}: PASS (skipped)\n"
+                "**Reason:** eval skipped by user\n\n",
+            )
+            return True
 
         evaluator = self._evaluator or Evaluator(ctx.ladder)
         eval_effort = evaluator.eval_effort_for(ctx.tier)

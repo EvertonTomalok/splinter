@@ -45,6 +45,8 @@ class CascadeStrategy(DirectStrategy):
         claude_runner_fallback: bool = False,
         user_guidance: str | None = None,
         jump_premium: bool = False,
+        skip_planner: bool = False,
+        skip_eval: bool = False,
     ) -> list[RunResult]:
         ordered = self._topo_sort(tasks)
 
@@ -61,7 +63,7 @@ class CascadeStrategy(DirectStrategy):
         if done:
             log.info("cascade resume: %d task(s) already checkpointed", len(done))
 
-        self._run_plan_phase(ordered, session, ladder, localization, trace=trace)
+        self._run_plan_phase(ordered, session, ladder, localization, trace=trace, skip_planner=skip_planner)
 
         for i, task in enumerate(ordered):
             if task.id and task.id in done:
@@ -94,6 +96,8 @@ class CascadeStrategy(DirectStrategy):
                 eval_skill=eval_skill,
                 cowabunga=cowabunga,
                 resume=False,
+                skip_planner=skip_planner,
+                skip_eval=skip_eval,
             )
 
             if result is not None:

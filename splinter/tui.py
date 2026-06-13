@@ -30,6 +30,7 @@ from textual.system_commands import SystemCommandsProvider
 from textual.timer import Timer
 from textual.widgets import (
     Button,
+    Checkbox,
     DataTable,
     Footer,
     Header,
@@ -1296,6 +1297,7 @@ class _AskUserModal(ModalScreen[tuple[str, str] | None]):
         ("a", "submit_answer", "Answer"),
         ("p", "jump_premium", "Jump Premium"),
         ("c", "action_cowabunga", "Cowabunga"),
+        ("d", "edit_config", "Edit Config"),
         ("e", "exit_modal", "Exit"),
         ("escape", "exit_modal", "Cancel"),
     ]
@@ -1319,6 +1321,7 @@ class _AskUserModal(ModalScreen[tuple[str, str] | None]):
                 yield Button("  Answer  (a)", id="answer", variant="success")
                 yield Button("  Jump Premium  (p)", id="jump_premium", variant="primary")
                 yield Button("  Cowabunga  (c)", id="cowabunga", variant="warning")
+                yield Button("  Edit Config  (d)", id="edit_config", variant="default")
                 yield Button("  Exit  (e)", id="exit", variant="error")
 
     def on_mount(self) -> None:
@@ -1333,6 +1336,9 @@ class _AskUserModal(ModalScreen[tuple[str, str] | None]):
     def action_cowabunga(self) -> None:
         self.query_one("#cowabunga", Button).press()
 
+    def action_edit_config(self) -> None:
+        self.query_one("#edit_config", Button).press()
+
     def action_exit_modal(self) -> None:
         self.query_one("#exit", Button).press()
 
@@ -1346,6 +1352,8 @@ class _AskUserModal(ModalScreen[tuple[str, str] | None]):
             self.dismiss(("jump_premium", text))
         elif bid == "cowabunga":
             self.dismiss(("cowabunga", ""))
+        elif bid == "edit_config":
+            self.dismiss(("edit_config", ""))
         else:
             self.dismiss(None)
 
@@ -1667,6 +1675,176 @@ class _ConfirmStopModal(ModalScreen[str | None]):
             self.dismiss(None)
 
 
+def _load_all_models_flat() -> list[str]:
+    try:
+        from splinter.configure import available_models_by_provider
+
+        by_provider = available_models_by_provider()
+    except Exception:
+        by_provider = {"claude": ["sonnet", "opus"], "opencode": [], "codex": ["codex/gpt-5-codex"]}
+    return sorted({m for models in by_provider.values() for m in models})
+
+
+class _EditConfigModal(ModalScreen["dict[str, str | None] | None"]):
+    """Edit planner / runner / eval model + effort for the next round only.
+
+    Dismiss value: dict with keys {planner_model, planner_effort, runner_model,
+    runner_effort, eval_model, eval_effort} — each str or None when (default).
+    Cancel / esc → None.
+    """
+
+    DEFAULT_CSS = """
+    _EditConfigModal {
+        align: center middle;
+        background: $background 60%;
+    }
+    _EditConfigModal > Vertical#ec-dialog {
+        width: 72;
+        height: 92%;
+        border: round $primary;
+        background: $surface;
+        padding: 0;
+    }
+    _EditConfigModal #ec-header {
+        padding: 1 2 0 2;
+        height: auto;
+    }
+    _EditConfigModal #ec-title {
+        text-style: bold;
+        color: $primary;
+        margin-bottom: 1;
+    }
+    _EditConfigModal #ec-scroll {
+        height: 1fr;
+        padding: 0 2;
+    }
+    _EditConfigModal .ec-section {
+        text-style: bold;
+        color: $accent;
+        margin-top: 1;
+        margin-bottom: 0;
+    }
+    _EditConfigModal .ec-label {
+        margin-top: 1;
+        margin-bottom: 0;
+        color: $text-muted;
+    }
+    _EditConfigModal .ec-model-list {
+        height: 8;
+        margin-bottom: 0;
+    }
+    _EditConfigModal .ec-effort-list {
+        height: 7;
+        margin-bottom: 1;
+    }
+    _EditConfigModal #ec-actions {
+        height: 3;
+        align-horizontal: center;
+        padding: 0 2;
+        margin-top: 1;
+        margin-bottom: 1;
+    }
+    _EditConfigModal Button {
+        width: 1fr;
+        height: 3;
+        margin: 0 1;
+        border: none;
+        text-style: bold;
+    }
+    _EditConfigModal .ec-skip-section {
+        height: auto;
+        margin: 0 0 1 0;
+        padding: 0 0 0 0;
+    }
+    _EditConfigModal Checkbox {
+        height: 3;
+        margin: 0;
+        padding: 0 0;
+    }
+    """
+
+    BINDINGS = [
+        ("escape", "cancel", "Cancel"),
+        ("enter", "confirm", "Confirm"),
+    ]
+
+    _EFFORTS = ["(default)", "low", "medium", "high", "max"]
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="ec-dialog"):
+            with Vertical(id="ec-header"):
+                yield Static("⚙️  Edit Config — Next Round Only", id="ec-title")
+                yield Rule()
+            with VerticalScroll(id="ec-scroll"):
+                yield Label("── Skip Steps ──", classes="ec-section")
+                with Vertical(classes="ec-skip-section"):
+                    yield Checkbox("Skip Planner  (run without replanning)", id="ec-skip-planner")
+                    yield Checkbox("Skip Eval  (auto-pass, no LLM judge)", id="ec-skip-eval")
+                    yield Checkbox("Skip Final Eval  (bypass final eval gate)", id="ec-skip-final-eval")
+
+                yield Label("── Planner ──", classes="ec-section")
+                yield Label("Model:", classes="ec-label")
+                yield OptionList("(default)", id="ec-plan-model", classes="ec-model-list")
+                yield Label("Effort:", classes="ec-label")
+                yield OptionList(*self._EFFORTS, id="ec-plan-effort", classes="ec-effort-list")
+
+                yield Label("── Runner ──", classes="ec-section")
+                yield Label("Model:", classes="ec-label")
+                yield OptionList("(default)", id="ec-run-model", classes="ec-model-list")
+                yield Label("Effort:", classes="ec-label")
+                yield OptionList(*self._EFFORTS, id="ec-run-effort", classes="ec-effort-list")
+
+                yield Label("── Eval ──", classes="ec-section")
+                yield Label("Model:", classes="ec-label")
+                yield OptionList("(default)", id="ec-eval-model", classes="ec-model-list")
+                yield Label("Effort:", classes="ec-label")
+                yield OptionList(*self._EFFORTS, id="ec-eval-effort", classes="ec-effort-list")
+            with Horizontal(id="ec-actions"):
+                yield Button("  Confirm  (enter)", id="ec-confirm", variant="success")
+                yield Button("  Cancel  (esc)", id="ec-cancel", variant="error")
+
+    def on_mount(self) -> None:
+        all_models = _load_all_models_flat()
+        opts = ["(default)"] + all_models
+        for list_id in ("ec-plan-model", "ec-run-model", "ec-eval-model"):
+            ml = self.query_one(f"#{list_id}", OptionList)
+            ml.clear_options()
+            for opt in opts:
+                ml.add_option(opt)
+        self.query_one("#ec-plan-model", OptionList).focus()
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    def action_confirm(self) -> None:
+        self.query_one("#ec-confirm", Button).press()
+
+    def _pick(self, list_id: str, options: list[str]) -> str | None:
+        idx = self.query_one(f"#{list_id}", OptionList).highlighted
+        raw = options[idx] if idx is not None and idx < len(options) else "(default)"
+        return None if raw == "(default)" else raw
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        bid = event.button.id or ""
+        if bid == "ec-cancel":
+            self.dismiss(None)
+            return
+        if bid != "ec-confirm":
+            return
+        all_models = ["(default)"] + _load_all_models_flat()
+        self.dismiss({
+            "skip_planner": str(self.query_one("#ec-skip-planner", Checkbox).value).lower(),
+            "skip_eval": str(self.query_one("#ec-skip-eval", Checkbox).value).lower(),
+            "skip_final_eval": str(self.query_one("#ec-skip-final-eval", Checkbox).value).lower(),
+            "planner_model": self._pick("ec-plan-model", all_models),
+            "planner_effort": self._pick("ec-plan-effort", self._EFFORTS),
+            "runner_model": self._pick("ec-run-model", all_models),
+            "runner_effort": self._pick("ec-run-effort", self._EFFORTS),
+            "eval_model": self._pick("ec-eval-model", all_models),
+            "eval_effort": self._pick("ec-eval-effort", self._EFFORTS),
+        })
+
+
 class _RunErrorModal(ModalScreen[bool]):
     """Shown when the pipeline worker fails unexpectedly.
 
@@ -1798,6 +1976,7 @@ class _ManualValidationModal(ModalScreen[tuple[str, str] | None]):
         ("a", "approve", "Approve"),
         ("n", "next_phase", "Next Phase"),
         ("f", "plan_changes", "Final Eval"),
+        ("c", "edit_config", "Edit Config"),
         ("r", "reject", "Reject"),
         ("escape", "reject", "Reject"),
     ]
@@ -1828,6 +2007,7 @@ class _ManualValidationModal(ModalScreen[tuple[str, str] | None]):
                 if self._show_phase:
                     yield Button("  Next Phase  (n)", id="next_phase", variant="primary")
                 yield Button("  Final Eval  (f)", id="plan_changes", variant="primary")
+                yield Button("  Edit Config  (c)", id="edit_config", variant="default")
                 yield Button("  Reject  (r)", id="reject", variant="error")
 
     def on_mount(self) -> None:
@@ -1842,6 +2022,9 @@ class _ManualValidationModal(ModalScreen[tuple[str, str] | None]):
     def action_plan_changes(self) -> None:
         self.query_one("#plan_changes", Button).press()
 
+    def action_edit_config(self) -> None:
+        self.query_one("#edit_config", Button).press()
+
     def action_reject(self) -> None:
         self.query_one("#reject", Button).press()
 
@@ -1854,6 +2037,8 @@ class _ManualValidationModal(ModalScreen[tuple[str, str] | None]):
             self.dismiss(("next_phase", text))
         elif bid == "plan_changes":
             self.dismiss(("changes", text))
+        elif bid == "edit_config":
+            self.dismiss(("edit_config", ""))
         else:
             self.dismiss(None)
 
@@ -2174,6 +2359,12 @@ class RunApp(App[int]):
                 self._run_pipeline_worker(
                     resume=True, user_guidance=None, jump_premium=False, cowabunga=True
                 )
+            elif action == "edit_config":
+                def _on_cfg(cfg: "dict[str, str | None] | None") -> None:
+                    if cfg is not None:
+                        self._store_config_overrides(cfg)
+                    self.call_after_refresh(self._show_ask_user_modal)
+                self.push_screen(_EditConfigModal(), callback=_on_cfg)
             else:
                 self.exit(3)
 
@@ -2225,6 +2416,12 @@ class RunApp(App[int]):
                 if self._timer is None:
                     self._timer = self.set_interval(0.5, self._refresh)
                 self.call_after_refresh(self._show_phase_modal)
+            elif action == "edit_config":
+                def _on_cfg(cfg: "dict[str, str | None] | None") -> None:
+                    if cfg is not None:
+                        self._store_config_overrides(cfg)
+                    self.call_after_refresh(self._show_manual_validation_modal)
+                self.push_screen(_EditConfigModal(), callback=_on_cfg)
 
         self.push_screen(
             _ManualValidationModal(
@@ -2276,6 +2473,22 @@ class RunApp(App[int]):
                     pass
 
         self.run_worker(_run, thread=True, name="pipeline", exclusive=True)
+
+    def _store_config_overrides(self, cfg: dict[str, str | None]) -> None:
+        data = self.session.read_status()
+        state = str(data.get("state", "running"))
+        self.session.set_status(
+            state,
+            next_planner_model=cfg.get("planner_model") or "",
+            next_planner_effort=cfg.get("planner_effort") or "",
+            next_runner_model=cfg.get("runner_model") or "",
+            next_runner_effort=cfg.get("runner_effort") or "",
+            next_eval_model=cfg.get("eval_model") or "",
+            next_eval_effort=cfg.get("eval_effort") or "",
+            next_skip_planner=cfg.get("skip_planner") or "",
+            next_skip_eval=cfg.get("skip_eval") or "",
+            next_skip_final_eval=cfg.get("skip_final_eval") or "",
+        )
 
     def on_unmount(self) -> None:
         if self._handler is not None:

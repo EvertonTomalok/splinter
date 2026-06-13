@@ -116,6 +116,7 @@ def test_configured_timeout_default_and_override(
     # Written override is honoured.
     (tmp_path / ".splinter").mkdir()
     (tmp_path / ".splinter" / "config.yaml").write_text("defaults:\n  timeout: 7200\n")
+    configure.invalidate_config_cache()
     assert configure.configured_timeout() == 7200
 
 

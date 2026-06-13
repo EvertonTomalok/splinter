@@ -372,11 +372,52 @@ def run_pipeline(
     # Read resume context now that session is guaranteed to exist.
     resume_round = 0
     resume_effort: str | None = None
+    _next_planner_model: str | None = None
+    _next_planner_effort: str | None = None
+    _next_runner_model: str | None = None
+    _next_runner_effort: str | None = None
+    _next_eval_model: str | None = None
+    _next_eval_effort: str | None = None
+    _next_skip_planner: bool = False
+    _next_skip_eval: bool = False
+    _next_skip_final_eval: bool = False
     if resume:
         _cur = session.read_status()
         resume_round = int(_cur.get("round_index", 0))
         resume_effort = _cur.get("next_effort") or None
+        _next_planner_model = _cur.get("next_planner_model") or None
+        _next_planner_effort = _cur.get("next_planner_effort") or None
+        _next_runner_model = _cur.get("next_runner_model") or None
+        _next_runner_effort = _cur.get("next_runner_effort") or None
+        _next_eval_model = _cur.get("next_eval_model") or None
+        _next_eval_effort = _cur.get("next_eval_effort") or None
+        _next_skip_planner = str(_cur.get("next_skip_planner", "")).lower() == "true"
+        _next_skip_eval = str(_cur.get("next_skip_eval", "")).lower() == "true"
+        _next_skip_final_eval = str(_cur.get("next_skip_final_eval", "")).lower() == "true"
     effective_effort = effort or resume_effort
+
+    if _next_planner_model:
+        ladder.planner_model = _next_planner_model
+    if _next_planner_effort:
+        ladder.planner_effort = _next_planner_effort
+    if _next_eval_model:
+        ladder.eval_model = _next_eval_model
+    if _next_eval_effort:
+        ladder.eval_effort = _next_eval_effort
+    if _next_runner_model:
+        from splinter.models.roster import rewrite_runner_tiers
+
+        rewrite_runner_tiers(
+            ladder,
+            model=_next_runner_model,
+            variant=_next_runner_effort or "high",
+        )
+        _eff = _next_runner_effort or "high"
+        log.info("runtime: runner tiers rewritten to %s @ %s", _next_runner_model, _eff)
+    if any([_next_planner_model, _next_planner_effort, _next_runner_model,
+            _next_runner_effort, _next_eval_model, _next_eval_effort,
+            _next_skip_planner, _next_skip_eval, _next_skip_final_eval]):
+        session.clear_next_config()
 
     tasks: list[Task] = []
     if task_path:
@@ -536,6 +577,17 @@ def run_pipeline(
         if round_history:
             session.write("knowledge/previous_rounds.md", round_history)
 
+        _runner_model = ladder.tiers[0].models[0] if ladder.tiers else "none"
+        _first_tier_level = ladder.tiers[0].level if ladder.tiers else 0
+        _runner_variant = ladder.tier_variants.get(_first_tier_level, "?") if ladder.tiers else "?"
+        session.append(
+            "events.md",
+            f"round {resume_round} config · "
+            f"planner={ladder.planner_model}@{ladder.planner_effort} · "
+            f"runner={_runner_model}@{_runner_variant} · "
+            f"eval={ladder.eval_model}@{ladder.eval_effort}",
+        )
+
         session.set_status("running", stage="run")
         results = strat.execute(
             tasks,
@@ -551,6 +603,8 @@ def run_pipeline(
             claude_runner_fallback=claude_runner_fallback,
             user_guidance=user_guidance,
             jump_premium=jump_premium,
+            skip_planner=_next_skip_planner,
+            skip_eval=_next_skip_eval,
         )
 
         from splinter.agents.final_eval import run_all_final_evals
@@ -563,7 +617,7 @@ def run_pipeline(
             log.info("final eval: loaded from session dir (%d entries)", len(final_eval_entries))
         else:
             final_eval_entries = load_final_eval(load_config())
-        if final_eval_entries:
+        if final_eval_entries and not _next_skip_final_eval:
             session.set_status("running", stage="final_eval")
             log.info("running %d final eval(s)…", len(final_eval_entries))
             task_for_eval = tasks[0] if tasks else None
@@ -579,20 +633,19 @@ def run_pipeline(
             )
             fe_verbatim = "\n\n---\n\n".join(r.output for r in fe_results)
             session.write("final_eval.md", fe_verbatim + "\n")
-            session.write(
-                f"knowledge/final-eval-{resume_round}.md",
-                f"# Final Eval — Round {resume_round + 1}\n\n{fe_verbatim}\n",
-            )
+            round_content = f"# Final Eval — Round {resume_round + 1}\n\n{fe_verbatim}\n"
+            session.write(f"knowledge/final-eval-{resume_round}.md", round_content)
+            rd = session.round_dir(resume_round)
+            (rd / "final-eval.md").write_text(round_content)
             log.info("final eval results:\n%s", fe_summary)
             all_passed = all(r.passed for r in fe_results)
             if not all_passed:
                 failed = [r.name for r in fe_results if not r.passed]
                 log.warning("final eval FAILED: %s", ", ".join(failed))
                 fe_fail_text = "\n".join(r.output for r in fe_results if not r.passed)
-                session.write(
-                    f"knowledge/round-eval-{resume_round}.md",
-                    f"# Round {resume_round} Eval\n\n{fe_fail_text}\n",
-                )
+                round_eval_content = f"# Round {resume_round} Eval\n\n{fe_fail_text}\n"
+                session.write(f"knowledge/round-eval-{resume_round}.md", round_eval_content)
+                (rd / "round-eval.md").write_text(round_eval_content)
                 raise ManualValidationPause(summary=fe_summary, all_passed=False)
             session.set_status(
                 "running",

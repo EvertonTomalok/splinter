@@ -85,4 +85,6 @@ class Strategy(ABC):
         claude_runner_fallback: bool = False,
         user_guidance: str | None = None,
         jump_premium: bool = False,
+        skip_planner: bool = False,
+        skip_eval: bool = False,
     ) -> list[RunResult]: ...
