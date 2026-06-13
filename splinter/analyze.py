@@ -68,6 +68,27 @@ def _run_state(session: Session) -> str:
     return "DONE" if session.read("trace.md") else "UNKNOWN"
 
 
+def _prd_story_titles(session: Session) -> list[str]:
+    """``US-NNN: Title`` lines from the session PRD ([] for a task-yaml run)."""
+    from splinter import prd_session
+
+    prd = session.read("prd.md")
+    return prd_session.user_story_titles(prd) if prd.strip() else []
+
+
+def _prd_feature_name(session: Session) -> str:
+    """PRD frontmatter ``feature`` for the single-shot trajectory label."""
+    from splinter.agents.planner import _parse_frontmatter
+
+    prd = session.read("prd.md")
+    if prd.strip():
+        fm, _ = _parse_frontmatter(prd)
+        feat = fm.get("feature")
+        if feat:
+            return str(feat)
+    return "task"
+
+
 def _tasks(loop_md: str) -> list[tuple[int, str, str]]:
     r"""Parse loop.md into (task_no, title, body) tuples per task header.
 
@@ -350,6 +371,12 @@ def _trajectory_lines(session: Session, iters: list[tuple[int, str, str]]) -> li
         task_groups = _task_iters(loop_md)
         multi_task = len(task_groups) > 1
 
+        # Single-shot (raphael): list the PRD stories the one task implements.
+        story_titles = _prd_story_titles(session) if not multi_task else []
+        if len(story_titles) > 1:
+            for st in story_titles:
+                lines.append(f"    [dim]📋 {st}[/]")
+
         for task_no, _title, task_iters in task_groups:
             if not task_iters:
                 continue
@@ -417,8 +444,12 @@ def format_run_completion(session: Session) -> str:
     task_total = status.get("task_total") or status.get("tasks")
     task_index = status.get("task_index")
     if task_total:
-        done = task_index if task_index is not None else task_total
-        parts.append(f"{done}/{task_total} tasks")
+        if str(task_total) == "1":
+            n_stories = len(_prd_story_titles(session))
+            parts.append(f"1 task · {n_stories} stories" if n_stories > 1 else "1 task")
+        else:
+            done = task_index if task_index is not None else task_total
+            parts.append(f"{done}/{task_total} tasks")
     cost = metrics.get("cost")
     if cost:
         parts.append(f"${cost}")
@@ -451,11 +482,18 @@ def render_overview(session: Session, state: str) -> str:
     emoji = _OVERVIEW_EMOJI.get(state, "⚪")
     completed = state in ("COMPLETED", "DONE")
 
+    n_tasks = status.get("tasks", "?")
+    n_stories = len(_prd_story_titles(session))
+    task_word = "task" if str(n_tasks) == "1" else "tasks"
+    task_label = f"[b]{n_tasks}[/] [dim]{task_word}[/]"
+    # Single-shot (raphael): one task, many stories — surface the story count.
+    if str(n_tasks) == "1" and n_stories > 1:
+        task_label += f"  [dim]·[/]  [b]{n_stories}[/] [dim]stories[/]"
     lines = [
         f"[bold]splinter[/] · [cyan]{session.id}[/]",
         f"{emoji} [bold {state_color}]{state}[/]  [dim]·[/]  "
         f"[b]{status.get('strategy', '?')}[/]  [dim]·[/]  "
-        f"[b]{status.get('tasks', '?')}[/] [dim]tasks[/]",
+        f"{task_label}",
     ]
     if completed:
         lines.append(f"[bold green]✅ All tasks complete[/] — {format_run_completion(session)}")
@@ -635,6 +673,10 @@ def render_trajectory(session: Session) -> str:
         lines.append(f"  P{i}. {phase}" + (f" · {detail}" if detail else ""))
     task_groups = _task_iters(loop)
     multi_task = len(task_groups) > 1
+    story_titles = _prd_story_titles(session) if not multi_task else []
+    if len(story_titles) > 1:
+        for st in story_titles:
+            lines.append(f"  · {st}")
     for task_no, _title, task_iters in task_groups:
         if multi_task:
             lines.append(f"  Task {task_no}:")

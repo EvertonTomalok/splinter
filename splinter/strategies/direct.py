@@ -276,92 +276,55 @@ class DirectStrategy(Strategy):
         else:
             trace = Trace()
         knowledge = KnowledgeStore(session)
-        results: list[RunResult] = []
+
+        if not tasks:
+            return []
+
+        # Raphael is single-shot: the pipeline collapsed every PRD story into one
+        # task, so there is exactly one Run → Gate → Eval loop to drive here.
+        task = tasks[0]
+        n_stories = _story_count(session)
 
         checkpoint = (
             _load_checkpoint(session)
             if resume and session.read_status().get("state") in {"awaiting_user", "paused"}
             else None
         )
-        start_index = (
-            checkpoint.task_index
-            if checkpoint is not None
-            else (self._resume_start_index(session, tasks) if resume else 0)
+
+        session.set_status(
+            "running",
+            stage="run",
+            task_index=0,
+            task_total=1,
+            task=task.description.splitlines()[0][:80],
         )
-        if start_index:
-            log.info(
-                "resume: %d task(s) already done — restarting at task %d/%d",
-                start_index,
-                start_index + 1,
-                len(tasks),
-            )
+        session.append("loop.md", _single_task_header(session, task, n_stories))
 
-        for i, task in enumerate(tasks):
-            if i < start_index:
-                continue
-            # Persist progress *before* running task i so a crash here resumes here.
-            session.set_status(
-                "running",
-                stage="run",
-                task_index=i,
-                task_total=len(tasks),
-                task=task.description.splitlines()[0][:80],
-            )
-            session.append(
-                "loop.md",
-                f"# Task {i + 1}/{len(tasks)}: {task.description.splitlines()[0][:80]}\n\n",
-            )
-            task_resume = (checkpoint is not None and i == checkpoint.task_index) or (
-                resume and i == start_index and len(tasks) == 1
-            )
-            result = self._run_task_loop(
-                task,
-                session,
-                ladder,
-                trace,
-                knowledge,
-                task_index=i,
-                effort=effort,
-                budget=budget,
-                max_iterations=max_iterations,
-                localization=localization,
-                eval_skill=eval_skill,
-                cowabunga=cowabunga,
-                resume=task_resume,
-                checkpoint=checkpoint if task_resume else None,
-                user_guidance=user_guidance if task_resume else None,
-                jump_premium=jump_premium if task_resume else False,
-            )
-            if result is not None:
-                results.append(result)
-            checkpoint = None
+        task_resume = checkpoint is not None or resume
+        result = self._run_task_loop(
+            task,
+            session,
+            ladder,
+            trace,
+            knowledge,
+            task_index=0,
+            effort=effort,
+            budget=budget,
+            max_iterations=max_iterations,
+            localization=localization,
+            eval_skill=eval_skill,
+            cowabunga=cowabunga,
+            resume=task_resume,
+            checkpoint=checkpoint,
+            user_guidance=user_guidance if task_resume else None,
+            jump_premium=jump_premium if task_resume else False,
+        )
+        results = [result] if result is not None else []
 
-        # All tasks done — record it so a stray resume is a no-op, not a re-run.
-        session.set_status("running", task_index=len(tasks), task_total=len(tasks))
+        # Done — record it so a stray resume is a no-op, not a re-run.
+        session.set_status("running", task_index=1, task_total=1)
         session.write("trace.md", trace.summary())
         return results
-
-    @staticmethod
-    def _resume_start_index(session: Session, tasks: list[Task]) -> int:
-        """How many leading tasks are already finished.
-
-        The PRD is the source of truth: a task whose user story has all its
-        acceptance-criteria boxes ticked is done. Falls back to the positional
-        ``task_index`` in status when the PRD carries no checkboxes (e.g. a single
-        ``--task`` yaml run).
-        """
-        prd = session.read("prd.md")
-        done = prd_session.completed_story_ids(prd) if prd.strip() else set()
-        if not done:
-            return int(session.read_status().get("task_index") or 0)
-        start = 0
-        for task in tasks:
-            sid = prd_session.story_id(task.description)
-            if sid and sid in done:
-                start += 1
-            else:
-                break
-        return start
 
     def _plan_all_tasks(
         self,
@@ -707,23 +670,56 @@ class DirectStrategy(Strategy):
         return em.start_tier if em is not None else task.suggested_tier
 
 
+def _story_count(session: Session) -> int:
+    """How many ``US-NNN`` stories the session PRD carries (0 for a task-yaml run)."""
+    prd = session.read("prd.md")
+    return len(prd_session.user_story_titles(prd)) if prd.strip() else 0
+
+
+def _feature_name(session: Session, task: Task) -> str:
+    """Feature name for the single-shot loop header: PRD frontmatter ``feature`` if
+    present, else the task description's first line."""
+    prd = session.read("prd.md")
+    if prd.strip():
+        from splinter.agents.planner import _parse_frontmatter
+
+        fm, _ = _parse_frontmatter(prd)
+        feat = fm.get("feature")
+        if feat:
+            return str(feat)
+    first = task.description.strip().splitlines()
+    return first[0][:80] if first else "task"
+
+
+def _single_task_header(session: Session, task: Task, n_stories: int) -> str:
+    """``# Task: <feature> (<N> stories)`` — no ``1/N`` counter (single-shot)."""
+    feature = _feature_name(session, task)
+    suffix = f" ({n_stories} stories)" if n_stories > 1 else ""
+    return f"# Task: {feature}{suffix}\n\n"
+
+
 def _mark_story_done(session: Session, task: Task) -> None:
-    """Tick the task's user-story acceptance boxes in ``prd.md`` once it PASSes.
+    """Tick acceptance boxes in ``prd.md`` once the task PASSes.
 
     The PRD is the durable progress record: completed stories show ``- [x]`` so
-    both resume and the human can see what is finished. No-op for task-yaml runs
-    (no PRD / no ``US-NNN`` id) and when nothing changed.
+    both resume and the human can see what is finished. For a normal story task we
+    tick that story's boxes; for the raphael single-shot task (no leading ``US-NNN``
+    id) the verdict is holistic, so every story is ticked. No-op for task-yaml runs
+    (no PRD) and when nothing changed.
     """
-    sid = prd_session.story_id(task.description)
-    if not sid:
-        return
     prd = session.read("prd.md")
     if not prd.strip():
         return
-    updated = prd_session.mark_story_done(prd, sid)
+    sid = prd_session.story_id(task.description)
+    if sid:
+        updated = prd_session.mark_story_done(prd, sid)
+        label = f"{sid} acceptance criteria checked off (done)"
+    else:
+        updated = prd_session.mark_all_stories_done(prd)
+        label = "all stories' acceptance criteria checked off (holistic PASS)"
     if updated != prd:
         session.write("prd.md", updated)
-        log.info("PRD: %s acceptance criteria checked off (done)", sid)
+        log.info("PRD: %s", label)
 
 
 def _story_done(session: Session, task: Task) -> bool:
