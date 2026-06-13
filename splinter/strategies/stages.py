@@ -214,7 +214,7 @@ class RunStage(Stage):
             f"- cost: ${result.cost:.4f}",
         ]
         if ctx.corrections:
-            ctx._loop_lines.append(f"- corrections applied: {ctx.corrections[:200]}")
+            ctx._loop_lines.append(f"- corrections applied: {ctx.corrections}")
         return True
 
 

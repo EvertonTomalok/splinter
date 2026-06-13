@@ -33,7 +33,6 @@ log = logging.getLogger("splinter.final_eval")
 _DEFAULT_TIMEOUT = 120
 _DEFAULT_MODEL = "sonnet"
 _DEFAULT_VARIANT = "high"
-_OUTPUT_CAP = 2000
 
 
 @dataclass(frozen=True)
@@ -132,7 +131,7 @@ def _run_command(
             cwd=project_dir,
         )
         passed = proc.returncode == 0
-        output = (proc.stdout + proc.stderr).strip()[:_OUTPUT_CAP]
+        output = (proc.stdout + proc.stderr).strip()
     except subprocess.TimeoutExpired:
         passed = False
         output = "timed out"
@@ -196,12 +195,7 @@ def _skill_prompt(entry: FinalEvalEntry, task: "Task | None", eval_mode: bool) -
     task_accept = task.acceptance if task else ""
 
     if eval_mode:
-        return (
-            f"{skill_text}"
-            f"Task:\n{task_desc}\n\n"
-            f"Acceptance criteria:\n{task_accept}\n\n"
-            "Respond with VERDICT: PASS or VERDICT: RETRY and a brief reason."
-        )
+        return skill_text
     return (
         f"{skill_text}"
         f"Review whether the following task has been completed correctly.\n\n"

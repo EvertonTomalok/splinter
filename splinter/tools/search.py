@@ -61,7 +61,7 @@ def _is_git_repo(path: str) -> bool:
 
 def _error(tool: str, exc: BaseException) -> SearchResult:
     kind = type(exc).__name__
-    msg = str(exc).split("\n")[0][:120]
+    msg = str(exc)
     return SearchResult(
         output=f"[unavailable: {tool} failed ({kind}): {msg}]",
         tool=tool,
