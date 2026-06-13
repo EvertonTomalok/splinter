@@ -164,6 +164,12 @@ class RunStage(Stage):
             "same session" if ctx.oc_session else "new session",
         )
         log.info("  ▸ task: %s", ctx.task.description.splitlines()[0])
+        if ctx.corrections and "[USER GUIDANCE]" in ctx.corrections:
+            guidance_line = next(
+                (line for line in ctx.corrections.splitlines() if "[USER GUIDANCE]" in line), ""
+            )
+            if guidance_line:
+                log.info("  ▸ %s", guidance_line.strip())
         with agentic_scope(ctx.session, "run", ctx.task_index, ctx.iteration):
             result = run_task(
                 ctx.task,

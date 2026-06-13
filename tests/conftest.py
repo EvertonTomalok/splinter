@@ -13,3 +13,11 @@ def _clear_config_cache() -> None:
     invalidate_config_cache()
     yield
     invalidate_config_cache()
+
+
+@pytest.fixture(autouse=True)
+def _mock_cursor_list_models(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Prevent tests from spawning ``agent --list-models`` subprocess."""
+    from splinter.providers import cursor as _cursor
+
+    monkeypatch.setattr(_cursor, "list_models", lambda: ["cursor/test-model"])

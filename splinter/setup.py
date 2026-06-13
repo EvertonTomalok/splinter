@@ -6,7 +6,7 @@ import sys
 from typing import Callable
 
 from splinter.models.roster import load_ladder
-from splinter.providers import claude_cli, codex, opencode
+from splinter.providers import claude_cli, codex, cursor, opencode
 
 
 def _check(label: str, fn: Callable[[], tuple[bool, str]]) -> tuple[bool, str]:
@@ -21,6 +21,16 @@ def _check(label: str, fn: Callable[[], tuple[bool, str]]) -> tuple[bool, str]:
     except Exception as e:
         print(f"  {label} {'.' * max(1, 30 - len(label))} FALHA ({e})")
         return False, str(e)
+
+
+def _check_cursor() -> tuple[bool, str]:
+    path = shutil.which("agent")
+    if not path:
+        return False, "cursor agent CLI not found in PATH (install Cursor and run 'agent login')"
+    ok = cursor.ping()
+    if not ok:
+        return False, "agent -p did not respond (try 'agent login')"
+    return True, path
 
 
 def _check_codex() -> tuple[bool, str]:
@@ -94,6 +104,9 @@ def _check_rtk() -> tuple[bool, str]:
 def run_setup() -> int:
     print("checking providers...")
     results: list[bool] = []
+
+    ok, _ = _check("cursor agent CLI", _check_cursor)
+    results.append(ok)
 
     ok, _ = _check("codex exec (gpt-5-codex)", _check_codex)
     results.append(ok)

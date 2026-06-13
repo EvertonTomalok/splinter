@@ -12,11 +12,7 @@ from splinter.tui import ConfigureApp
 
 def test_loading_transition(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(
-        opencode,
-        "list_models",
-        lambda timeout=30: ["opencode-go/test-model"],
-    )
+    monkeypatch.setattr(opencode, "list_models", lambda timeout=30: ["opencode-go/test-model"])
 
     async def drive() -> None:
         app = ConfigureApp()
@@ -26,7 +22,7 @@ def test_loading_transition(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -
             rows = app.query_one("#rows")
             assert rows.loading is False
             assert app._models_by_provider
-            assert set(app._models_by_provider.keys()) == {"claude", "opencode", "codex"}
+            assert set(app._models_by_provider.keys()) == {"claude", "opencode", "codex", "cursor"}
 
     asyncio.run(drive())
 
@@ -56,11 +52,7 @@ def test_configure_saves_after_loading(
     from textual.widgets import Select
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(
-        opencode,
-        "list_models",
-        lambda timeout=30: ["opencode-go/test-model"],
-    )
+    monkeypatch.setattr(opencode, "list_models", lambda timeout=30: ["opencode-go/test-model"])
 
     async def drive() -> None:
         app = ConfigureApp()
@@ -88,11 +80,7 @@ def test_loading_state_before_fetch(
     from textual.containers import VerticalScroll
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(
-        opencode,
-        "list_models",
-        lambda timeout=30: ["opencode-go/test-model"],
-    )
+    monkeypatch.setattr(opencode, "list_models", lambda timeout=30: ["opencode-go/test-model"])
 
     barrier = threading.Barrier(2, timeout=5)
 
