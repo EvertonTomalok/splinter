@@ -21,3 +21,15 @@ def _mock_cursor_list_models(monkeypatch: pytest.MonkeyPatch) -> None:
     from splinter.providers import cursor as _cursor
 
     monkeypatch.setattr(_cursor, "list_models", lambda: ["cursor/test-model"])
+
+
+@pytest.fixture(autouse=True)
+def _mock_opencode_list_models(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Prevent tests from shelling out to ``opencode models``."""
+    from splinter.providers import opencode as _opencode
+
+    monkeypatch.setattr(
+        _opencode,
+        "list_models",
+        lambda timeout=30: ["opencode/test-model", "opencode-go/test-model", "openrouter/test/model"],
+    )

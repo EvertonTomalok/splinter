@@ -751,7 +751,7 @@ def test_available_models_by_provider_keys(
         assert not m.startswith("opencode") and not m.startswith("codex/")
     assert "opencode-go/foo" in result["opencode"]
     assert "opencode/bar" in result["opencode"]
-    assert "other/baz" not in result["opencode"]
+    assert "other/baz" in result["opencode"]
 
 
 def test_available_models_by_provider_isolates_failure(
