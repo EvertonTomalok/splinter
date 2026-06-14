@@ -98,12 +98,50 @@ def test_list_models_parses_output(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
     def fake_run(*args: object, **kwargs: object) -> SimpleNamespace:
-        return SimpleNamespace(stdout=sample, returncode=0)
+        return SimpleNamespace(stdout=sample, returncode=0, stderr="")
 
     monkeypatch.setattr(cursor_module.subprocess, "run", fake_run)
     models = _real_list_models()
     assert "cursor/auto" in models
     assert "cursor/gpt-5.3-codex" in models
     assert "cursor/claude-opus-4-8-high" in models
-    # all prefixed
     assert all(m.startswith("cursor/") for m in models)
+
+
+def test_fetch_pricing_inline_and_family(monkeypatch: pytest.MonkeyPatch) -> None:
+    sample = (
+        "auto - Auto · $3 in / $15 out\n"
+        "claude-opus-4-8-thinking-high - Opus 4.8 1M Thinking\n"
+        "gpt-5.3-codex-xhigh - Codex 5.3 Extra High\n"
+    )
+
+    def fake_run(*args: object, **kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(stdout=sample, returncode=0, stderr="")
+
+    monkeypatch.setattr(cursor_module.subprocess, "run", fake_run)
+    monkeypatch.setattr("splinter.models.public_pricing.fetch_public_pricing", lambda: {})
+    prices = cursor_module.fetch_pricing()
+    # Inline rate parsed from the description.
+    assert prices["cursor/auto"].input == pytest.approx(3.0)
+    # Variants priced from the family table (no inline rate in the listing).
+    assert prices["cursor/claude-opus-4-8-thinking-high"].input == pytest.approx(5.0)
+    assert prices["cursor/gpt-5.3-codex-xhigh"].output == pytest.approx(40.0)
+
+
+def test_fetch_pricing_cli_failure_still_prices_auto(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_run(*args: object, **kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(stdout="", returncode=1, stderr="401 Unauthorized")
+
+    monkeypatch.setattr(cursor_module.subprocess, "run", fake_run)
+    monkeypatch.setattr("splinter.models.public_pricing.fetch_public_pricing", lambda: {})
+    prices = cursor_module.fetch_pricing()
+    assert len(prices) > 0
+    assert "cursor/auto" in prices
+
+
+def test_cursor_provider_supports_pricing() -> None:
+    provider = CursorProvider()
+    assert provider.supports_pricing is True
+    assert hasattr(provider, "fetch_pricing")

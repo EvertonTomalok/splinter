@@ -398,6 +398,42 @@ def _cursor_models() -> list[str]:
         return ["cursor/auto"]
 
 
+def sync_prices() -> tuple[int, dict[str, str]]:
+    """Fetch live provider pricing and persist to ``.splinter/pricing.json``.
+
+    Returns ``(synced_model_count, per_provider_errors)``. Writes are immutable.
+    """
+    from splinter.models.pricing_store import load_store, merge, save_store
+    from splinter.providers.registry import fetch_all_pricing
+
+    fetched, failures = fetch_all_pricing()
+    existing = load_store()
+    merged = merge(existing, fetched)
+    save_store(merged)
+    return len(fetched), failures
+
+
+def unpriced_models(model_ids: list[str]) -> list[str]:
+    """Return non-OpenCode models with missing or zero synced pricing."""
+    from splinter.models.pricing_store import load_store
+    from splinter.models.roster import provider_for
+
+    store = load_store()
+    missing: list[str] = []
+    for model_id in model_ids:
+        if provider_for(model_id) == "opencode":
+            continue
+        price = store.get(model_id)
+        if price is None:
+            for prefix, candidate in store.items():
+                if model_id.startswith(prefix):
+                    price = candidate
+                    break
+        if price is None or (price.input <= 0 and price.output <= 0):
+            missing.append(model_id)
+    return sorted(missing)
+
+
 def available_models() -> list[str]:
     """All selectable model ids: claude + opencode + ladder + codex + cursor."""
     from splinter.models.roster import load_ladder
@@ -743,6 +779,7 @@ def run_configure(
     interactive: bool | None = None,
     use_default: bool = False,
     use_cc_only: bool = False,
+    sync_prices_flag: bool = False,
 ) -> int:
     if use_cc_only:
         return _swap_config("config.claude.yaml")
@@ -755,10 +792,17 @@ def run_configure(
 
     _before = set(list_sessions())
 
-    if interactive is None:
-        interactive = sys.stdin.isatty() and sys.stdout.isatty()
-
     try:
+        if sync_prices_flag:
+            count, failures = sync_prices()
+            print(f"synced {count} model price(s) to .splinter/pricing.json")
+            for provider, err in sorted(failures.items()):
+                print(f"  {provider}: {err}")
+            return 0
+
+        if interactive is None:
+            interactive = sys.stdin.isatty() and sys.stdout.isatty()
+
         # Interactive with no direct flags → open the model-selection TUI, which
         # writes config.yaml itself on save.
         if interactive and not gate_checks and not init_prompts and timeout is None:

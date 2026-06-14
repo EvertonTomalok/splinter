@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from splinter.procreg import run_subprocess
-from splinter.providers.base import ModelProvider, ProviderResponse
+from splinter.providers.base import ModelPrice, ModelProvider, ProviderResponse
 
 _stream_log = logging.getLogger("splinter.live")
 _log = logging.getLogger("splinter.providers")
@@ -31,21 +31,75 @@ _EFFORT_ALIASES: dict[str, str | None] = {
     "max": "xhigh",
 }
 
-# $/1M tokens — input, output (confirmed model id: gpt-5-codex; rates for US-005)
+# Bootstrap seed USD/MTok — used when the public catalogue has no entry.
 _PRICING: dict[str, tuple[float, float]] = {
     "gpt-5-codex": (10.00, 40.00),
+    "gpt-5.5": (12.00, 48.00),
+    "gpt-5.4": (10.00, 40.00),
+    "gpt-5.4-mini": (2.00, 8.00),
+    "gpt-5.3-codex": (10.00, 40.00),
+    "gpt-5.2": (8.00, 32.00),
+    "codex-auto-review": (5.00, 20.00),
 }
+
+
+def _seed_price(model: str) -> ModelPrice | None:
+    bare = _strip_prefix(model)
+    if bare in _PRICING:
+        inp, out = _PRICING[bare]
+        return ModelPrice(input=inp, output=out)
+    return None
+
+
+def _lookup_price(model: str) -> ModelPrice | None:
+    from splinter.models.pricing_store import price_for
+
+    candidates = [model]
+    if not model.startswith("codex/"):
+        candidates.append(f"codex/{model}")
+    for candidate in candidates:
+        synced = price_for(candidate)
+        if synced is not None and (synced.input > 0 or synced.output > 0):
+            return synced
+    return _seed_price(model)
 
 
 def _calc_cost(model: str, tokens: dict[str, int]) -> tuple[float, bool]:
     """Return (cost_usd, indeterminate). indeterminate=True when model not in pricing table."""
-    prices = _PRICING.get(model)
-    if not prices:
+    price = _lookup_price(model)
+    if price is None or (price.input <= 0 and price.output <= 0):
         _log.warning("cost indeterminate: unknown model %r not in pricing table", model)
         return 0.0, True
-    inp = tokens.get("input", 0) or 0
-    out = tokens.get("output", 0) or 0
-    return (inp * prices[0] + out * prices[1]) / 1_000_000, False
+    inp = int(tokens.get("input", 0) or 0)
+    out = int(tokens.get("output", 0) or 0)
+    cached = int(tokens.get("cached_input", 0) or 0)
+    cost = (
+        inp * price.input + out * price.output + cached * price.cache_read
+    ) / 1_000_000
+    return cost, False
+
+
+def fetch_pricing() -> dict[str, ModelPrice]:
+    """Return Codex model pricing (USD/MTok). No API key required.
+
+    Pulls rates from the public pricing catalogue when reachable, falling back
+    to the bundled seed rates for any model the catalogue doesn't list (and for
+    every model when the network is unavailable). Keys are ``codex/``-prefixed.
+    """
+    from splinter.models.public_pricing import fetch_public_pricing, public_price_for
+
+    catalog: dict[str, ModelPrice] = {}
+    try:
+        catalog = fetch_public_pricing()
+    except RuntimeError as exc:
+        _log.warning("public pricing unavailable (%s); using seed rates", exc)
+
+    prices: dict[str, ModelPrice] = {}
+    for bare, (inp, out) in _PRICING.items():
+        public = public_price_for(bare, catalog)
+        price = public if public is not None else ModelPrice(input=inp, output=out)
+        prices[f"codex/{bare}"] = price
+    return prices
 
 
 def _normalize_effort(effort: str | None) -> str | None:
@@ -188,6 +242,7 @@ class CodexProvider(ModelProvider):
     """Routes runs through ``codex exec``; ``variant`` maps onto ``model_reasoning_effort``."""
 
     name = "codex"
+    supports_pricing = True
 
     def run(
         self,
@@ -217,3 +272,6 @@ class CodexProvider(ModelProvider):
             session_id=result.session_id,
             cost_indeterminate=result.cost_indeterminate,
         )
+
+    def fetch_pricing(self) -> dict[str, ModelPrice]:
+        return fetch_pricing()

@@ -2990,6 +2990,16 @@ class ConfigureApp(App[bool]):
     .gate-lang { width: 18; height: 3; margin-left: 1; }
     .gate-del { width: 10; height: 3; margin-left: 1; }
     .gate-add-input { width: 1fr; height: 3; margin-right: 1; }
+    #sync-bar {
+        height: auto;
+        min-height: 3;
+        padding: 0 1;
+        margin-bottom: 1;
+        align: left middle;
+    }
+    #sync-prices { width: auto; margin-left: 1; }
+    #sync-status { width: 1fr; height: auto; color: $text-muted; margin-right: 1; }
+    #unpriced-banner { width: auto; color: $warning; text-style: bold; margin-right: 1; }
     """
 
     BINDINGS = [
@@ -3023,6 +3033,7 @@ class ConfigureApp(App[bool]):
         self._gate_checks: list[dict[str, str]] = copy.deepcopy(
             load_config().get("gate_checks") or DEFAULT_CONFIG["gate_checks"]
         )
+        self._sync_message = ""
 
     @staticmethod
     def _select(
@@ -3212,7 +3223,9 @@ class ConfigureApp(App[bool]):
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         bid = event.button.id or ""
-        if bid == "gate_preset":
+        if bid == "sync-prices":
+            self._do_sync_prices()
+        elif bid == "gate_preset":
             self.push_screen(_GateLangModal(), self._on_lang_picked)
         elif bid == "gate_add":
             self._capture_gates()
@@ -3283,6 +3296,17 @@ class ConfigureApp(App[bool]):
             )
 
         yield Header()
+        yield Horizontal(
+            Static("", id="unpriced-banner"),
+            Static("", id="sync-status"),
+            Button(
+                "Sync prices",
+                id="sync-prices",
+                variant="primary",
+                tooltip="Fetch current pricing from public endpoints (no API key) and save to .splinter/pricing.json",
+            ),
+            id="sync-bar",
+        )
         yield _PinnedVerticalScroll(*rows, self._gates_section(), id="rows")
         yield Footer()
 
@@ -3473,6 +3497,39 @@ class ConfigureApp(App[bool]):
                     w.remove()
                 event.stop()
 
+    def _do_sync_prices(self) -> None:
+        from splinter.configure import sync_prices
+
+        count, failures = sync_prices()
+        parts = [f"synced {count} price(s)"]
+        for provider, err in sorted(failures.items()):
+            parts.append(f"{provider}: {err}")
+        self._sync_message = " · ".join(parts)
+        self._refresh_pricing_ui()
+
+    def _refresh_pricing_ui(self) -> None:
+        try:
+            self.query_one("#sync-status", Static).update(self._sync_message)
+        except Exception:
+            pass
+        self._update_unpriced_banner()
+
+    def _update_unpriced_banner(self) -> None:
+        from splinter.configure import unpriced_models
+
+        all_models = sorted({m for models in self._models_by_provider.values() for m in models})
+        missing = unpriced_models(all_models)
+        try:
+            banner = self.query_one("#unpriced-banner", Static)
+            if missing:
+                banner.update("novos modelos — sincronizar preços")
+                banner.display = True
+            else:
+                banner.update("")
+                banner.display = False
+        except Exception:
+            pass
+
     def _fetch_models(self) -> None:
         from splinter.configure import available_models_by_provider
 
@@ -3517,6 +3574,7 @@ class ConfigureApp(App[bool]):
         for row in reversed(rows):
             rows_container.mount(row, before=gates_widget)
         rows_container.loading = False
+        self._update_unpriced_banner()
 
     def action_save(self) -> None:
         from splinter.configure import (

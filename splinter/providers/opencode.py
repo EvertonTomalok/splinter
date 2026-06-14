@@ -298,9 +298,14 @@ def _extract_cost(raw: dict[str, Any]) -> tuple[float, bool]:
 
 
 class OpencodeProvider(ModelProvider):
-    """Routes runs through ``opencode run`` with ``--variant`` and session reuse."""
+    """Routes runs through ``opencode run`` with ``--variant`` and session reuse.
+
+    OpenCode does not implement ``fetch_pricing`` — billed cost is returned in the
+    run JSON payload via :func:`_extract_cost` (USD per call, not MTok lookup).
+    """
 
     name = "opencode"
+    supports_pricing = False
 
     def run(
         self,

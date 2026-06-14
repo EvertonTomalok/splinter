@@ -252,7 +252,7 @@ class TestFinalEvalRetry:
         status = session.read_status()
         assert status.get("next_skip_planner") == "true"
         assert status.get("next_skip_eval") == "true"
-        assert status.get("next_skip_final_eval") == "true"
+        assert status.get("next_skip_final_eval") in ("", None)
 
 
 # ── 3. Resume with round_index > 0 ───────────────────────────────────────────

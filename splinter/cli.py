@@ -286,6 +286,9 @@ def configure(
             help="Activate config.claude.yaml (Claude-only runners)",
         ),
     ] = False,
+    sync_prices: Annotated[
+        bool, typer.Option("--sync-prices", help="Fetch and save live model pricing")
+    ] = False,
 ) -> None:
     """Pick per-step models in a TUI (default), then write config.yaml."""
     from splinter.configure import run_configure
@@ -299,6 +302,7 @@ def configure(
             interactive=False if no_interactive else None,
             use_default=use_default,
             use_cc_only=use_cc_only,
+            sync_prices_flag=sync_prices,
         )
     )
 

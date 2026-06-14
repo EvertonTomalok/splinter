@@ -14,6 +14,7 @@ from splinter.providers.codex import (
     _normalize_effort,
     _parse_jsonl,
     _strip_prefix,
+    fetch_pricing,
 )
 
 # ── _parse_jsonl ─────────────────────────────────────────────────────────────
@@ -86,7 +87,9 @@ def test_parse_jsonl_invalid_lines_skipped() -> None:
 # ── _calc_cost ───────────────────────────────────────────────────────────────
 
 
-def test_calc_cost_known_model() -> None:
+def test_calc_cost_known_model(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Isolate from any local .splinter/pricing.json so the seed rate is used.
+    monkeypatch.chdir(tmp_path)
     tokens = {"input": 1_000_000, "output": 1_000_000}
     cost, indeterminate = _calc_cost("gpt-5-codex", tokens)
     assert cost == pytest.approx(50.0)
@@ -487,3 +490,41 @@ def test_dispatch_run_provider_session_routes_codex(monkeypatch: pytest.MonkeyPa
     assert resp.text == "full-resp"
     assert resp.cost == pytest.approx(0.05)
     assert sid == "sid-xyz"
+
+
+def test_fetch_pricing_uses_public_catalog(monkeypatch: pytest.MonkeyPatch) -> None:
+    from splinter.providers.base import ModelPrice
+
+    monkeypatch.setattr(
+        "splinter.models.public_pricing.fetch_public_pricing",
+        lambda: {"gpt-5-codex": ModelPrice(input=2.5, output=10.0)},
+    )
+    prices = fetch_pricing()
+    assert prices["codex/gpt-5-codex"].input == pytest.approx(2.5)
+
+
+def test_fetch_pricing_falls_back_to_seed_when_public_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _boom() -> dict[str, object]:
+        raise RuntimeError("offline")
+
+    monkeypatch.setattr("splinter.models.public_pricing.fetch_public_pricing", _boom)
+    prices = fetch_pricing()
+    assert "codex/gpt-5-codex" in prices
+    assert prices["codex/gpt-5-codex"].input == pytest.approx(10.0)
+
+
+def test_fetch_pricing_needs_no_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr("splinter.models.public_pricing.fetch_public_pricing", lambda: {})
+    prices = fetch_pricing()
+    assert "codex/gpt-5-codex" in prices
+
+
+def test_opencode_has_no_fetch_pricing() -> None:
+    from splinter.providers.opencode import OpencodeProvider
+
+    provider = OpencodeProvider()
+    assert provider.supports_pricing is False
+    assert not hasattr(provider, "fetch_pricing")

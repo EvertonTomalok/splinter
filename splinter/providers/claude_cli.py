@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from splinter.procreg import run_subprocess
-from splinter.providers.base import ModelProvider, ProviderResponse
+from splinter.providers.base import ModelPrice, ModelProvider, ProviderResponse
 
 # Child of "splinter" so the run-pane log handler surfaces these live.
 _stream_log = logging.getLogger("splinter.live")
@@ -28,26 +28,102 @@ class ClaudeResult:
 _CLI_EFFORTS = {"low", "medium", "high", "xhigh", "max"}
 _EFFORT_ALIASES = {"minimal": "low", "auto": None}
 
-# $/1M tokens — input, output
+# Bootstrap seed USD/MTok (input, output) — used when the public catalogue has
+# no entry for a model id. Cache tiers are derived in fetch_pricing.
 _PRICING: dict[str, tuple[float, float]] = {
-    "haiku": (0.25, 1.25),
-    "claude-haiku-4-5": (0.25, 1.25),
+    "haiku": (1.00, 5.00),
+    "claude-haiku-4-5": (1.00, 5.00),
     "sonnet": (3.00, 15.00),
     "claude-sonnet-4-6": (3.00, 15.00),
     "opus": (5.00, 25.00),
     "claude-opus-4-8": (5.00, 25.00),
 }
 
+# Public-catalogue ids to try for each seed alias (exact match only).
+_PUBLIC_ALIASES: dict[str, tuple[str, ...]] = {
+    "haiku": ("claude-haiku-4-5",),
+    "sonnet": ("claude-sonnet-4-6",),
+    "opus": ("claude-opus-4-8",),
+}
+
+def _seed_price(model: str) -> ModelPrice | None:
+    if model in _PRICING:
+        inp, out = _PRICING[model]
+        return ModelPrice(input=inp, output=out)
+    for prefix, prices in _PRICING.items():
+        if model.startswith(prefix):
+            return ModelPrice(input=prices[0], output=prices[1])
+    return None
+
+
+def _with_derived_cache(price: ModelPrice) -> ModelPrice:
+    """Fill cache tiers from base rates when the source omits them.
+
+    Anthropic cache reads bill at ~0.1x input and 5-minute writes at ~1.25x.
+    """
+    if price.cache_read > 0 or price.cache_write > 0:
+        return price
+    return ModelPrice(
+        input=price.input,
+        output=price.output,
+        cache_read=round(price.input * 0.1, 6),
+        cache_write=round(price.input * 1.25, 6),
+    )
+
+
+def _lookup_price(model: str) -> ModelPrice | None:
+    from splinter.models.pricing_store import price_for
+
+    synced = price_for(model)
+    if synced is not None and (synced.input > 0 or synced.output > 0):
+        return synced
+    return _seed_price(model)
+
 
 def _calc_cost(model: str, usage: dict[str, Any]) -> tuple[float, bool]:
     """Return (cost_usd, indeterminate). indeterminate=True when model not in pricing table."""
-    prices = _PRICING.get(model)
-    if not prices:
+    price = _lookup_price(model)
+    if price is None or (price.input <= 0 and price.output <= 0):
         _log.warning("cost indeterminate: unknown model %r not in pricing table", model)
         return 0.0, True
-    inp = usage.get("input_tokens", 0) or 0
-    out = usage.get("output_tokens", 0) or 0
-    return (inp * prices[0] + out * prices[1]) / 1_000_000, False
+    inp = int(usage.get("input_tokens", 0) or 0)
+    out = int(usage.get("output_tokens", 0) or 0)
+    cache_read = int(
+        usage.get("cache_read_input_tokens", 0)
+        or usage.get("cached_input_tokens", 0)
+        or 0
+    )
+    cache_write = int(usage.get("cache_creation_input_tokens", 0) or 0)
+    cost = (
+        inp * price.input
+        + out * price.output
+        + cache_read * price.cache_read
+        + cache_write * price.cache_write
+    ) / 1_000_000
+    return cost, False
+
+
+def fetch_pricing() -> dict[str, ModelPrice]:
+    """Return Anthropic model pricing (USD/MTok). No API key required.
+
+    Pulls rates from the public pricing catalogue when reachable, falling back
+    to the bundled seed rates for any model the catalogue doesn't list (and for
+    every model when the network is unavailable).
+    """
+    from splinter.models.public_pricing import fetch_public_pricing, public_price_for
+
+    catalog: dict[str, ModelPrice] = {}
+    try:
+        catalog = fetch_public_pricing()
+    except RuntimeError as exc:
+        _log.warning("public pricing unavailable (%s); using seed rates", exc)
+
+    prices: dict[str, ModelPrice] = {}
+    for alias, (inp, out) in _PRICING.items():
+        public = public_price_for(alias, catalog, aliases=_PUBLIC_ALIASES.get(alias, ()))
+        price = public if public is not None else ModelPrice(input=inp, output=out)
+        prices[alias] = _with_derived_cache(price)
+    return prices
 
 
 def _normalize_effort(effort: str | None) -> str | None:
@@ -247,6 +323,7 @@ class ClaudeProvider(ModelProvider):
     """Routes runs through ``claude -p``; ``variant`` maps onto ``--effort``."""
 
     name = "claude"
+    supports_pricing = True
 
     def run(
         self,
@@ -287,3 +364,6 @@ class ClaudeProvider(ModelProvider):
             session_id=result.raw.get("_session_id") or None,
             cost_indeterminate=cost_indeterminate,
         )
+
+    def fetch_pricing(self) -> dict[str, ModelPrice]:
+        return fetch_pricing()
