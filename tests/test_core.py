@@ -3983,10 +3983,14 @@ def test_codex_calc_cost_unknown_model_warns_and_flags(caplog: pytest.LogCapture
     assert any("indeterminate" in r.message.lower() for r in caplog.records)
 
 
-def test_codex_calc_cost_known_model_returns_correct_cost() -> None:
+def test_codex_calc_cost_known_model_returns_correct_cost(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Known codex model produces (cost, False)."""
     from splinter.providers.codex import _calc_cost
 
+    # Isolate from any local .splinter/pricing.json so the seed rate is used.
+    monkeypatch.chdir(tmp_path)
     cost, indeterminate = _calc_cost("gpt-5-codex", {"input": 1_000_000, "output": 0})
     assert indeterminate is False
     assert cost == pytest.approx(10.00)

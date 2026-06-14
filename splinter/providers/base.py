@@ -12,7 +12,17 @@ from __future__ import annotations
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Protocol, runtime_checkable
+
+
+@dataclass(frozen=True)
+class ModelPrice:
+    """USD per million tokens (MTok) for input, output, and cache tiers."""
+
+    input: float
+    output: float
+    cache_read: float = 0.0
+    cache_write: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -45,6 +55,16 @@ class ModelProvider(ABC):
         agent: str = "build",
     ) -> ProviderResponse:
         """Execute ``prompt`` against ``model`` and return a normalised response."""
+        ...
+
+
+@runtime_checkable
+class PriceableProvider(Protocol):
+    """Provider that can fetch live per-model pricing (USD/MTok)."""
+
+    supports_pricing: ClassVar[bool]
+
+    def fetch_pricing(self) -> dict[str, ModelPrice]:
         ...
 
 

@@ -31,5 +31,9 @@ def _mock_opencode_list_models(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         _opencode,
         "list_models",
-        lambda timeout=30: ["opencode/test-model", "opencode-go/test-model", "openrouter/test/model"],
+        lambda timeout=30: [
+            "opencode/test-model",
+            "opencode-go/test-model",
+            "openrouter/test/model",
+        ],
     )

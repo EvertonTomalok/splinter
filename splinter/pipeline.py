@@ -25,6 +25,25 @@ DEFAULT_STRATEGY = "cascade"
 
 log = logging.getLogger("splinter.pipeline")
 
+
+def _warn_ladder_pricing(ladder: Ladder) -> None:
+    from splinter.models.pricing import warn_missing_model_pricing
+
+    models = [
+        ladder.planner_model,
+        ladder.prd_model,
+        ladder.eval_model,
+        ladder.localizer_recall_model,
+        ladder.localizer_recall_large_model,
+        ladder.localizer_precision_model,
+        ladder.localizer_recall_fallback_model,
+    ]
+    for tier in ladder.tiers:
+        models.extend(tier.models)
+    for model_id in dict.fromkeys(models):
+        warn_missing_model_pricing(model_id)
+
+
 #: Substrings in an error that mark it transient (retry/continue, don't roll back).
 _TRANSIENT_MARKERS = (
     "429",
@@ -442,6 +461,7 @@ def run_pipeline(
         )
         _eff = _next_runner_effort or "high"
         log.info("runtime: runner tiers rewritten to %s @ %s", _next_runner_model, _eff)
+    _warn_ladder_pricing(ladder)
     if any(
         [
             _next_planner_model,
@@ -744,7 +764,6 @@ def run_pipeline(
             ask_corrections=val_exc.summary,
             next_skip_planner="true",
             next_skip_eval="true",
-            next_skip_final_eval="true",
         )
         log.info("run paused — awaiting manual validation")
         print(f"run complete — awaiting manual validation.\n{val_exc.summary}")

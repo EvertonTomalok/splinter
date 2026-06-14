@@ -101,7 +101,14 @@ def run_text(
     task_index: int = 0,
     role: str = "run",
 ) -> str:
-    """Run ``prompt`` on ``model``'s backend and return the response text."""
+    """Run ``prompt`` on ``model``'s backend and return the response text.
+
+    Warn-only: when a non-OpenCode model has no synced pricing, logs a warning
+    naming the model and provider but still runs (no block/abort).
+    """
+    from splinter.models.pricing import warn_missing_model_pricing
+
+    warn_missing_model_pricing(model)
     provider = get_provider(provider_for(model))
     try:
         resp = provider.run(

@@ -106,3 +106,24 @@ def test_loading_state_before_fetch(
             assert app._models_by_provider
 
     asyncio.run(drive())
+
+
+def test_configure_sync_button(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(opencode, "list_models", lambda timeout=30: ["opencode-go/test-model"])
+    monkeypatch.setattr(
+        "splinter.configure.sync_prices",
+        lambda: (3, {"cursor": "agent down"}),
+    )
+
+    async def drive() -> None:
+        app = ConfigureApp()
+        async with app.run_test(size=(160, 40)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            await pilot.click("#sync-prices")
+            await pilot.pause()
+            assert "synced 3" in app._sync_message
+            assert "cursor: agent down" in app._sync_message
+
+    asyncio.run(drive())

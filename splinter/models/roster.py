@@ -7,6 +7,8 @@ from typing import Any
 
 import yaml
 
+from splinter.providers.base import ModelPrice
+
 CODEX_MODELS: dict[str, str] = {
     "gpt55": "codex/gpt-5.5",
     "gpt54": "codex/gpt-5.4",
@@ -36,6 +38,7 @@ class Tier:
     models: list[str]
     provider: str = "opencode"
     variants: dict[str, str | None] = field(default_factory=dict)
+    pricing: dict[str, ModelPrice] = field(default_factory=dict)
 
 
 @dataclass
@@ -75,6 +78,7 @@ class Ladder:
     localizer_recall_large_timeout: int = 3600
     localizer_precision_timeout: int = 3600
     tier_timeouts: dict[int, int] = field(default_factory=dict)
+    model_prices: dict[str, ModelPrice] = field(default_factory=dict)
 
     def tier_variant(self, level: int) -> str | None:
         return self.tier_variants.get(level)
@@ -215,7 +219,22 @@ def load_ladder(raw: dict[str, Any] | None = None) -> Ladder:
             ladder.tier_variants[td["level"]] = td["variant"]
 
     _apply_config_overrides(ladder)
+    _attach_synced_pricing(ladder)
     return ladder
+
+
+def _attach_synced_pricing(ladder: Ladder) -> None:
+    from splinter.models.pricing_store import price_for
+
+    ladder.model_prices = {}
+    for tier in ladder.tiers:
+        tier_pricing: dict[str, ModelPrice] = {}
+        for model_id in tier.models:
+            p = price_for(model_id)
+            if p is not None:
+                tier_pricing[model_id] = p
+                ladder.model_prices[model_id] = p
+        tier.pricing = tier_pricing
 
 
 def _project_config() -> dict[str, Any]:
