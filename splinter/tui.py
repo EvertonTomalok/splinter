@@ -24,6 +24,7 @@ from textual.app import App, ComposeResult, SystemCommand
 from textual.binding import Binding
 from textual.command import DiscoveryHit, Hit, Hits
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.geometry import Offset
 from textual.reactive import reactive
 from textual.screen import ModalScreen
 from textual.system_commands import SystemCommandsProvider
@@ -2919,6 +2920,21 @@ def run_with_tui(run_kwargs: dict[str, Any], session: Session | None = None) -> 
 # --- configure -------------------------------------------------------------
 
 
+class _PinnedVerticalScroll(VerticalScroll):
+    """Scroll container that never auto-scrolls to reveal a focused/highlighted
+    descendant. Textual would otherwise call ``scroll_to_region`` (via
+    ``Screen.scroll_to_center`` → ``Widget.scroll_to_widget``) whenever a child
+    gains focus — e.g. selecting a model in the overlay jumps the list to the
+    bottom. Manual scrolling (mouse wheel, PageUp/Down, arrows) goes through
+    ``scroll_to``/``scroll_relative`` and is unaffected."""
+
+    def scroll_to_region(self, *args: Any, **kwargs: Any) -> Offset:  # type: ignore[override]
+        return Offset(0, 0)
+
+    def scroll_to_widget(self, *args: Any, **kwargs: Any) -> bool:  # type: ignore[override]
+        return False
+
+
 class ConfigureApp(App[bool]):
     """Pick a model per pipeline step, then write config.yaml on save."""
 
@@ -2941,6 +2957,8 @@ class ConfigureApp(App[bool]):
     .model-trigger { width: 1fr; height: 3; }
     .model-state { display: none; }
     .model-float {
+        overlay: screen;
+        constrain: inside;
         width: 60%;
         height: auto;
         background: $surface;
@@ -3265,7 +3283,7 @@ class ConfigureApp(App[bool]):
             )
 
         yield Header()
-        yield VerticalScroll(*rows, self._gates_section(), id="rows")
+        yield _PinnedVerticalScroll(*rows, self._gates_section(), id="rows")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -3345,13 +3363,18 @@ class ConfigureApp(App[bool]):
         if label:
             try:
                 st = self.query_one(f"#{sid}", OptionList)
-                for i in range(st.option_count):
-                    so = st.get_option_at_index(i)
-                    if so is not None and str(getattr(so, "prompt", "")) == label:
-                        st.highlighted = i
-                        break
+                st.clear_options()
+                st.add_option(label)
+                st.highlighted = 0
             except Exception:
                 pass
+        try:
+            trigger = self.query_one(f"#{sid}__trigger", Button)
+            # scroll_visible=False: keep the viewport put. Focusing the trigger
+            # otherwise scrolls #rows to reveal it, jumping the list to the end.
+            trigger.focus(scroll_visible=False)
+        except Exception:
+            pass
         self._dismiss_model_overlay(sid)
 
     def _show_model_overlay(self, sid: str) -> None:
@@ -3404,9 +3427,23 @@ class ConfigureApp(App[bool]):
 
     def _dismiss_model_overlay(self, sid: str) -> None:
         try:
+            y = self.query_one("#rows", VerticalScroll).scroll_y
+        except Exception:
+            y = None
+
+        try:
             self.query_one(f"#{sid}__overlay").remove()
         except Exception:
             pass
+
+        if y is not None:
+            def _restore_scroll() -> None:
+                try:
+                    self.query_one("#rows", VerticalScroll).scroll_to(y=y, animate=False)
+                except Exception:
+                    pass
+
+            self.set_timer(0, _restore_scroll)
 
     def on_input_changed(self, event: Input.Changed) -> None:
         eid = event.input.id or ""
