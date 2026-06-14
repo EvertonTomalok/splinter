@@ -3056,17 +3056,14 @@ class ConfigureApp(App[bool]):
             id=f"{sid}__filter",
             classes="model-state",
         )
-        model_opts = self._model_opts_for(prov, "")
+        cur_model_str = str(model) if model and isinstance(model, str) else ""
         model_list = OptionList(
-            *[opt[0] for opt in model_opts],
+            *([cur_model_str] if cur_model_str else []),
             id=sid,
             classes="model-state",
         )
-        if model and isinstance(model, str):
-            for i, (label, _value) in enumerate(model_opts):
-                if label == model:
-                    model_list.highlighted = i
-                    break
+        if cur_model_str:
+            model_list.highlighted = 0
         model_panel = Vertical(trigger, hidden_filter, model_list, classes="model-panel")
         effort_sel = self._select(
             effort_opts,
