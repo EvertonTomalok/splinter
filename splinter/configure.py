@@ -406,11 +406,7 @@ def available_models() -> list[str]:
     try:
         from splinter.providers import opencode
 
-        models.update(
-            m
-            for m in opencode.list_models()
-            if m.startswith("opencode-go/") or m.startswith("opencode/")
-        )
+        models.update(opencode.list_models())
     except Exception:
         pass
     models.update(load_ladder().all_model_ids())
@@ -446,11 +442,7 @@ def available_models_by_provider() -> dict[str, list[str]]:
         try:
             from splinter.providers import opencode
 
-            return [
-                m
-                for m in opencode.list_models()
-                if m.startswith("opencode-go/") or m.startswith("opencode/")
-            ]
+            return list(opencode.list_models())
         except Exception:
             return []
 
