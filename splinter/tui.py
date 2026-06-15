@@ -3461,6 +3461,7 @@ class ConfigureApp(App[bool]):
             pass
 
         if y is not None:
+
             def _restore_scroll() -> None:
                 try:
                     self.query_one("#rows", VerticalScroll).scroll_to(y=y, animate=False)
@@ -3522,7 +3523,7 @@ class ConfigureApp(App[bool]):
         try:
             banner = self.query_one("#unpriced-banner", Static)
             if missing:
-                banner.update("novos modelos — sincronizar preços")
+                banner.update("new model prices availabe — sync it")
                 banner.display = True
             else:
                 banner.update("")
@@ -4293,9 +4294,7 @@ class PrdSessionApp(App[int | None]):
 
         seed = draft or None if not self.claude_session else None
         try:
-            turn = prd_session.revise_final(
-                instructions, resume=self.claude_session, prd_text=seed
-            )
+            turn = prd_session.revise_final(instructions, resume=self.claude_session, prd_text=seed)
             prd = prd_session.ensure_frontmatter(
                 turn.text, description=self._desc, strategy=self.strategy
             )
@@ -4839,6 +4838,7 @@ def resume_session(session_id: str | None, *, reset: bool = False) -> int:
 
     sid = session_id
     if sid is None:
+
         def _has_run_checkpoint(s: Session) -> bool:
             return bool(
                 s.read("run_checkpoint.json").strip()

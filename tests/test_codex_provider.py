@@ -492,24 +492,40 @@ def test_dispatch_run_provider_session_routes_codex(monkeypatch: pytest.MonkeyPa
     assert sid == "sid-xyz"
 
 
-def test_fetch_pricing_uses_public_catalog(monkeypatch: pytest.MonkeyPatch) -> None:
-    from splinter.providers.base import ModelPrice
-
+def test_fetch_pricing_enumerates_live_codex_ids(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        "splinter.models.public_pricing.fetch_public_pricing",
-        lambda: {"gpt-5-codex": ModelPrice(input=2.5, output=10.0)},
+        "splinter.models.public_pricing.fetch_public_catalog",
+        lambda: {
+            "gpt-5-codex": {
+                "litellm_provider": "openai",
+                "input_cost_per_token": 2.5e-06,
+                "output_cost_per_token": 10e-06,
+            },
+            "gpt-5.9-codex": {  # a brand-new id, no code change needed
+                "litellm_provider": "openai",
+                "input_cost_per_token": 4e-06,
+                "output_cost_per_token": 16e-06,
+            },
+            "claude-opus-4-8": {  # different provider — excluded
+                "litellm_provider": "anthropic",
+                "input_cost_per_token": 5e-06,
+                "output_cost_per_token": 25e-06,
+            },
+        },
     )
     prices = fetch_pricing()
     assert prices["codex/gpt-5-codex"].input == pytest.approx(2.5)
+    assert prices["codex/gpt-5.9-codex"].output == pytest.approx(16.0)
+    assert "codex/claude-opus-4-8" not in prices
 
 
 def test_fetch_pricing_falls_back_to_seed_when_public_unavailable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def _boom() -> dict[str, object]:
+    def _boom() -> dict[str, dict]:
         raise RuntimeError("offline")
 
-    monkeypatch.setattr("splinter.models.public_pricing.fetch_public_pricing", _boom)
+    monkeypatch.setattr("splinter.models.public_pricing.fetch_public_catalog", _boom)
     prices = fetch_pricing()
     assert "codex/gpt-5-codex" in prices
     assert prices["codex/gpt-5-codex"].input == pytest.approx(10.0)
@@ -517,7 +533,7 @@ def test_fetch_pricing_falls_back_to_seed_when_public_unavailable(
 
 def test_fetch_pricing_needs_no_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.setattr("splinter.models.public_pricing.fetch_public_pricing", lambda: {})
+    monkeypatch.setattr("splinter.models.public_pricing.fetch_public_catalog", lambda: {})
     prices = fetch_pricing()
     assert "codex/gpt-5-codex" in prices
 

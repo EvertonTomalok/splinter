@@ -414,23 +414,47 @@ def sync_prices() -> tuple[int, dict[str, str]]:
 
 
 def unpriced_models(model_ids: list[str]) -> list[str]:
-    """Return non-OpenCode models with missing or zero synced pricing."""
+    """Return models with available but not-yet-synced pricing.
+
+    Only models that have a known seed price (from the provider's bundled
+    pricing table) or that belong to a provider whose ``fetch_pricing`` can
+    return live rates are considered.  Models that genuinely have no known
+    pricing source are silently excluded.
+    """
     from splinter.models.pricing_store import load_store
     from splinter.models.roster import provider_for
+    from splinter.providers.claude_cli import _seed_price as claude_seed
+    from splinter.providers.codex import _seed_price as codex_seed
 
     store = load_store()
     missing: list[str] = []
     for model_id in model_ids:
-        if provider_for(model_id) == "opencode":
+        provider = provider_for(model_id)
+        if provider == "opencode":
             continue
+        # Check store first (direct + prefix match)
         price = store.get(model_id)
         if price is None:
             for prefix, candidate in store.items():
                 if model_id.startswith(prefix):
                     price = candidate
                     break
-        if price is None or (price.input <= 0 and price.output <= 0):
-            missing.append(model_id)
+        if price is not None and price.input > 0 and price.output > 0:
+            continue
+        # Model is unpriced in store — but only flag it if there IS a seed
+        # price available.  No seed = genuinely unpriceable = nothing to sync.
+        if provider == "claude":
+            if claude_seed(model_id) is None:
+                continue
+        elif provider == "codex":
+            if codex_seed(model_id) is None:
+                continue
+        # cursor has no seed pricing; every cursor model is priced live via
+        # ``fetch_pricing``, so if it's not in the store after sync it simply
+        # has no known price — skip.
+        elif provider == "cursor":
+            continue
+        missing.append(model_id)
     return sorted(missing)
 
 

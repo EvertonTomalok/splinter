@@ -106,21 +106,27 @@ def _calc_cost(model: str, usage: dict[str, Any]) -> tuple[float, bool]:
 def fetch_pricing() -> dict[str, ModelPrice]:
     """Return Anthropic model pricing (USD/MTok). No API key required.
 
-    Pulls rates from the public pricing catalogue when reachable, falling back
-    to the bundled seed rates for any model the catalogue doesn't list (and for
-    every model when the network is unavailable).
+    Enumerates every Anthropic model id live from the public pricing catalogue
+    (new releases appear automatically), then layers the harness's seed aliases
+    (``sonnet``/``opus``/``haiku``) on top — preferring the live rate, falling
+    back to the bundled seed when the catalogue lacks the model or the network
+    is unavailable.
     """
-    from splinter.models.public_pricing import fetch_public_pricing, public_price_for
+    from splinter.models.public_pricing import (
+        fetch_public_catalog,
+        provider_models,
+        public_price_for,
+    )
 
-    catalog: dict[str, ModelPrice] = {}
+    live: dict[str, ModelPrice] = {}
     try:
-        catalog = fetch_public_pricing()
+        live = provider_models(fetch_public_catalog(), "anthropic")
     except RuntimeError as exc:
         _log.warning("public pricing unavailable (%s); using seed rates", exc)
 
-    prices: dict[str, ModelPrice] = {}
+    prices: dict[str, ModelPrice] = dict(live)
     for alias, (inp, out) in _PRICING.items():
-        public = public_price_for(alias, catalog, aliases=_PUBLIC_ALIASES.get(alias, ()))
+        public = public_price_for(alias, live, aliases=_PUBLIC_ALIASES.get(alias, ()))
         price = public if public is not None else ModelPrice(input=inp, output=out)
         prices[alias] = _with_derived_cache(price)
     return prices

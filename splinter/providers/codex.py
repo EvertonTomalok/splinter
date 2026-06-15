@@ -79,26 +79,35 @@ def _calc_cost(model: str, tokens: dict[str, int]) -> tuple[float, bool]:
     return cost, False
 
 
+def _is_codex_model(model_id: str) -> bool:
+    """OpenAI catalogue ids the codex backend can drive (gpt-5 family + codex)."""
+    return model_id.startswith("gpt-5") or "codex" in model_id
+
+
 def fetch_pricing() -> dict[str, ModelPrice]:
     """Return Codex model pricing (USD/MTok). No API key required.
 
-    Pulls rates from the public pricing catalogue when reachable, falling back
-    to the bundled seed rates for any model the catalogue doesn't list (and for
-    every model when the network is unavailable). Keys are ``codex/``-prefixed.
+    Enumerates the relevant OpenAI model ids live from the public pricing
+    catalogue (new gpt-5 / codex releases appear automatically), keyed with the
+    ``codex/`` prefix, then fills any seed id the catalogue lacks. Falls back to
+    seeds entirely when the network is unavailable.
     """
-    from splinter.models.public_pricing import fetch_public_pricing, public_price_for
+    from splinter.models.public_pricing import fetch_public_catalog, provider_models
 
-    catalog: dict[str, ModelPrice] = {}
+    live: dict[str, ModelPrice] = {}
     try:
-        catalog = fetch_public_pricing()
+        live = provider_models(
+            fetch_public_catalog(), "openai", predicate=_is_codex_model
+        )
     except RuntimeError as exc:
         _log.warning("public pricing unavailable (%s); using seed rates", exc)
 
     prices: dict[str, ModelPrice] = {}
+    for model_id, price in live.items():
+        codex_id = model_id if model_id.startswith("codex/") else f"codex/{model_id}"
+        prices[codex_id] = price
     for bare, (inp, out) in _PRICING.items():
-        public = public_price_for(bare, catalog)
-        price = public if public is not None else ModelPrice(input=inp, output=out)
-        prices[f"codex/{bare}"] = price
+        prices.setdefault(f"codex/{bare}", ModelPrice(input=inp, output=out))
     return prices
 
 
