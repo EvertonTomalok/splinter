@@ -75,11 +75,13 @@ from splinter.analyze import (
 from splinter.memory.session import Session, delete_session, list_sessions
 
 REFRESH_SECONDS = 2.0
-AUTO_REFRESH_SECONDS = 1.0
+AUTO_REFRESH_SECONDS = 2.0
 TRACE_TAIL_MAX_BYTES = 256 * 1024
-TRACE_TAIL_MAX_LINES = 500
+# Default trace view shows only the last 200 events (tail). Older events stay
+# reachable via `[` / `]` paging — this caps render work + memory on huge traces.
+TRACE_TAIL_MAX_LINES = 200
 TRACE_SUMMARY_MIN_LINES = 60
-TRACE_SUMMARY_MAX_LINES = 1200
+TRACE_SUMMARY_MAX_LINES = 200
 TRACE_PAGE_BYTES = 128 * 1024
 TRACE_MSG_PREVIEW = 140
 
@@ -348,6 +350,49 @@ def _trace_rows_from_text(text: str, compact: bool) -> list[_TraceRow]:
     return rows
 
 
+def _format_trace_rows(
+    rows: list[_TraceRow],
+    *,
+    start_index: int = 1,
+    selected_index: int | None = None,
+    expanded_index: int | None = None,
+) -> list[str]:
+    """Render trace rows to markdown blocks (one per row). ``start_index`` lets
+    appended rows continue the numbering of rows already on screen."""
+    out: list[str] = []
+    for offset, row in enumerate(rows):
+        idx = start_index + offset
+        prefix = ">" if idx == selected_index else " "
+        count = f" x{row.count}" if row.count > 1 else ""
+        msg = row.message
+        if len(msg) > TRACE_MSG_PREVIEW:
+            msg = msg[: TRACE_MSG_PREVIEW - 3].rstrip() + "..."
+        ts = row.ts[11:19] if row.ts and "T" in row.ts else ""
+        ts_field = f"{ts} " if ts else ""
+        out.append(f"{prefix} {idx:>3}. {ts_field}{row.stage:<14} {msg}{count}")
+        if expanded_index == idx:
+            detail = row.message
+            if row.count > 1:
+                detail = f"{row.message}\n(repeated {row.count} times)"
+            out.append(f"```\n{detail}\n```")
+    return out
+
+
+def _read_appended_text(path: Path, start: int) -> tuple[str, int]:
+    """Read bytes appended to ``path`` since byte offset ``start``. Returns
+    ``(text, new_end)``. Event logs append whole lines, so ``start`` is always a
+    line boundary and the decoded chunk needs no partial-line trimming."""
+    if not path.exists():
+        return ("", start)
+    size = path.stat().st_size
+    if size <= start:
+        return ("", size)
+    with path.open("rb") as f:
+        f.seek(start)
+        chunk = f.read(size - start)
+    return (chunk.decode("utf-8", errors="replace"), size)
+
+
 def _collapse_trace_rows(rows: list[_TraceRow]) -> list[_TraceRow]:
     if not rows:
         return []
@@ -424,20 +469,7 @@ def _trace_render(
         )
 
     parts.append("## Events")
-    for idx, row in enumerate(rows, 1):
-        prefix = ">" if idx == selected else " "
-        count = f" x{row.count}" if row.count > 1 else ""
-        msg = row.message
-        if len(msg) > TRACE_MSG_PREVIEW:
-            msg = msg[: TRACE_MSG_PREVIEW - 3].rstrip() + "..."
-        ts = row.ts[11:19] if row.ts and "T" in row.ts else ""
-        ts_field = f"{ts} " if ts else ""
-        parts.append(f"{prefix} {idx:>3}. {ts_field}{row.stage:<14} {msg}{count}")
-        if expanded == idx:
-            detail = row.message
-            if row.count > 1:
-                detail = f"{row.message}\n(repeated {row.count} times)"
-            parts.append(f"```\n{detail}\n```")
+    parts.extend(_format_trace_rows(rows, selected_index=selected, expanded_index=expanded))
 
     return _TraceRender(
         markdown="\n\n".join(parts),
@@ -748,6 +780,12 @@ class AnalyzeApp(App[None]):
         self._trace_expanded_row: int | None = None
         self._trace_row_count: int = 0
         self._trace_sig: tuple[Any, ...] | None = None
+        # Incremental-append state: track the source file + byte offset already
+        # rendered so a refresh appends only new events instead of re-rendering.
+        self._trace_append_path: Path | None = None
+        self._trace_append_bytes: int = 0
+        self._trace_append_compact: bool = False
+        self._trace_last_index: int = 0
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -760,9 +798,10 @@ class AnalyzeApp(App[None]):
     def on_mount(self) -> None:
         self._build_tree()
         self._do_reload()
-        # Auto-refresh starts on while the run is live; Shift+R toggles it,
-        # and `r` does a one-shot manual refresh whenever auto is off.
-        self._auto = _run_state(self.session) == "RUNNING"
+        # Auto-refresh stays OFF by default (even on a live run) — polling a big
+        # trace every tick is slow + memory-hungry. Shift+R toggles it on; `r`
+        # does a one-shot manual refresh whenever auto is off.
+        self._auto = False
 
     # --- tree ---
     def _build_tree(self) -> None:
@@ -990,9 +1029,8 @@ class AnalyzeApp(App[None]):
         except Exception:
             return None
 
-    def _render_trace(self, force: bool) -> None:
-        visible_rows = self._trace_visible_rows()
-        sig = (
+    def _compute_trace_sig(self, visible_rows: int | None) -> tuple[Any, ...]:
+        return (
             _path_sig(self.session.dir / "trace.md"),
             _path_sig(self.session.dir / "events.md"),
             _path_sig(self.session.dir / "events.tail.md"),
@@ -1003,7 +1041,68 @@ class AnalyzeApp(App[None]):
             self._trace_expanded_row,
             visible_rows or 0,
         )
+
+    def _try_append_trace(self, visible_rows: int | None) -> bool:
+        """Append only newly-written events to the Markdown widget. Returns True
+        when it handled the refresh; False to fall back to a full re-render
+        (source switched/rotated, file shrank, or the tail cap was hit)."""
+        if self._trace_append_path is None:
+            return False
+        path, is_compact, _ = _trace_source(self.session, 0)
+        if path != self._trace_append_path or is_compact != self._trace_append_compact:
+            return False
+        size = path.stat().st_size if path.exists() else 0
+        if size <= self._trace_append_bytes:
+            return False  # no growth, shrank, or rotated — let the caller decide
+        text, new_end = _read_appended_text(path, self._trace_append_bytes)
+        new_rows = _collapse_trace_rows(_trace_rows_from_text(text, compact=is_compact))
+        if not new_rows:
+            self._trace_append_bytes = new_end
+            return False
+        # Cap the live widget: once appends pile past 2x the tail target, do a
+        # full re-render so the trimmed-tail view reclaims widget memory.
+        target_rows = _trace_tail_lines(visible_rows)
+        if self._trace_last_index + len(new_rows) > target_rows * 2:
+            return False
+        body = _format_trace_rows(
+            new_rows,
+            start_index=self._trace_last_index + 1,
+            selected_index=self._trace_selected_row,
+            expanded_index=None,
+        )
+        self._detail().append("\n\n".join(body))
+        self._trace_append_bytes = new_end
+        self._trace_last_index += len(new_rows)
+        self._trace_row_count = self._trace_last_index
+        self._trace_sig = self._compute_trace_sig(visible_rows)
+        return True
+
+    def _reset_trace_append(self, row_count: int) -> None:
+        """After a full render, re-anchor append tracking to the newest tail.
+        Disabled while paged into history (offset != 0) — appends only apply at
+        the live tail."""
+        self._trace_last_index = row_count
+        if self._trace_offset != 0:
+            self._trace_append_path = None
+            return
+        path, is_compact, _ = _trace_source(self.session, 0)
+        self._trace_append_path = path
+        self._trace_append_compact = is_compact
+        self._trace_append_bytes = path.stat().st_size if path.exists() else 0
+
+    def _render_trace(self, force: bool) -> None:
+        visible_rows = self._trace_visible_rows()
+        sig = self._compute_trace_sig(visible_rows)
         if not force and sig == self._trace_sig:
+            return
+        # Live tail grew with no paging/expand interaction — append just the new
+        # events instead of rebuilding the whole trace markdown.
+        if (
+            not force
+            and self._trace_offset == 0
+            and self._trace_expanded_row is None
+            and self._try_append_trace(visible_rows)
+        ):
             return
         rendered = _trace_render(
             self.session,
@@ -1027,18 +1126,9 @@ class AnalyzeApp(App[None]):
         else:
             self._trace_selected_row = 1
             self._trace_expanded_row = None
-        self._trace_sig = (
-            _path_sig(self.session.dir / "trace.md"),
-            _path_sig(self.session.dir / "events.md"),
-            _path_sig(self.session.dir / "events.tail.md"),
-            _path_sig(self.session.dir / "events.compact.jsonl"),
-            _path_sig(self.session.dir / "events.compact.tail.jsonl"),
-            self._trace_offset,
-            self._trace_selected_row,
-            self._trace_expanded_row,
-            visible_rows or 0,
-        )
+        self._trace_sig = self._compute_trace_sig(visible_rows)
         self._detail().update(rendered.markdown)
+        self._reset_trace_append(rendered.row_count)
 
     def on_key(self, event: events.Key) -> None:
         if self._is_plan_node_focused():

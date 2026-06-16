@@ -74,3 +74,46 @@ def test_trace_render_supports_offset_paging(tmp_path: Path, monkeypatch: "objec
 
     assert newest.has_older
     assert older.has_newer
+
+
+def test_trace_refresh_appends_only_new_events(
+    tmp_path: Path, monkeypatch: "object"
+) -> None:
+    import asyncio
+
+    from textual.widgets import Markdown
+
+    from splinter.tui import AnalyzeApp
+
+    monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))  # type: ignore[attr-defined]
+    session = Session("ses_trace_refresh")
+    for i in range(5):
+        session.append("events.md", f"[RUN] event-{i}")
+
+    appended: list[str] = []
+    updated: list[str] = []
+    real_append = Markdown.append
+    real_update = Markdown.update
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        Markdown, "append", lambda self, md: (appended.append(md), real_append(self, md))[1]
+    )
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        Markdown, "update", lambda self, md: (updated.append(md), real_update(self, md))[1]
+    )
+
+    async def drive() -> None:
+        app = AnalyzeApp(session)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._render_trace(force=True)  # full render anchors append tracking
+            await pilot.pause()
+            appended.clear()
+            updated.clear()
+            session.append("events.md", "[RUN] event-NEW")
+            app._render_trace(force=False)  # refresh — should append, not reload
+            await pilot.pause()
+            assert any("event-NEW" in m for m in appended)
+            assert not updated  # no full re-render
+            await pilot.press("q")
+
+    asyncio.run(drive())
