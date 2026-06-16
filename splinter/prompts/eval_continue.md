@@ -6,6 +6,9 @@ The runner applied your corrections. Judge the updated implementation against th
 
 {previous_evals_section}
 
+Do not ask the user to run commands locally. The loop is autonomous; return a
+proper VERDICT with concrete runner corrections.
+
 Respond in EXACTLY this format. The first line MUST be the literal word `VERDICT:`
 followed by a single decision token and nothing else:
 

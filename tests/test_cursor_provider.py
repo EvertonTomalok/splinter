@@ -163,6 +163,19 @@ def test_run_parses_stream_json_tokens_and_session(monkeypatch: pytest.MonkeyPat
     assert result.cost > 0
 
 
+def test_parse_stream_json_prefers_init_session_id_on_conflict() -> None:
+    stdout = (
+        '{"type":"system","subtype":"init","session_id":"sid-init"}\n'
+        '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Hi"}]}}\n'
+        '{"type":"result","result":"Final","session_id":"sid-result","usage":{"inputTokens":1,"outputTokens":2}}\n'
+    )
+    text, tokens, session_id, _parsed = cursor_module._parse_stream_json(stdout)
+    assert text == "Final"
+    assert tokens["input"] == 1
+    assert tokens["output"] == 2
+    assert session_id == "sid-init"
+
+
 def test_list_models_parses_output(monkeypatch: pytest.MonkeyPatch) -> None:
     sample = (
         "Available models\n\n"

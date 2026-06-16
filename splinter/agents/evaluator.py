@@ -8,12 +8,14 @@ Tier-climb policy lives here so strategies share one implementation.
 from __future__ import annotations
 
 import re
+from collections import Counter
 from dataclasses import dataclass, replace
 
 from splinter.agents.runner import Task
 from splinter.enums import Decision, Variant
 from splinter.models.roster import Ladder
 from splinter.obs.agentic import record_exchange
+from splinter.providers.base import ProviderResponse
 from splinter.providers.dispatch import run_provider_session
 from splinter.skills import ResolvedSkill
 from splinter.strategies.base import EvalVerdict
@@ -130,7 +132,49 @@ class Evaluator:
         )
         record_exchange(prompt, response.text, model=model)
         verdict = self._parse_verdict(response.text)
+        if self._needs_repair(response.text):
+            repair_prompt = (
+                "Your previous reply is invalid for autonomous eval because it asked the user to "
+                "run commands locally or claimed shell execution was unavailable.\n\n"
+                "You must not delegate execution to the user. Re-evaluate using the provided "
+                "implementation output and gate context, then respond in the exact required "
+                "VERDICT/REASON/CORRECTIONS format.\n\n"
+                f"Previous invalid reply:\n{response.text}"
+            )
+            repaired, repaired_sid = run_provider_session(
+                repair_prompt,
+                model,
+                variant=effort,
+                session=sid,
+                timeout=timeout,
+                trace=trace,
+                iteration=iteration,
+                tier=tier,
+                task_index=task_index,
+                role="eval",
+            )
+            record_exchange(repair_prompt, repaired.text, model=model)
+            verdict = self._parse_verdict(repaired.text)
+            sid = repaired_sid
+            response = ProviderResponse(
+                text=repaired.text,
+                tokens=_sum_tokens(response.tokens, repaired.tokens),
+                cost=response.cost + repaired.cost,
+                raw=repaired.raw,
+                session_id=repaired.session_id,
+                cost_indeterminate=response.cost_indeterminate or repaired.cost_indeterminate,
+            )
         return replace(verdict, eval_session=sid, cost=response.cost, tokens=response.tokens)
+
+    @staticmethod
+    def _needs_repair(text: str) -> bool:
+        lowered = text.lower()
+        return (
+            "run locally" in lowered
+            or "shell execution was unavailable" in lowered
+            or "shell was unavailable" in lowered
+        )
+
 
     @staticmethod
     def _parse_verdict(text: str) -> EvalVerdict:
@@ -205,3 +249,10 @@ class Evaluator:
             return EvalAction(decision=Decision.ESCALATE, next_tier=tier + 1)
 
         return EvalAction(decision=Decision.RETRY, next_tier=tier)
+
+
+def _sum_tokens(a: dict[str, int], b: dict[str, int]) -> dict[str, int]:
+    total: Counter[str] = Counter()
+    total.update(a)
+    total.update(b)
+    return {k: int(v) for k, v in total.items()}

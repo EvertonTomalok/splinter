@@ -259,6 +259,45 @@ def test_judge_uses_ladder_defaults(isolated_ladder: Ladder) -> None:
     assert call_args.kwargs["variant"] == isolated_ladder.eval_effort
 
 
+def test_judge_repairs_local_shell_unavailable_reply(isolated_ladder: Ladder) -> None:
+    ev = Evaluator(isolated_ladder)
+    task = Task(description="test task", acceptance="must work")
+
+    first = (
+        ProviderResponse(
+            text=(
+                "Shell execution was unavailable in this environment, "
+                "so please run locally: go test ./..."
+            ),
+            tokens={"input": 10, "output": 5},
+            cost=1.0,
+            raw={},
+            session_id="eval-sess-1",
+        ),
+        "eval-sess-1",
+    )
+    second = (
+        ProviderResponse(
+            text="VERDICT: RETRY\nREASON: missing assertion\nCORRECTIONS: add assertion",
+            tokens={"input": 7, "output": 3},
+            cost=0.5,
+            raw={},
+            session_id="eval-sess-1",
+        ),
+        "eval-sess-1",
+    )
+
+    with patch("splinter.agents.evaluator.run_provider_session", side_effect=[first, second]) as m:
+        verdict = ev.judge(task, "some output")
+
+    assert verdict.decision == Decision.RETRY
+    assert verdict.corrections == "add assertion"
+    assert verdict.eval_session == "eval-sess-1"
+    assert verdict.cost == pytest.approx(1.5)
+    assert verdict.tokens == {"input": 17, "output": 8}
+    assert m.call_count == 2
+
+
 # --- back-compat shim -------------------------------------------------------
 
 

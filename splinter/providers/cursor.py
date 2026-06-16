@@ -304,6 +304,7 @@ def _parse_stream_json(stdout: str) -> tuple[str, dict[str, int], str | None, di
     final_text = ""
     tokens: dict[str, int] = {}
     session_id: str | None = None
+    init_session_id: str | None = None
     last_assistant = ""
     last_result: dict[str, Any] = {}
 
@@ -318,6 +319,12 @@ def _parse_stream_json(stdout: str) -> tuple[str, dict[str, int], str | None, di
         if not isinstance(obj, dict):
             continue
         etype = str(obj.get("type", ""))
+        raw_sid_any = obj.get("session_id")
+        if isinstance(raw_sid_any, str) and raw_sid_any.strip():
+            sid_any = raw_sid_any.strip()
+            session_id = session_id or sid_any
+            if etype == "system" and str(obj.get("subtype", "")) == "init":
+                init_session_id = sid_any
         if etype == "assistant":
             txt = _assistant_text(obj)
             if txt:
@@ -331,6 +338,9 @@ def _parse_stream_json(stdout: str) -> tuple[str, dict[str, int], str | None, di
             if isinstance(raw_sid, str) and raw_sid.strip():
                 session_id = raw_sid.strip()
             tokens = _extract_tokens(obj.get("usage"))
+
+    if init_session_id:
+        session_id = init_session_id
 
     text = final_text or last_assistant or stdout.strip()
     return text, tokens, session_id, last_result

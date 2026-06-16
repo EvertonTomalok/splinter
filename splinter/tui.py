@@ -12,9 +12,11 @@
 from __future__ import annotations
 
 import copy
+import json
 import logging
 import re
 from collections.abc import Iterable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -74,6 +76,12 @@ from splinter.memory.session import Session, delete_session, list_sessions
 
 REFRESH_SECONDS = 2.0
 AUTO_REFRESH_SECONDS = 1.0
+TRACE_TAIL_MAX_BYTES = 256 * 1024
+TRACE_TAIL_MAX_LINES = 500
+TRACE_SUMMARY_MIN_LINES = 60
+TRACE_SUMMARY_MAX_LINES = 1200
+TRACE_PAGE_BYTES = 128 * 1024
+TRACE_MSG_PREVIEW = 140
 
 _STATE_EMOJI = {
     "RUNNING": "🟡",
@@ -270,19 +278,192 @@ def _plan_overview_md(session: Session) -> str:
     return "\n".join(lines)
 
 
-def _trace_md(session: Session) -> str:
-    """Full chronological event log (events.md) + headline metrics."""
+@dataclass(frozen=True)
+class _TraceRow:
+    ts: str
+    stage: str
+    message: str
+    count: int
+
+
+@dataclass(frozen=True)
+class _TraceRender:
+    markdown: str
+    row_count: int
+    has_older: bool
+    has_newer: bool
+    max_offset: int
+    normalized_offset: int
+
+
+_TRACE_TAG_RE = re.compile(r"^\[([^\]]+)\]\s*(.*)$")
+
+
+def _trace_tail_lines(visible_rows: int | None) -> int:
+    if visible_rows is None or visible_rows <= 0:
+        return TRACE_TAIL_MAX_LINES
+    target = max(visible_rows * 3, TRACE_SUMMARY_MIN_LINES)
+    return min(target, TRACE_SUMMARY_MAX_LINES)
+
+
+def _trace_source(session: Session, offset_from_end: int) -> tuple[Path, bool, bool]:
+    compact_tail = session.dir / "events.compact.tail.jsonl"
+    compact_full = session.dir / "events.compact.jsonl"
+    if offset_from_end == 0 and compact_tail.exists() and compact_tail.stat().st_size > 0:
+        full_size = (
+            compact_full.stat().st_size if compact_full.exists() else compact_tail.stat().st_size
+        )
+        has_older = full_size > compact_tail.stat().st_size
+        return (compact_tail, True, has_older)
+    if compact_full.exists() and compact_full.stat().st_size > 0:
+        return (compact_full, True, False)
+    return (session.dir / "events.md", False, False)
+
+
+def _trace_rows_from_text(text: str, compact: bool) -> list[_TraceRow]:
+    rows: list[_TraceRow] = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if compact:
+            try:
+                data = json.loads(line)
+            except json.JSONDecodeError:
+                rows.append(_TraceRow(ts="", stage="event", message=line, count=1))
+                continue
+            stage = str(data.get("stage", "event")) or "event"
+            msg = str(data.get("message", "")).strip() or line
+            ts = str(data.get("ts", ""))
+            rows.append(_TraceRow(ts=ts, stage=stage, message=msg, count=1))
+            continue
+        m = _TRACE_TAG_RE.match(line)
+        if m:
+            stage = m.group(1).strip().lower().replace(" ", "_")
+            msg = m.group(2).strip() or line
+        else:
+            stage = "event"
+            msg = line
+        rows.append(_TraceRow(ts="", stage=stage, message=msg, count=1))
+    return rows
+
+
+def _collapse_trace_rows(rows: list[_TraceRow]) -> list[_TraceRow]:
+    if not rows:
+        return []
+    collapsed: list[_TraceRow] = []
+    for row in rows:
+        if collapsed and collapsed[-1].stage == row.stage and collapsed[-1].message == row.message:
+            prev = collapsed[-1]
+            collapsed[-1] = _TraceRow(
+                ts=prev.ts or row.ts,
+                stage=prev.stage,
+                message=prev.message,
+                count=prev.count + 1,
+            )
+            continue
+        collapsed.append(row)
+    return collapsed
+
+
+def _trace_render(
+    session: Session,
+    *,
+    offset_from_end: int = 0,
+    visible_rows: int | None = None,
+    selected_row: int | None = None,
+    expanded_row: int | None = None,
+) -> _TraceRender:
     metrics = _trace_metrics(session.read("trace.md"))
-    events = session.read("events.md").strip()
+    path, is_compact, tail_has_older = _trace_source(session, offset_from_end)
+    target_rows = _trace_tail_lines(visible_rows)
+    text, truncated_before, has_newer, source_size, normalized_offset = _tail_file_text(
+        path,
+        max_bytes=TRACE_TAIL_MAX_BYTES,
+        max_lines=max(target_rows * 3, target_rows),
+        offset_from_end=offset_from_end,
+    )
+    rows = _collapse_trace_rows(_trace_rows_from_text(text, compact=is_compact))
+    if len(rows) > target_rows:
+        rows = rows[-target_rows:]
+        truncated_before = True
+    row_count = len(rows)
+    selected = row_count if selected_row is None else selected_row
+    if row_count > 0:
+        selected = max(1, min(selected, row_count))
+    else:
+        selected = 0
+    expanded = expanded_row if expanded_row is not None and expanded_row == selected else None
+
     parts = ["# Trace"]
     if metrics:
         parts.append(
             f"💰 **${metrics.get('cost', '0')}** · runs {metrics.get('runs', '0')} · "
             f"tokens `{metrics.get('tokens', '{}')}`"
         )
-    body = events if events else "run in progress — no events yet"
-    parts.append(f"## Events\n\n```\n{_cap_payload(body)}\n```")
-    return "\n\n".join(parts)
+
+    has_older = truncated_before or tail_has_older
+    parts.append(
+        f"_offset {normalized_offset} bytes · "
+        f"{'older yes' if has_older else 'older no'} · "
+        f"{'newer yes' if has_newer else 'newer no'}_"
+    )
+    parts.append(
+        "_keys: `[` older · `]` newer · `0` newest · `j/k` select row · `enter` expand selected_"
+    )
+
+    if not rows:
+        parts.append("## Events\n\nrun in progress — no events yet")
+        return _TraceRender(
+            markdown="\n\n".join(parts),
+            row_count=0,
+            has_older=has_older,
+            has_newer=has_newer,
+            max_offset=max(0, source_size - TRACE_PAGE_BYTES),
+            normalized_offset=normalized_offset,
+        )
+
+    parts.append("## Events")
+    for idx, row in enumerate(rows, 1):
+        prefix = ">" if idx == selected else " "
+        count = f" x{row.count}" if row.count > 1 else ""
+        msg = row.message
+        if len(msg) > TRACE_MSG_PREVIEW:
+            msg = msg[: TRACE_MSG_PREVIEW - 3].rstrip() + "..."
+        ts = row.ts[11:19] if row.ts and "T" in row.ts else ""
+        ts_field = f"{ts} " if ts else ""
+        parts.append(f"{prefix} {idx:>3}. {ts_field}{row.stage:<14} {msg}{count}")
+        if expanded == idx:
+            detail = row.message
+            if row.count > 1:
+                detail = f"{row.message}\n(repeated {row.count} times)"
+            parts.append(f"```\n{detail}\n```")
+
+    return _TraceRender(
+        markdown="\n\n".join(parts),
+        row_count=row_count,
+        has_older=has_older,
+        has_newer=has_newer,
+        max_offset=max(0, source_size - TRACE_PAGE_BYTES),
+        normalized_offset=normalized_offset,
+    )
+
+
+def _trace_md(
+    session: Session,
+    *,
+    offset_from_end: int = 0,
+    visible_rows: int | None = None,
+    selected_row: int | None = None,
+    expanded_row: int | None = None,
+) -> str:
+    return _trace_render(
+        session,
+        offset_from_end=offset_from_end,
+        visible_rows=visible_rows,
+        selected_row=selected_row,
+        expanded_row=expanded_row,
+    ).markdown
 
 
 def _final_eval_rounds_md(session: Session) -> str:
@@ -391,7 +572,17 @@ def _prd_phase_md(session: Session, phase: str, detail: str) -> str:
             )
         # Live tail of the event log so an in-flight run shows the model working
         # (it logs tool calls / text before any iteration is finalized in loop.md).
-        tail = session.read("events.md").strip().splitlines()[-25:]
+        live_path = (
+            session.dir / "events.tail.md"
+            if (session.dir / "events.tail.md").exists()
+            else session.dir / "events.md"
+        )
+        tail_text, _, _, _, _ = _tail_file_text(
+            live_path,
+            max_bytes=64 * 1024,
+            max_lines=25,
+        )
+        tail = tail_text.splitlines() if tail_text else []
         if tail:
             parts.append("## Live\n\n```\n" + "\n".join(tail) + "\n```")
         elif not iters:
@@ -446,6 +637,36 @@ def _path_sig(path: Path) -> tuple[int, int]:
         return (0, 0)
     stat = path.stat()
     return (stat.st_mtime_ns, stat.st_size)
+
+
+def _tail_file_text(
+    path: Path,
+    *,
+    max_bytes: int,
+    max_lines: int,
+    offset_from_end: int = 0,
+) -> tuple[str, bool, bool, int, int]:
+    if not path.exists():
+        return ("", False, False, 0, 0)
+    size = path.stat().st_size
+    max_offset = max(0, size - max_bytes)
+    normalized_offset = max(0, min(offset_from_end, max_offset))
+    end = size - normalized_offset
+    start = max(0, end - max_bytes)
+    with path.open("rb") as f:
+        f.seek(start)
+        chunk = f.read(end - start)
+    text = chunk.decode("utf-8", errors="replace")
+    truncated_before = start > 0
+    if truncated_before:
+        nl = text.find("\n")
+        text = text[nl + 1 :] if nl >= 0 else ""
+    lines = text.splitlines()
+    if len(lines) > max_lines:
+        lines = lines[-max_lines:]
+        truncated_before = True
+    has_newer = end < size
+    return ("\n".join(lines).strip(), truncated_before, has_newer, size, normalized_offset)
 
 
 def _find_shortcuts_cmd(screen: Any, app: Any) -> SystemCommand:
@@ -522,6 +743,11 @@ class AnalyzeApp(App[None]):
         self._traj_sig: (
             tuple[tuple[int, int], tuple[int, int], tuple[int, int], tuple[int, int]] | None
         ) = None
+        self._trace_offset: int = 0
+        self._trace_selected_row: int = 1
+        self._trace_expanded_row: int | None = None
+        self._trace_row_count: int = 0
+        self._trace_sig: tuple[Any, ...] | None = None
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -713,7 +939,7 @@ class AnalyzeApp(App[None]):
         elif kind == "phase":
             self._detail().update(_phase_detail_md(self.session, data["n"]))
         elif kind == "trace":
-            self._detail().update(_trace_md(self.session))
+            self._render_trace(force=False)
         elif kind == "file":
             if data.get("file") == "knowledge/plan.md":
                 self._render_plan()
@@ -747,22 +973,132 @@ class AnalyzeApp(App[None]):
         except Exception:
             return False
 
-    def on_key(self, event: events.Key) -> None:
-        # ◂/▸ paginate through plans while the plan node is focused.
-        if not self._is_plan_node_focused():
+    def _is_trace_node_focused(self) -> bool:
+        try:
+            node = self.query_one("#nav", Tree).cursor_node
+            if node is None:
+                return False
+            data = node.data if isinstance(node.data, dict) else {}
+            return data.get("kind") == "trace"
+        except Exception:
+            return False
+
+    def _trace_visible_rows(self) -> int | None:
+        try:
+            height = int(self._detail().size.height)
+            return height if height > 0 else None
+        except Exception:
+            return None
+
+    def _render_trace(self, force: bool) -> None:
+        visible_rows = self._trace_visible_rows()
+        sig = (
+            _path_sig(self.session.dir / "trace.md"),
+            _path_sig(self.session.dir / "events.md"),
+            _path_sig(self.session.dir / "events.tail.md"),
+            _path_sig(self.session.dir / "events.compact.jsonl"),
+            _path_sig(self.session.dir / "events.compact.tail.jsonl"),
+            self._trace_offset,
+            self._trace_selected_row,
+            self._trace_expanded_row,
+            visible_rows or 0,
+        )
+        if not force and sig == self._trace_sig:
             return
-        total = len(_plan_files(self.session))
-        if total == 0:
-            return
-        if event.key == "right":  # wraps: last ▸ back to plans overview
-            event.prevent_default()
-            self._plan_idx = 0 if self._plan_idx >= total else self._plan_idx + 1
-        elif event.key == "left":  # wraps: overview ◂ to last plan
-            event.prevent_default()
-            self._plan_idx = total if self._plan_idx <= 0 else self._plan_idx - 1
+        rendered = _trace_render(
+            self.session,
+            offset_from_end=self._trace_offset,
+            visible_rows=visible_rows,
+            selected_row=self._trace_selected_row,
+            expanded_row=self._trace_expanded_row,
+        )
+        self._trace_row_count = rendered.row_count
+        self._trace_offset = rendered.normalized_offset
+        if self._trace_row_count > 0:
+            self._trace_selected_row = max(
+                1,
+                min(self._trace_selected_row, self._trace_row_count),
+            )
+            if (
+                self._trace_expanded_row is not None
+                and self._trace_expanded_row > self._trace_row_count
+            ):
+                self._trace_expanded_row = None
         else:
+            self._trace_selected_row = 1
+            self._trace_expanded_row = None
+        self._trace_sig = (
+            _path_sig(self.session.dir / "trace.md"),
+            _path_sig(self.session.dir / "events.md"),
+            _path_sig(self.session.dir / "events.tail.md"),
+            _path_sig(self.session.dir / "events.compact.jsonl"),
+            _path_sig(self.session.dir / "events.compact.tail.jsonl"),
+            self._trace_offset,
+            self._trace_selected_row,
+            self._trace_expanded_row,
+            visible_rows or 0,
+        )
+        self._detail().update(rendered.markdown)
+
+    def on_key(self, event: events.Key) -> None:
+        if self._is_plan_node_focused():
+            total = len(_plan_files(self.session))
+            if total == 0:
+                return
+            if event.key == "right":
+                event.prevent_default()
+                self._plan_idx = 0 if self._plan_idx >= total else self._plan_idx + 1
+            elif event.key == "left":
+                event.prevent_default()
+                self._plan_idx = total if self._plan_idx <= 0 else self._plan_idx - 1
+            else:
+                return
+            self._render_plan()
             return
-        self._render_plan()
+
+        if not self._is_trace_node_focused():
+            return
+
+        if event.key == "[":
+            event.prevent_default()
+            path, _, _ = _trace_source(self.session, self._trace_offset)
+            size = path.stat().st_size if path.exists() else 0
+            max_offset = max(0, size - TRACE_PAGE_BYTES)
+            self._trace_offset = min(self._trace_offset + TRACE_PAGE_BYTES, max_offset)
+            self._render_trace(force=True)
+            return
+        if event.key == "]":
+            event.prevent_default()
+            self._trace_offset = max(0, self._trace_offset - TRACE_PAGE_BYTES)
+            self._render_trace(force=True)
+            return
+        if event.key == "0":
+            event.prevent_default()
+            self._trace_offset = 0
+            self._render_trace(force=True)
+            return
+        if event.key == "j":
+            event.prevent_default()
+            if self._trace_row_count > 0:
+                self._trace_selected_row = min(self._trace_selected_row + 1, self._trace_row_count)
+                self._trace_expanded_row = None
+                self._render_trace(force=True)
+            return
+        if event.key == "k":
+            event.prevent_default()
+            if self._trace_row_count > 0:
+                self._trace_selected_row = max(self._trace_selected_row - 1, 1)
+                self._trace_expanded_row = None
+                self._render_trace(force=True)
+            return
+        if event.key == "enter":
+            event.prevent_default()
+            if self._trace_row_count > 0:
+                if self._trace_expanded_row == self._trace_selected_row:
+                    self._trace_expanded_row = None
+                else:
+                    self._trace_expanded_row = self._trace_selected_row
+                self._render_trace(force=True)
 
     def on_tree_node_highlighted(self, event: Tree.NodeHighlighted[Any]) -> None:
         self._render_data(event.node.data)

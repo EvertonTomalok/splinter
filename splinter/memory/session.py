@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -82,6 +83,21 @@ NEXT_CONFIG_KEYS: frozenset[str] = frozenset(
     }
 )
 
+_EVENTS_TAG_RE = re.compile(r"^\[([^\]]+)\]\s*(.*)$")
+
+
+def _env_int(name: str, default: int, minimum: int = 0) -> int:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    if value < minimum:
+        return default
+    return value
+
 
 class Session:
     def __init__(self, session_id: str | None = None) -> None:
@@ -111,11 +127,85 @@ class Session:
     def append(self, filename: str, content: str) -> Path:
         self._ensure_dir()
         p = self.dir / filename
+        p.parent.mkdir(parents=True, exist_ok=True)
+        payload = content if content.endswith("\n") else f"{content}\n"
+        if filename == "events.md":
+            self._rotate_events_if_needed()
         with open(p, "a") as f:
-            f.write(content)
-            if not content.endswith("\n"):
-                f.write("\n")
+            f.write(payload)
+        if filename == "events.md":
+            self._append_events_tail(payload)
+            self._append_events_compact(payload)
         return p
+
+    def _rotate_events_if_needed(self) -> None:
+        p = self.dir / "events.md"
+        if not p.exists():
+            return
+        max_bytes = _env_int("SPLINTER_EVENTS_MAX_BYTES", 10 * 1024 * 1024, minimum=1)
+        if p.stat().st_size < max_bytes:
+            return
+        keep = _env_int("SPLINTER_EVENTS_ROTATIONS", 5, minimum=1)
+        oldest = self.dir / f"events.{keep}.md"
+        if oldest.exists():
+            oldest.unlink()
+        for i in range(keep - 1, 0, -1):
+            src = self.dir / f"events.{i}.md"
+            dst = self.dir / f"events.{i + 1}.md"
+            if src.exists():
+                src.rename(dst)
+        p.rename(self.dir / "events.1.md")
+
+    def _trim_file_tail(self, path: Path, max_bytes: int) -> None:
+        if not path.exists():
+            return
+        size = path.stat().st_size
+        if size <= max_bytes:
+            return
+        with path.open("rb") as f:
+            f.seek(size - max_bytes)
+            data = f.read()
+        nl = data.find(b"\n")
+        trimmed = data[nl + 1 :] if nl >= 0 else data
+        with path.open("wb") as f:
+            f.write(trimmed)
+
+    def _append_events_tail(self, payload: str) -> None:
+        tail = self.dir / "events.tail.md"
+        with open(tail, "a") as f:
+            f.write(payload)
+        max_bytes = _env_int("SPLINTER_EVENTS_TAIL_MAX_BYTES", 256 * 1024, minimum=1)
+        self._trim_file_tail(tail, max_bytes)
+
+    def _append_events_compact(self, payload: str) -> None:
+        lines = [line.strip() for line in payload.splitlines() if line.strip()]
+        if not lines:
+            return
+        ts = datetime.now(timezone.utc).isoformat()
+        json_lines: list[str] = []
+        for line in lines:
+            m = _EVENTS_TAG_RE.match(line)
+            if m:
+                stage = m.group(1).strip().lower().replace(" ", "_")
+                message = m.group(2).strip() or line
+            else:
+                stage = "event"
+                message = line
+            json_lines.append(
+                json.dumps(
+                    {"ts": ts, "stage": stage, "message": message},
+                    ensure_ascii=True,
+                )
+            )
+        block = "\n".join(json_lines) + "\n"
+        full = self.dir / "events.compact.jsonl"
+        tail = self.dir / "events.compact.tail.jsonl"
+        with open(full, "a") as f:
+            f.write(block)
+        with open(tail, "a") as f:
+            f.write(block)
+        max_bytes = _env_int("SPLINTER_EVENTS_COMPACT_TAIL_MAX_BYTES", 256 * 1024, minimum=1)
+        self._trim_file_tail(tail, max_bytes)
 
     def update_index(self, summary: str) -> None:
         self.write("index.md", summary)

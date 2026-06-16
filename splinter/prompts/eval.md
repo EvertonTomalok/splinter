@@ -55,6 +55,8 @@ How to decide:
   PASS — do not invent further polish.
 - Base the verdict on what the output actually demonstrates (code, test results,
   gate output), not on how hard the task sounds.
+- Never ask the user to run commands locally. This loop is autonomous: if the
+  evidence is insufficient, return RETRY with concrete runner corrections.
 - The Implementation Plan (if present) is the approach the runner was told to
   follow — use it to spot work the output skipped or contradicted. It is CONTEXT,
   not the bar: the Acceptance Criteria decide PASS, not plan adherence. Output
