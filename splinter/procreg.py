@@ -16,6 +16,7 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
 _lock = threading.Lock()
 _active: set[subprocess.Popen[str]] = set()
@@ -63,9 +64,9 @@ def run_subprocess(
 ) -> CompletedProcess:
     """Run ``cmd`` capturing output, in its own process group, killable on shutdown.
 
-    If ``on_line`` is given, stdout is read line-by-line and each line is handed to
-    the callback as it arrives (live streaming) — used to surface the model's
-    tool-calls/text in the run pane while it works.
+    If ``on_line`` is given, stdout/stderr are read line-by-line and each line is
+    handed to the callback as it arrives (live streaming) — used to surface the
+    model's tool-calls/text in the run pane while it works.
     """
     proc: subprocess.Popen[str] = subprocess.Popen(
         cmd,
@@ -84,7 +85,13 @@ def run_subprocess(
             stdout, stderr = _stream(proc, cmd, timeout, on_line)
     except subprocess.TimeoutExpired:
         _kill(proc)
-        proc.communicate()
+        if on_line is None:
+            proc.communicate()
+        else:
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                pass
         raise
     finally:
         with _lock:
@@ -95,23 +102,34 @@ def run_subprocess(
 def _stream(
     proc: subprocess.Popen[str], cmd: list[str], timeout: int, on_line: Callable[[str], None]
 ) -> tuple[str, str]:
-    """Read stdout line-by-line, invoke ``on_line`` per line, enforce ``timeout``."""
+    """Read stdout/stderr line-by-line, invoke ``on_line`` per line, enforce timeout."""
     deadline = time.monotonic() + timeout
     out: list[str] = []
+    err: list[str] = []
     assert proc.stdout is not None
-    for line in proc.stdout:
-        out.append(line)
-        try:
-            on_line(line.rstrip("\n"))
-        except Exception:  # noqa: BLE001 — a logging hiccup must not kill the run
-            pass
+    assert proc.stderr is not None
+
+    def _drain(stream: Any, sink: list[str]) -> None:
+        for line in stream:
+            sink.append(line)
+            try:
+                on_line(line.rstrip("\n"))
+            except Exception:  # noqa: BLE001 — a logging hiccup must not kill the run
+                pass
+
+    out_thread = threading.Thread(target=_drain, args=(proc.stdout, out), daemon=True)
+    err_thread = threading.Thread(target=_drain, args=(proc.stderr, err), daemon=True)
+    out_thread.start()
+    err_thread.start()
+
+    while proc.poll() is None:
         if time.monotonic() > deadline:
-            _kill(proc)
-            proc.communicate()
             raise subprocess.TimeoutExpired(cmd, timeout)
-    stderr = proc.stderr.read() if proc.stderr else ""
-    proc.wait(timeout=max(0.0, deadline - time.monotonic()))
-    return "".join(out), stderr
+        time.sleep(0.05)
+
+    out_thread.join()
+    err_thread.join()
+    return "".join(out), "".join(err)
 
 
 def terminate_all() -> None:

@@ -297,6 +297,13 @@ class EvalStage(Stage):
 
         evaluator = self._evaluator or Evaluator(ctx.ladder)
         eval_effort = evaluator.eval_effort_for(ctx.tier)
+        log.info(
+            "iter %d · evaluating with %s (effort=%s, %s session)",
+            ctx.iteration,
+            ctx.ladder.eval_model,
+            eval_effort,
+            "same" if ctx.eval_session else "new",
+        )
 
         with agentic_scope(ctx.session, "eval", ctx.task_index, ctx.iteration):
             verdict = evaluator.judge(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -18,8 +19,11 @@ def _fake_proc(stdout: str, returncode: int = 0) -> SimpleNamespace:
 def _capture(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
     captured: dict[str, object] = {}
 
-    def fake_subprocess(cmd: list[str], timeout: int = 0, cwd: str = ".") -> object:
+    def fake_subprocess(
+        cmd: list[str], timeout: int = 0, cwd: str = ".", on_line: object = None
+    ) -> object:
         captured["cmd"] = list(cmd)
+        captured["on_line"] = on_line
         return _fake_proc("ok")
 
     monkeypatch.setattr(cursor_module, "run_subprocess", fake_subprocess)
@@ -81,12 +85,37 @@ def test_provider_routing(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_run_raises_on_nonzero(monkeypatch: pytest.MonkeyPatch) -> None:
-    def fake_subprocess(cmd: list[str], timeout: int = 0, cwd: str = ".") -> object:
+    def fake_subprocess(
+        cmd: list[str], timeout: int = 0, cwd: str = ".", on_line: object = None
+    ) -> object:
         return _fake_proc("", returncode=1)
 
     monkeypatch.setattr(cursor_module, "run_subprocess", fake_subprocess)
     with pytest.raises(RuntimeError, match="agent exited 1"):
         cursor_module.run("fail")
+
+
+def test_run_streams_lines_to_live_logger(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_subprocess(
+        cmd: list[str], timeout: int = 0, cwd: str = ".", on_line: object = None
+    ) -> object:
+        captured["on_line"] = on_line
+        if callable(on_line):
+            on_line("live cursor line")
+        return _fake_proc("ok")
+
+    monkeypatch.setattr(cursor_module, "run_subprocess", fake_subprocess)
+
+    with caplog.at_level(logging.INFO, logger="splinter.live"):
+        cursor_module.run("do it")
+
+    assert captured["on_line"] is cursor_module._stream_cursor_line
+    assert any("live cursor line" in rec.message for rec in caplog.records)
 
 
 def test_list_models_parses_output(monkeypatch: pytest.MonkeyPatch) -> None:

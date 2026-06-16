@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import pytest
@@ -182,6 +183,61 @@ def test_record_action_inside_scope_with_render(tmp_session: Session) -> None:
     assert "## Actions" in result
     assert "🔧 Edit /path/to/file.py" in result
     assert "💬 Changes applied successfully" in result
+
+
+def test_eval_stage_logs_model_and_effort_before_judge(
+    tmp_session: Session,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from splinter.agents.runner import RunResult, Task
+    from splinter.memory.knowledge import KnowledgeStore
+    from splinter.models.roster import load_ladder
+    from splinter.obs.trace import Trace
+    from splinter.strategies.base import EvalVerdict
+    from splinter.strategies.stages import EvalStage, IterationContext
+
+    class _FakeEvaluator:
+        def eval_effort_for(self, tier: int) -> str:
+            return "max"
+
+        def judge(self, *args: object, **kwargs: object) -> EvalVerdict:
+            return EvalVerdict(
+                decision="PASS",
+                reason="ok",
+                corrections="",
+                raw="",
+                eval_session="ev-1",
+            )
+
+    ladder = load_ladder()
+    ctx = IterationContext(
+        task=Task(description="task", acceptance="accept"),
+        plan="plan",
+        tier=0,
+        iteration=1,
+        ladder=ladder,
+        session=tmp_session,
+        trace=Trace(),
+        knowledge=KnowledgeStore(tmp_session),
+        run_result=RunResult(
+            text="result",
+            model="runner",
+            tier=0,
+            tokens={},
+            cost=0.0,
+            raw={},
+        ),
+    )
+
+    with caplog.at_level(logging.INFO, logger="splinter.loop"):
+        EvalStage(evaluator=_FakeEvaluator()).process(ctx)
+
+    assert any(
+        "evaluating with" in rec.message
+        and ladder.eval_model in rec.message
+        and "effort=max" in rec.message
+        for rec in caplog.records
+    )
 
 
 class TestCostReconciliation:

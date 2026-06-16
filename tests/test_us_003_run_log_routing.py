@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -20,7 +22,7 @@ def test_live_logger_routes_into_richlog(tmp_path: Path, monkeypatch: "pytest.Mo
     monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
     session = Session("ses_us003_route")
     session.update_index("# us003\n")
-    session.set_status("running", strategy="raphael", tasks=1, stage="run")
+    session.set_status("running", strategy="raphael", tasks=1, stage="run", pid=os.getpid())
 
     captured: list[tuple[str, int]] = []
 
@@ -35,6 +37,7 @@ def test_live_logger_routes_into_richlog(tmp_path: Path, monkeypatch: "pytest.Mo
 
     async def drive() -> None:
         app = RunApp(session, {})
+        monkeypatch.setattr(app, "write_log", lambda *a, **k: None)
         original_write_log = app.write_log
 
         def spy_write_log(msg: str, level: int = logging.INFO) -> None:
@@ -76,7 +79,7 @@ def test_no_double_logging(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") ->
     monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
     session = Session("ses_us003_dedup")
     session.update_index("# us003\n")
-    session.set_status("running", strategy="raphael", tasks=1, stage="run")
+    session.set_status("running", strategy="raphael", tasks=1, stage="run", pid=os.getpid())
 
     captured: list[str] = []
 
@@ -197,3 +200,94 @@ def test_propagation_restored_after_unmount(
         f"propagate not restored: expected {original_propagate}, got {splog.propagate}"
     )
     assert logging.getLogger("splinter.live").level == logging.NOTSET
+
+
+def test_esc_kill_sets_restart_flag_and_status(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
+) -> None:
+    import pytest
+
+    pytest.importorskip("textual")
+
+    from textual.worker import WorkerState
+
+    from splinter.memory.session import Session
+    from splinter.tui import RunApp
+
+    monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
+    session = Session("ses_us003_kill_restart")
+    session.update_index("# us003\n")
+    session.set_status("running", strategy="raphael", tasks=1, stage="run", pid=os.getpid())
+
+    calls: list[str] = []
+
+    monkeypatch.setattr("splinter.procreg.terminate_all", lambda: calls.append("terminated"))
+
+    async def drive() -> None:
+        app = RunApp(session, {})
+        monkeypatch.setattr(app, "write_log", lambda *a, **k: None)
+
+        monkeypatch.setattr(
+            app,
+            "push_screen",
+            lambda _screen, callback=None: callback("kill") if callback else None,
+        )
+
+        await app.action_pause_kill()
+
+        assert app._restart_after_kill is True
+        assert calls == ["terminated"]
+        st = session.read_status()
+        assert st["state"] == "paused"
+        assert st["reason"] == "user_kill_restart"
+
+        relaunched: list[dict[str, object]] = []
+        monkeypatch.setattr(app, "_refresh", lambda: None)
+        monkeypatch.setattr(app, "write_log", lambda *a, **k: None)
+        monkeypatch.setattr(app, "_run_pipeline_worker", lambda **kw: relaunched.append(kw))
+
+        app.on_worker_state_changed(
+            SimpleNamespace(
+                worker=SimpleNamespace(name="pipeline"),
+                state=WorkerState.ERROR,
+            )
+        )
+
+        assert app._restart_after_kill is False
+        assert relaunched and relaunched[-1].get("resume") is True
+
+    asyncio.run(drive())
+
+
+def test_q_kills_and_exits_when_running(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
+    import pytest
+
+    pytest.importorskip("textual")
+
+    from splinter.memory.session import Session
+    from splinter.tui import RunApp
+
+    monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
+    session = Session("ses_us003_q_kill")
+    session.update_index("# us003\n")
+    session.set_status("running", strategy="raphael", tasks=1, stage="run", pid=os.getpid())
+
+    calls: list[str] = []
+    monkeypatch.setattr("splinter.procreg.terminate_all", lambda: calls.append("terminated"))
+
+    async def drive() -> None:
+        app = RunApp(session, {})
+
+        exit_codes: list[int] = []
+        monkeypatch.setattr(app, "exit", lambda code=0: exit_codes.append(code))
+        monkeypatch.setattr(app, "write_log", lambda *a, **k: None)
+
+        await app.action_kill_exit()
+
+        assert calls == ["terminated"]
+        st = session.read_status()
+        assert st["state"] == "paused"
+        assert st["reason"] == "user_kill"
+        assert exit_codes == [2]
+
+    asyncio.run(drive())

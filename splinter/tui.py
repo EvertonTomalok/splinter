@@ -1607,7 +1607,8 @@ class _ConfirmStopModal(ModalScreen[str | None]):
 
     Dismiss values:
       "pause"  → graceful stop (finish current iteration, then pause)
-      "kill"   → terminate all subprocesses immediately
+      "kill"   → terminate subprocesses immediately and restart from checkpoint
+      "kill_exit" → terminate subprocesses immediately and exit run UI
       None     → cancel
     """
 
@@ -1649,15 +1650,18 @@ class _ConfirmStopModal(ModalScreen[str | None]):
 
     def __init__(self, action: str) -> None:
         super().__init__()
-        self._action = action  # "pause" or "kill"
+        self._action = action  # "pause" | "kill" | "kill_exit"
 
     def compose(self) -> ComposeResult:
         if self._action == "pause":
             title = "⏸  Pause/Chat after current iteration?"
             detail = "Current step finishes, then run pauses. Resume with 'splinter resume'."
+        elif self._action == "kill_exit":
+            title = "🛑  Kill process now and exit?"
+            detail = "Subprocesses terminate immediately. Resume later with 'splinter resume'."
         else:
             title = "🛑  Kill process now?"
-            detail = "Subprocesses terminated immediately. Resume with 'splinter resume'."
+            detail = "Subprocesses terminate immediately, then run restarts from checkpoint."
         with Vertical(id="stop-dialog"):
             yield Static(title, id="stop-title")
             yield Static(f"[dim]{detail}[/]")
@@ -2321,7 +2325,7 @@ class RunApp(App[int]):
     COMMANDS = {_OrderedCommandsProvider}
 
     BINDINGS = [
-        ("q", "quit", "Quit"),
+        ("q", "kill_exit", "Kill/Exit"),
         ("ctrl+c", "quit", "Quit"),
         ("p", "pause_graceful", "Pause/Chat"),
         ("escape", "pause_kill", "Kill"),
@@ -2339,6 +2343,7 @@ class RunApp(App[int]):
         self._handler: logging.Handler | None = None
         self._prev_propagate: bool = True
         self._run_config: dict[str, str | None] = {}
+        self._restart_after_kill = False
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -2648,7 +2653,7 @@ class RunApp(App[int]):
         self.push_screen(_ConfirmStopModal("pause"), callback=_on_choice)
 
     async def action_pause_kill(self) -> None:
-        """ESC — kill subprocesses immediately and pause."""
+        """ESC — kill subprocesses immediately and restart from same checkpoint."""
 
         def _on_choice(result: str | None) -> None:
             if result != "kill":
@@ -2656,12 +2661,38 @@ class RunApp(App[int]):
             from splinter import procreg
 
             procreg.terminate_all()
-            self.session.set_status("paused", reason="user_kill")
-            self.write_log("— killed by user — resume with: splinter resume —", logging.WARNING)
-            self.rc = 2
-            self.exit(2)
+            cur = self.session.read_status()
+            self.session.set_status(
+                "paused",
+                reason="user_kill_restart",
+                stage=str(cur.get("stage", "run")),
+            )
+            self._restart_after_kill = True
+            self.write_log(
+                "— killed by user — restarting from last checkpoint… —",
+                logging.WARNING,
+            )
 
         self.push_screen(_ConfirmStopModal("kill"), callback=_on_choice)
+
+    async def action_kill_exit(self) -> None:
+        """q — kill subprocesses immediately and exit (old ESC behavior)."""
+        if _run_state(self.session) != "RUNNING":
+            await self.action_quit()
+            return
+
+        from splinter import procreg
+
+        procreg.terminate_all()
+        cur = self.session.read_status()
+        self.session.set_status(
+            "paused",
+            reason="user_kill",
+            stage=str(cur.get("stage", "run")),
+        )
+        self.write_log("— killed by user — resume with: splinter resume —", logging.WARNING)
+        self.rc = 2
+        self.exit(2)
 
     def _work(self) -> None:
         self._run_pipeline_worker(resume=bool(self.run_kwargs.get("resume", False)))
@@ -2834,6 +2865,14 @@ class RunApp(App[int]):
         if self._timer is not None:
             self._timer.stop()
             self._timer = None
+
+        if self._restart_after_kill:
+            self._restart_after_kill = False
+            self.write_log("— restarting run from checkpoint… —", logging.WARNING)
+            if self._timer is None and self.is_running:
+                self._timer = self.set_interval(0.5, self._refresh)
+            self._run_pipeline_worker(resume=True)
+            return
 
         # --- original dispatch (moved here from previous on_worker_state_changed) ---
         if self.rc == 0:
@@ -3303,7 +3342,10 @@ class ConfigureApp(App[bool]):
                 "Sync prices",
                 id="sync-prices",
                 variant="primary",
-                tooltip="Fetch current pricing from public endpoints (no API key) and save to .splinter/pricing.json",
+                tooltip=(
+                    "Fetch current pricing from public endpoints (no API key) "
+                    "and save to .splinter/pricing.json"
+                ),
             ),
             id="sync-bar",
         )

@@ -115,6 +115,13 @@ def _price_from_description(desc: str) -> ModelPrice | None:
     return ModelPrice(input=float(match.group(1)), output=float(match.group(2)))
 
 
+def _stream_cursor_line(line: str) -> None:
+    text = line.strip()
+    if not text:
+        return
+    _stream_log.info("  %s", text)
+
+
 def list_models() -> list[str]:
     """Return model ids available via ``agent --list-models``, prefixed with ``cursor/``."""
     try:
@@ -188,6 +195,7 @@ def run(
         cmd,
         timeout=timeout or _DEFAULT_TIMEOUT,
         cwd=project_dir,
+        on_line=_stream_cursor_line,
     )
     if proc.returncode != 0:
         raise RuntimeError(f"agent exited {proc.returncode}: {proc.stderr.strip()}")
