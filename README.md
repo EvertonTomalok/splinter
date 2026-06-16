@@ -9,6 +9,53 @@ in when the students fail). Everything else runs on cheap, fast models until
 proven otherwise.
 
 ```mermaid
+flowchart TD
+    SPLINTER["🐀 Splinter<br/><i>the sensei</i>"]
+
+    SPLINTER -->|plan · evaluate · escalate| CLAUDE["🟣 Claude<br/><code>claude -p</code>"]
+    SPLINTER -->|dispatch work| OPENCODE["🟢 opencode<br/><code>opencode-go</code>"]
+    SPLINTER -->|dispatch work| CURSOR["⬛ Cursor<br/><code>agent -p</code>"]
+    SPLINTER -->|dispatch work| CODEX["⚪ Codex<br/><code>codex</code>"]
+
+    CLAUDE --> WORK(["⚡ Code gets written"])
+    OPENCODE --> WORK
+    CURSOR --> WORK
+    CODEX --> WORK
+```
+
+Splinter is the sensei. It does not write code itself — it commands a roster of
+provider CLIs (**Claude**, **opencode**, **Cursor**, **Codex**), picking the
+cheapest student that can do the job and only climbing to a pricier one when the
+work demands it.
+
+A **strategy** (one of the four turtles) drives the run. For each task it sizes
+the difficulty, then routes that task to a provider + model from the ladder —
+cheap models for easy work, frontier models only when the task is critical.
+
+```mermaid
+flowchart TD
+    SPLINTER["🐀 Splinter<br/><i>sensei</i>"] --> STRAT{"🐢 Strategy<br/><i>pick a turtle</i>"}
+
+    STRAT --> LEO["🔵 Leonardo<br/><code>cascade</code>"]
+    STRAT --> RAPH["🔴 Raphael<br/><code>direct</code>"]
+    STRAT --> DON["🟣 Donatello<br/><code>adaptive</code>"]
+    STRAT --> MIKEY["🟠 Michelangelo<br/><code>sprint</code>"]
+
+    LEO --> SIZE{"📏 Size each task"}
+    RAPH --> SIZE
+    DON --> SIZE
+    MIKEY --> SIZE
+
+    SIZE -->|trivial / easy| EASY["🟢 cheap model<br/><i>fast, low cost</i>"]
+    SIZE -->|normal / hard| MID["🟡 mid model<br/><i>balanced</i>"]
+    SIZE -->|critical| HARD["🔴 frontier model<br/><i>max capability</i>"]
+
+    EASY --> PROV(["⚡ Provider runs the task"])
+    MID --> PROV
+    HARD --> PROV
+```
+
+```mermaid
 flowchart LR
     PRD["📄 PRD"] --> LOCATE["🔍 LOCATE"]
     LOCATE --> PLAN["🧠 PLAN"]
@@ -17,7 +64,9 @@ flowchart LR
     GATE --> EVAL["⚖️ EVAL"]
     EVAL -- "retry (same model + fixes)" --> RUN
     EVAL -- "escalate (higher model + fixes)" --> RUN
-    EVAL -- "✅ pass" --> DONE["🎉 Done"]
+    EVAL -- "✅ pass" --> FINAL["🏁 FINAL EVAL<br/><i>optional</i>"]
+    FINAL -- "❌ fail (fix round)" --> RUN
+    FINAL -- "✅ pass" --> DONE["🎉 Done"]
 ```
 
 **How the loop works:**
@@ -28,10 +77,11 @@ flowchart LR
 4. **RUN** — a student model receives the plan (or the plan + corrections from a previous eval) and implements
 5. **GATE** — deterministic checks run first (compile, test, lint, typecheck). If it breaks here, no expensive judge is called
 6. **EVAL** — the judge evaluates the output against acceptance criteria and returns what needs to be fixed
+7. **FINAL EVAL** *(optional)* — once the whole run completes, a last gate (your own checks) signs off on the finished work. If it fails, the run pauses and each `splinter resume` runs another fix round until it passes — see [Final eval](#final-eval--the-last-gate)
 
 If the eval fails, it returns the necessary corrections. The runner gets those fixes and tries again in the same session, reading from the session memory to avoid re-discovering context. On **retry**, the same model tries again with the corrections. On **escalate**, a higher model on the ladder takes over — but it still goes straight to RUN with the fixes, not back to PLAN.
 
-The loop continues until the judge is satisfied or you hit `opus-4.8` at the top of the ladder.
+The loop continues until the judge is satisfied or you hit the top of the ladder (`sonnet max`, with `opus-4.8` reachable via a premium jump).
 
 ---
 
@@ -71,25 +121,28 @@ interpreter (`uv run python <file>`), so the first task needs zero extra
 toolchains beyond what setup already verified.
 
 That run will: ask the sensei for a plan, hand it to a flash tier model, let it
-create the folder, write the Rust, compile and execute, then let the judge
-confirm the output. If the cheap model trips, Splinter quietly levels up and
-tries again.
+write the Python file and run it, then let the judge confirm the output. If the
+cheap model trips, Splinter quietly levels up and tries again.
 
 ---
 
 ## Requirements
 
-Splinter is the conductor, not the models. You bring the two CLIs it drives:
+Splinter is the conductor, not the models. You bring the provider CLIs it drives
+(Claude is required; the rest are optional):
 
 - **[uv](https://github.com/astral-sh/uv)** the Python project manager Splinter
   is built on
 - **Python 3.11+** (uv can install it for you)
 - **[Claude Code](https://docs.claude.com/en/docs/claude-code/overview)** the
-  `claude` CLI, authenticated, with access to `sonnet` and `opus-4.8`
+  `claude` CLI, authenticated — gives access to the full Claude lineup
+  (`haiku`, `sonnet`, `opus-4.8`, and the rest)
 - **[opencode](https://opencode.ai)** the `opencode` CLI, authenticated on the
   `opencode-go` provider _(not needed if you use `--use-cc-only`, see below)_
 - **[Codex](https://chatgpt.com/codex)** the `codex` CLI, authenticated with
   your OpenAI account _(optional — only needed for Codex-based runners)_
+- **[Cursor](https://cursor.com/cli)** the `agent` CLI, authenticated with your
+  Cursor account _(optional — only needed for Cursor-based runners)_
 
 No extra language toolchains required. The validation tasks are all Python, which
 uv already gives you.
@@ -171,10 +224,15 @@ for real:
 checking providers...
   claude -p (sonnet) ..... OK
   opencode models ........ OK (14 models)
+  codex -p ............... OK
+  agent -p (cursor) ...... OK
   ladder vs roster ....... OK
   python (uv run) ........ OK (3.11.x)
 environment ready.
 ```
+
+Optional providers that you have not authenticated are reported as skipped, not
+failed — only the providers your ladder actually uses must be live.
 
 If a provider is missing or not authenticated, setup tells you exactly which one
 and exits non zero, so you can drop it in CI too.
@@ -279,8 +337,8 @@ config takes precedence when both exist.
 
 ## Supported Models
 
-Splinter routes work through three provider families. You pick which to use (or all
-three) in your ladder configuration.
+Splinter routes work through four provider families. You pick which to use (or all
+four) in your ladder configuration.
 
 ### Claude (via `claude -p`)
 
@@ -321,13 +379,32 @@ Model IDs use the `codex/` prefix: e.g. `codex/gpt-5-codex` in config or CLI.
 
 Effort aliases: `minimal` → `low`, `xhigh` / `max` → `high`, `auto` → agent decides.
 
+### Cursor (via the `agent` CLI)
+
+Cursor's agent CLI proxies a deep roster — Claude, GPT/Codex, Gemini, Grok,
+Kimi, plus Cursor's own `composer` and an `auto` router that picks for you. One
+subscription, many families, dispatched non-interactively through `agent -p`.
+
+| Model | Notes |
+|-------|-------|
+| `cursor/auto` | Router — Cursor picks the family per request |
+| `cursor/composer-2.5` | Cursor's native fast coding model |
+| `cursor/claude-opus-4-8`, `cursor/claude-4.6-sonnet`, … | Claude families via Cursor |
+| `cursor/gpt-5.3-codex`, `cursor/gpt-5.5`, … | OpenAI / Codex families via Cursor |
+| `cursor/gemini-3.1-pro`, `cursor/grok-4.3`, `cursor/kimi-k2.5` | Other vendors Cursor proxies |
+
+Model IDs use the `cursor/` prefix. Each family is exposed under many
+effort/thinking/fast variants (e.g. `claude-opus-4-8-thinking-high-fast`); run
+`agent --list-models` for the live list. Cursor is subscription-metered, so its
+per-token rates are relative cost proxies for ladder ranking, not billing.
+
 ---
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
-| `splinter setup` | Verify environment — checks both CLIs, pings each provider, validates the ladder |
+| `splinter setup` | Verify environment — pings each provider CLI, validates the ladder |
 | `splinter prd [description]` | Generate a PRD interactively (Q&A with the sensei) |
 | `splinter run` | Run a task or PRD through a strategy |
 | `splinter resume [session]` | Resume a session — PRD refinement, or a failed/interrupted run |
@@ -425,10 +502,11 @@ Splitter splits the brain from the hands.
 
 - 🧠 **The sensei** (`opus-4.8` or `sonnet` via `claude -p`) reads your PRD and
   writes the plan. Once. Up front.
-- 🐢 **The students** (15+ open models via `opencode-go`) do the actual typing,
-  starting from the cheapest one that can plausibly handle the task.
+- 🐢 **The students** (a deep bench of models across `opencode`, `cursor` and
+  `codex`) do the actual typing, starting from the cheapest one that can
+  plausibly handle the task.
 - ⚖️ **The judge** checks the output against acceptance criteria. If a cheap
-  model flails, the judge climbs the ladder: `qwen -> sonnet -> sonnet max -> opus-4.8`.
+  model flails, the judge climbs the ladder: `deepseek -> minimax -> qwen -> sonnet max`.
 
 You only pay for intelligence when the work actually demands it.
 
@@ -577,14 +655,62 @@ Evaluation runs two ways: a written acceptance check, or a real skill/script
 
 ---
 
+## Final eval — the last gate
+
+The per-loop judge signs off on each task. The **final eval** is a separate,
+optional gate that runs **once, after the whole run completes** — your last
+word on whether the finished work is actually acceptable. It is off by default;
+you turn it on by adding a `final_eval:` list to `config.yaml`.
+
+Each entry is one gate, run in order, fail-fast. Four kinds:
+
+| Kind | What it does |
+|------|--------------|
+| `command` | Run a shell command; exit code decides pass/fail |
+| `skill` | LLM call against a skill/validator; `VERDICT` in the output decides pass/fail |
+| `review` | LLM call that returns raw output for you to read |
+| `ask_user` | No LLM — pauses immediately and hands the work to you |
+
+```yaml
+# config.yaml — enable the final eval gate
+final_eval:
+  - {name: tests,  kind: command, cmd: "uv run pytest"}
+  - {name: review, kind: skill, skill: acceptance_check, model: opus, variant: high}
+```
+
+**The N-round fix loop.** When a final eval gate fails, Splinter does not just
+report it — it pauses the run (`awaiting_user`) with the failure summary, then
+each `splinter resume` kicks off another **fix round**: the gate's feedback
+becomes the corrections, effort bumps up a notch, planner and per-loop eval are
+skipped, and the student goes straight to RUN to address exactly what the gate
+flagged. Resume again and it runs the next round. This repeats until the final
+eval passes — N rounds, driven entirely by what you asked the gate to enforce.
+
+```mermaid
+flowchart LR
+    DONE["🎉 Run done"] --> FE{"🏁 Final eval<br/><i>if enabled</i>"}
+    FE -- "✅ pass" --> SHIP["🚀 Shipped"]
+    FE -- "❌ fail" --> PAUSE["⏸️ Pause<br/><i>awaiting_user</i>"]
+    PAUSE -->|splinter resume| FIX["🔧 Fix round<br/><i>feedback + effort↑</i>"]
+    FIX --> FE
+```
+
+```bash
+# a gate failed → fix it and re-check; repeat until it passes
+splinter resume <session>
+```
+
+---
+
 ## Why it is different
 
 - **Cost aware by design.** Cheap first, expensive only when proven necessary.
   Every step logs its own token count and cost.
 - **Bring your own ladder.** The tiers and escalation rules live in a single
   `ladder.yaml`. Reorder, swap models, set your own jump points.
-- **Two CLIs, one brain.** Premium thinking through `claude -p`, a deep bench of
-  open models through `opencode-go`, unified behind one pipeline.
+- **Many CLIs, one brain.** Premium thinking through `claude -p`, a deep bench of
+  open models through `opencode-go`, plus `codex` and `agent` (Cursor) — all
+  unified behind one pipeline.
 - **Pick your fighter.** Long marathon or quick brawl, same harness, one flag.
 
 ---
@@ -592,7 +718,8 @@ Evaluation runs two ways: a written acceptance check, or a real skill/script
 ## Status
 
 Early and moving fast. The core loop (plan with the sensei, execute with a
-student, evaluate, escalate) already runs end to end. Strategies and the
-budget aware router are landing next.
+student, evaluate, escalate) runs end to end, and all four strategies (the
+turtles) plus the budget aware router are wired in. Provider coverage —
+Claude, opencode, Cursor, Codex — is expanding.
 
 Cowabunga. 🐢
