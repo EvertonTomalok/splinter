@@ -38,6 +38,12 @@ _EXPAND_FILES = {
 
 _CLEAR = "\033[2J\033[H"
 
+_TASK_HEADER_RE = re.compile(r"^# Task (\d+)/\d+: *(.*)$", re.MULTILINE)
+_ITERATION_HEADER_RE = re.compile(r"^## Iteration (\d+)\s*$", re.MULTILINE)
+_EVAL_ITER_HEADER_RE = re.compile(r"^### Iter (\d+):", re.MULTILINE)
+_TIER_RE = re.compile(r"tier (\d+)")
+_VERDICT_RE = re.compile(r"verdict:\s*(\w+)")
+
 
 # --- parsing helpers -------------------------------------------------------
 
@@ -65,28 +71,57 @@ def _run_state(session: Session) -> str:
         return "AWAITING_VALIDATION"
     if state:
         return state.upper()
-    return "DONE" if session.read("trace.md") else "UNKNOWN"
+    trace_path = session.dir / "trace.md"
+    if trace_path.exists() and trace_path.stat().st_size > 0:
+        return "DONE"
+    return "UNKNOWN"
 
 
-def _prd_story_titles(session: Session) -> list[str]:
+def _prd_story_titles(session: Session, prd_md: str | None = None) -> list[str]:
     """``US-NNN: Title`` lines from the session PRD ([] for a task-yaml run)."""
     from splinter import prd_session
 
-    prd = session.read("prd.md")
+    prd = session.read("prd.md") if prd_md is None else prd_md
     return prd_session.user_story_titles(prd) if prd.strip() else []
 
 
-def _prd_feature_name(session: Session) -> str:
+def _prd_feature_name(session: Session, prd_md: str | None = None) -> str:
     """PRD frontmatter ``feature`` for the single-shot trajectory label."""
     from splinter.agents.planner import _parse_frontmatter
 
-    prd = session.read("prd.md")
+    prd = session.read("prd.md") if prd_md is None else prd_md
     if prd.strip():
         fm, _ = _parse_frontmatter(prd)
         feat = fm.get("feature")
         if feat:
             return str(feat)
     return "task"
+
+
+def _task_ranges(loop_md: str) -> list[tuple[int, str, int, int]]:
+    out: list[tuple[int, str, int, int]] = []
+    prev_match: re.Match[str] | None = None
+    for match in _TASK_HEADER_RE.finditer(loop_md):
+        if prev_match is not None:
+            out.append(
+                (
+                    int(prev_match.group(1)),
+                    prev_match.group(2).strip(),
+                    prev_match.end(),
+                    match.start(),
+                )
+            )
+        prev_match = match
+    if prev_match is not None:
+        out.append(
+            (
+                int(prev_match.group(1)),
+                prev_match.group(2).strip(),
+                prev_match.end(),
+                len(loop_md),
+            )
+        )
+    return out
 
 
 def _tasks(loop_md: str) -> list[tuple[int, str, str]]:
@@ -98,17 +133,11 @@ def _tasks(loop_md: str) -> list[tuple[int, str, str]]:
     if not loop_md.strip():
         return [(1, "", "")]
 
-    blocks = re.split(r"^# Task (\d+)/\d+: *(.*)$", loop_md, flags=re.MULTILINE)
-    if len(blocks) == 1:
+    ranges = _task_ranges(loop_md)
+    if not ranges:
         return [(1, "", loop_md)]
 
-    out: list[tuple[int, str, str]] = []
-    for i in range(1, len(blocks), 3):
-        task_no = int(blocks[i])
-        title = blocks[i + 1].strip()
-        body = blocks[i + 2] if i + 2 < len(blocks) else ""
-        out.append((task_no, title, body))
-    return out
+    return [(task_no, title, loop_md[start:end]) for task_no, title, start, end in ranges]
 
 
 def _eval_segments(eval_md: str, task_count: int) -> list[str]:
@@ -125,41 +154,55 @@ def _eval_segments(eval_md: str, task_count: int) -> list[str]:
         return [""] * task_count
 
     segments: list[str] = []
-    current_segment: list[str] = []
+    segment_start: int | None = None
     prev_iter: int = -1
 
-    parts = re.split(r"^### Iter (\d+):", eval_md, flags=re.MULTILINE)
-    for i in range(1, len(parts), 2):
-        iter_num = int(parts[i])
-        block_body = parts[i + 1] if i + 1 < len(parts) else ""
-
+    for match in _EVAL_ITER_HEADER_RE.finditer(eval_md):
+        iter_num = int(match.group(1))
+        if segment_start is None:
+            segment_start = match.start()
+            prev_iter = iter_num
+            continue
         if iter_num <= prev_iter:
-            if current_segment:
-                segments.append("".join(current_segment))
-            current_segment = []
-        current_segment.append(f"### Iter {iter_num}:{block_body}")
+            segments.append(eval_md[segment_start : match.start()])
+            segment_start = match.start()
         prev_iter = iter_num
 
-    if current_segment:
-        segments.append("".join(current_segment))
+    if segment_start is not None:
+        segments.append(eval_md[segment_start:])
 
     while len(segments) < task_count:
         segments.append("")
     return segments[:task_count]
 
 
+def _iterations_in_range(text: str, start: int, end: int) -> list[tuple[int, str, str]]:
+    out: list[tuple[int, str, str]] = []
+    prev_match: re.Match[str] | None = None
+    for match in _ITERATION_HEADER_RE.finditer(text, start, end):
+        if prev_match is not None:
+            bstart = prev_match.end()
+            bend = match.start()
+            tier_match = _TIER_RE.search(text, bstart, bend)
+            verdict_match = _VERDICT_RE.search(text, bstart, bend)
+            tier = f"T{tier_match.group(1)}" if tier_match else "T?"
+            verdict = verdict_match.group(1) if verdict_match else "?"
+            out.append((int(prev_match.group(1)), tier, verdict))
+        prev_match = match
+
+    if prev_match is not None:
+        bstart = prev_match.end()
+        tier_match = _TIER_RE.search(text, bstart, end)
+        verdict_match = _VERDICT_RE.search(text, bstart, end)
+        tier = f"T{tier_match.group(1)}" if tier_match else "T?"
+        verdict = verdict_match.group(1) if verdict_match else "?"
+        out.append((int(prev_match.group(1)), tier, verdict))
+    return out
+
+
 def _iterations(loop_md: str) -> list[tuple[int, str, str]]:
     """Parse loop.md into (iteration, tier, verdict) tuples in order."""
-    out: list[tuple[int, str, str]] = []
-    blocks = re.split(r"^## Iteration (\d+)\s*$", loop_md, flags=re.MULTILINE)
-    for i in range(1, len(blocks), 2):
-        body = blocks[i + 1]
-        tier_match = re.search(r"tier (\d+)", body)
-        tier = f"T{tier_match.group(1)}" if tier_match else "T?"
-        verdict_match = re.search(r"verdict:\s*(\w+)", body)
-        verdict = verdict_match.group(1) if verdict_match else "?"
-        out.append((int(blocks[i]), tier, verdict))
-    return out
+    return _iterations_in_range(loop_md, 0, len(loop_md))
 
 
 def _prd_phases(phases_md: str) -> list[tuple[str, str]]:
@@ -175,18 +218,26 @@ def _prd_phases(phases_md: str) -> list[tuple[str, str]]:
 
 
 def _loop_block(loop_md: str, n: int) -> str:
-    blocks = re.split(r"^## Iteration (\d+)\s*$", loop_md, flags=re.MULTILINE)
-    for i in range(1, len(blocks), 2):
-        if int(blocks[i]) == n:
-            return f"## Iteration {n}\n{blocks[i + 1].strip()}"
+    target_start: int | None = None
+    for match in _ITERATION_HEADER_RE.finditer(loop_md):
+        if target_start is not None:
+            return f"## Iteration {n}\n{loop_md[target_start : match.start()].strip()}"
+        if int(match.group(1)) == n:
+            target_start = match.end()
+    if target_start is not None:
+        return f"## Iteration {n}\n{loop_md[target_start:].strip()}"
     return ""
 
 
 def _eval_block(eval_md: str, n: int) -> str:
-    parts = re.split(r"^### Iter (\d+):", eval_md, flags=re.MULTILINE)
-    for i in range(1, len(parts), 2):
-        if int(parts[i]) == n:
-            return f"### Iter {n}:{parts[i + 1].rstrip()}"
+    target_start: int | None = None
+    for match in _EVAL_ITER_HEADER_RE.finditer(eval_md):
+        if target_start is not None:
+            return f"### Iter {n}:{eval_md[target_start : match.start()].rstrip()}"
+        if int(match.group(1)) == n:
+            target_start = match.end()
+    if target_start is not None:
+        return f"### Iter {n}:{eval_md[target_start:].rstrip()}"
     return ""
 
 
@@ -236,12 +287,21 @@ def _collapse_phases(phases: list[tuple[str, str]]) -> list[tuple[str, int]]:
 
 def _task_iters(loop_md: str) -> list[tuple[int, str, list[tuple[int, str, str]]]]:
     result: list[tuple[int, str, list[tuple[int, str, str]]]] = []
-    for task_no, title, body in _tasks(loop_md):
-        raw = _iterations(body)
-        reindexed: list[tuple[int, str, str]] = [
+    ranges = _task_ranges(loop_md)
+    if not ranges:
+        raw = _iterations_in_range(loop_md, 0, len(loop_md))
+        reindexed_single: list[tuple[int, str, str]] = [
             (idx, tier, verdict) for idx, (_, tier, verdict) in enumerate(raw, 1)
         ]
-        result.append((task_no, title, reindexed))
+        result.append((1, "", reindexed_single))
+        return result
+
+    for task_no, title, start, end in ranges:
+        raw = _iterations_in_range(loop_md, start, end)
+        reindexed_task: list[tuple[int, str, str]] = [
+            (idx, tier, verdict) for idx, (_, tier, verdict) in enumerate(raw, 1)
+        ]
+        result.append((task_no, title, reindexed_task))
     return result
 
 
@@ -333,13 +393,24 @@ def _fmt_elapsed(raw: str) -> str:
     return f"{hours}h{minutes:02d}m"
 
 
-def _trajectory_lines(session: Session, iters: list[tuple[int, str, str]]) -> list[str]:
-    phases = _prd_phases(session.read("prd_phases.md"))
-    status = session.read_status()
-    final_eval_md = session.read("final_eval.md")
-    has_final_eval = bool((session.dir / "final_eval.yaml").exists() or final_eval_md)
-    phase_md = session.read("phases.md")
-    has_phases = bool(phase_md.strip())
+def _trajectory_lines(
+    session: Session,
+    iters: list[tuple[int, str, str]],
+    *,
+    loop_md: str | None = None,
+    prd_md: str | None = None,
+    phases_md: str | None = None,
+    phase_md: str | None = None,
+    final_eval_md: str | None = None,
+    status: dict[str, Any] | None = None,
+) -> list[str]:
+    phases_src = session.read("prd_phases.md") if phases_md is None else phases_md
+    phases = _prd_phases(phases_src)
+    status_data = session.read_status() if status is None else status
+    final_eval_text = session.read("final_eval.md") if final_eval_md is None else final_eval_md
+    phase_text = session.read("phases.md") if phase_md is None else phase_md
+    has_final_eval = bool((session.dir / "final_eval.yaml").exists() or final_eval_text)
+    has_phases = bool(phase_text.strip())
     if not (phases or iters or has_final_eval or has_phases):
         return []
 
@@ -365,12 +436,12 @@ def _trajectory_lines(session: Session, iters: list[tuple[int, str, str]]) -> li
             tally_parts.append(f"[{color}]{glyph}[/] {tally[verdict]}")
         lines.append(f"  [dim]run[/]  [dim]{len(iters)} iters[/] · " + "  ".join(tally_parts))
 
-        loop_md = session.read("loop.md")
-        task_groups = _task_iters(loop_md)
+        loop_text = session.read("loop.md") if loop_md is None else loop_md
+        task_groups = _task_iters(loop_text)
         multi_task = len(task_groups) > 1
 
         # Single-shot (raphael): list the PRD stories the one task implements.
-        story_titles = _prd_story_titles(session) if not multi_task else []
+        story_titles = _prd_story_titles(session, prd_md=prd_md) if not multi_task else []
         if len(story_titles) > 1:
             for st in story_titles:
                 lines.append(f"    [dim]📋 {st}[/]")
@@ -391,7 +462,7 @@ def _trajectory_lines(session: Session, iters: list[tuple[int, str, str]]) -> li
                 lines.append(indent + "  ".join(iter_cells[i : i + 3]))
 
     if has_phases:
-        phase_entries = _phase_entries(phase_md)
+        phase_entries = _phase_entries(phase_text)
         if phase_entries:
             lines.append(f"  [dim]phases[/]  [dim]{len(phase_entries)}[/]")
             for entry in phase_entries:
@@ -402,14 +473,14 @@ def _trajectory_lines(session: Session, iters: list[tuple[int, str, str]]) -> li
                 )
 
     if has_final_eval:
-        raw_state = str(status.get("state", ""))
-        fe_passed = status.get("final_eval_passed")
+        raw_state = str(status_data.get("state", ""))
+        fe_passed = status_data.get("final_eval_passed")
         awaiting = raw_state == "awaiting_validation"
-        if final_eval_md and fe_passed:
+        if final_eval_text and fe_passed:
             fe_label = "[green]✓ approved[/]"
         elif awaiting:
             fe_label = "[cyan]🔍 awaiting review[/]"
-        elif final_eval_md:
+        elif final_eval_text:
             fe_label = "[red]✗ failed[/]"
         else:
             fe_label = "[dim]pending[/]"
@@ -466,6 +537,10 @@ def render_overview(session: Session, state: str) -> str:
     plan = session.read("knowledge/plan.md")
     loop = session.read("loop.md")
     trace = session.read("trace.md")
+    prd = session.read("prd.md")
+    phases_md = session.read("prd_phases.md")
+    phase_md = session.read("phases.md")
+    final_eval_md = session.read("final_eval.md")
 
     state_color = {
         "RUNNING": "yellow",
@@ -480,7 +555,7 @@ def render_overview(session: Session, state: str) -> str:
     completed = state in ("COMPLETED", "DONE")
 
     n_tasks = status.get("tasks", "?")
-    n_stories = len(_prd_story_titles(session))
+    n_stories = len(_prd_story_titles(session, prd_md=prd))
     task_word = "task" if str(n_tasks) == "1" else "tasks"
     task_label = f"[b]{n_tasks}[/] [dim]{task_word}[/]"
     # Single-shot (raphael): one task, many stories — surface the story count.
@@ -590,7 +665,6 @@ def render_overview(session: Session, state: str) -> str:
     last_verdict = iters[-1][2] if iters else ""
     has_eval = any(v in ("PASS", "RETRY", "ESCALATE") for _, _, v in iters)
 
-    final_eval_md = session.read("final_eval.md")
     has_final_eval_cfg = bool((session.dir / "final_eval.yaml").exists() or final_eval_md)
     fe_passed = status.get("final_eval_passed")
     awaiting_validation = state == "AWAITING_VALIDATION"
@@ -648,13 +722,25 @@ def render_overview(session: Session, state: str) -> str:
         fe_current = awaiting_validation or (running and current_stage == "final_eval")
         lines.append(step(fe_done, fe_current, "final_eval", fe_detail))
 
-    lines.extend(_trajectory_lines(session, iters))
+    lines.extend(
+        _trajectory_lines(
+            session,
+            iters,
+            loop_md=loop,
+            prd_md=prd,
+            phases_md=phases_md,
+            phase_md=phase_md,
+            final_eval_md=final_eval_md,
+            status=status,
+        )
+    )
 
     return "\n".join(lines)
 
 
 def render_trajectory(session: Session) -> str:
-    phases = _prd_phases(session.read("prd_phases.md"))
+    phases_md = session.read("prd_phases.md")
+    phases = _prd_phases(phases_md)
     loop = session.read("loop.md")
     iters = _iterations(loop)
     final_eval_md = session.read("final_eval.md")
@@ -668,7 +754,8 @@ def render_trajectory(session: Session) -> str:
         lines.append(f"  P{i}. {phase}" + (f" · {detail}" if detail else ""))
     task_groups = _task_iters(loop)
     multi_task = len(task_groups) > 1
-    story_titles = _prd_story_titles(session) if not multi_task else []
+    prd = session.read("prd.md")
+    story_titles = _prd_story_titles(session, prd_md=prd) if not multi_task else []
     if len(story_titles) > 1:
         for st in story_titles:
             lines.append(f"  · {st}")

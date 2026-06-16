@@ -6,6 +6,7 @@ one-function edit — callers never reference flag strings directly.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import subprocess
@@ -115,11 +116,100 @@ def _price_from_description(desc: str) -> ModelPrice | None:
     return ModelPrice(input=float(match.group(1)), output=float(match.group(2)))
 
 
+def _tool_detail(args: dict[str, Any]) -> str:
+    for key in (
+        "description",
+        "command",
+        "globPattern",
+        "pattern",
+        "path",
+        "filePath",
+        "targetDirectory",
+    ):
+        val = args.get(key)
+        if val:
+            return str(val)
+    return ""
+
+
+def _tool_summary(obj: dict[str, Any]) -> str | None:
+    subtype = str(obj.get("subtype", ""))
+    raw_tool_call = obj.get("tool_call")
+    tool_call: dict[str, Any] = raw_tool_call if isinstance(raw_tool_call, dict) else {}
+    tool_name = ""
+    args: dict[str, Any] = {}
+    for key, value in tool_call.items():
+        if not key.endswith("ToolCall") or not isinstance(value, dict):
+            continue
+        tool_name = key[: -len("ToolCall")]
+        raw_args = value.get("args")
+        args = raw_args if isinstance(raw_args, dict) else {}
+        break
+    if not tool_name:
+        return None
+    detail = _tool_detail(args)
+    if subtype == "started":
+        state = "started"
+    elif subtype == "completed":
+        state = "completed"
+    else:
+        state = subtype
+    return f"🔧 {tool_name} [{state}] {detail}".strip()
+
+
+def _assistant_text(obj: dict[str, Any]) -> str:
+    raw_message = obj.get("message")
+    message: dict[str, Any] = raw_message if isinstance(raw_message, dict) else {}
+    raw_content = message.get("content")
+    content: list[Any] = raw_content if isinstance(raw_content, list) else []
+    parts: list[str] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") == "text":
+            txt = str(block.get("text", "")).strip()
+            if txt:
+                parts.append(txt)
+    return "\n".join(parts).strip()
+
+
 def _stream_cursor_line(line: str) -> None:
     text = line.strip()
     if not text:
         return
-    _stream_log.info("  %s", text)
+    try:
+        obj = json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        _stream_log.info("  %s", text)
+        return
+    if not isinstance(obj, dict):
+        return
+
+    etype = str(obj.get("type", ""))
+    if etype == "tool_call":
+        summary = _tool_summary(obj)
+        if summary:
+            _stream_log.info("  %s", summary)
+            try:
+                from splinter.obs.agentic import record_action
+
+                record_action("tool_use", summary, provider="cursor")
+            except Exception:
+                pass
+        return
+
+    if etype == "assistant":
+        summary = _assistant_text(obj)
+        if not summary:
+            return
+        one_line = summary.splitlines()[0][:160]
+        _stream_log.info("  💬 %s", one_line)
+        try:
+            from splinter.obs.agentic import record_action
+
+            record_action("text", f"💬 {one_line}", provider="cursor")
+        except Exception:
+            pass
 
 
 def list_models() -> list[str]:
@@ -168,16 +258,99 @@ def fetch_pricing() -> dict[str, ModelPrice]:
     return prices
 
 
+def _extract_tokens(raw_usage: object) -> dict[str, int]:
+    usage = raw_usage if isinstance(raw_usage, dict) else {}
+
+    def _n(key: str) -> int:
+        value = usage.get(key, 0)
+        if isinstance(value, bool):
+            return 0
+        if isinstance(value, (int, float)):
+            return int(value)
+        if isinstance(value, str):
+            try:
+                return int(float(value))
+            except ValueError:
+                return 0
+        return 0
+
+    return {
+        "input": _n("inputTokens"),
+        "output": _n("outputTokens"),
+        "cache_read": _n("cacheReadTokens"),
+        "cache_write": _n("cacheWriteTokens"),
+    }
+
+
+def _calc_cost(model: str, tokens: dict[str, int]) -> tuple[float, bool]:
+    bare = model.removeprefix(_MODEL_PREFIX)
+    price = _family_price(bare)
+    if price is None:
+        return 0.0, True
+    inp = int(tokens.get("input", 0) or 0)
+    out = int(tokens.get("output", 0) or 0)
+    cache_read = int(tokens.get("cache_read", 0) or 0)
+    cache_write = int(tokens.get("cache_write", 0) or 0)
+    total = (
+        inp * price.input
+        + out * price.output
+        + cache_read * price.cache_read
+        + cache_write * price.cache_write
+    ) / 1_000_000
+    return total, False
+
+
+def _parse_stream_json(stdout: str) -> tuple[str, dict[str, int], str | None, dict[str, Any]]:
+    final_text = ""
+    tokens: dict[str, int] = {}
+    session_id: str | None = None
+    last_assistant = ""
+    last_result: dict[str, Any] = {}
+
+    for raw_line in stdout.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(obj, dict):
+            continue
+        etype = str(obj.get("type", ""))
+        if etype == "assistant":
+            txt = _assistant_text(obj)
+            if txt:
+                last_assistant = txt
+        elif etype == "result":
+            last_result = obj
+            raw_result = obj.get("result")
+            if isinstance(raw_result, str):
+                final_text = raw_result.strip()
+            raw_sid = obj.get("session_id")
+            if isinstance(raw_sid, str) and raw_sid.strip():
+                session_id = raw_sid.strip()
+            tokens = _extract_tokens(obj.get("usage"))
+
+    text = final_text or last_assistant or stdout.strip()
+    return text, tokens, session_id, last_result
+
+
 @dataclass(frozen=True)
 class CursorResult:
     text: str
+    tokens: dict[str, int]
     raw: dict[str, Any]
+    session_id: str | None
+    cost: float
+    cost_indeterminate: bool = False
 
 
 def run(
     prompt: str,
     *,
     model: str | None = None,
+    session: str | None = None,
     timeout: int | None = None,
     project_dir: str = ".",
 ) -> CursorResult:
@@ -187,7 +360,9 @@ def run(
     a transient failure without inspecting returncode themselves.
     """
     bare_model = model.removeprefix(_MODEL_PREFIX) if model else None
-    cmd: list[str] = ["agent", "-p", "--trust"]
+    cmd: list[str] = ["agent", "-p", "--trust", "--output-format", "stream-json"]
+    if session is not None:
+        cmd += ["--resume", session]
     if bare_model and bare_model != "auto":
         cmd += ["--model", bare_model]
     cmd += ["--", prompt]
@@ -199,8 +374,17 @@ def run(
     )
     if proc.returncode != 0:
         raise RuntimeError(f"agent exited {proc.returncode}: {proc.stderr.strip()}")
-    text = proc.stdout.strip()
-    return CursorResult(text=text, raw={"returncode": proc.returncode})
+    text, tokens, session_id, parsed = _parse_stream_json(proc.stdout)
+    resolved_model = model or f"{_MODEL_PREFIX}auto"
+    cost, cost_indeterminate = _calc_cost(resolved_model, tokens)
+    return CursorResult(
+        text=text,
+        tokens=tokens,
+        raw={"returncode": proc.returncode, "parsed": parsed},
+        session_id=session_id,
+        cost=cost,
+        cost_indeterminate=cost_indeterminate,
+    )
 
 
 def ping(timeout: int = 30) -> bool:
@@ -228,8 +412,15 @@ class CursorProvider(ModelProvider):
         timeout: int | None = None,
         agent: str = "build",
     ) -> ProviderResponse:
-        result = run(prompt, model=model or None, timeout=timeout)
-        return ProviderResponse(text=result.text, raw=result.raw)
+        result = run(prompt, model=model or None, session=session, timeout=timeout)
+        return ProviderResponse(
+            text=result.text,
+            tokens=result.tokens,
+            cost=result.cost,
+            raw=result.raw,
+            session_id=result.session_id,
+            cost_indeterminate=result.cost_indeterminate,
+        )
 
     def fetch_pricing(self) -> dict[str, ModelPrice]:
         return fetch_pricing()

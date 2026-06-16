@@ -15,6 +15,7 @@ import copy
 import logging
 import re
 from collections.abc import Iterable
+from pathlib import Path
 from typing import Any
 
 from rich.markup import escape
@@ -440,6 +441,13 @@ _MAXIMIZE_CSS = """
 """
 
 
+def _path_sig(path: Path) -> tuple[int, int]:
+    if not path.exists():
+        return (0, 0)
+    stat = path.stat()
+    return (stat.st_mtime_ns, stat.st_size)
+
+
 def _find_shortcuts_cmd(screen: Any, app: Any) -> SystemCommand:
     if screen.query("HelpPanel"):
         return SystemCommand(
@@ -511,6 +519,9 @@ class AnalyzeApp(App[None]):
         self._expanded_tasks: set[int] = set()
         self._plan_node: TreeNode[Any] | None = None
         self._plan_idx: int = 0  # 0 = overview, 1..N = plan-N.md
+        self._traj_sig: (
+            tuple[tuple[int, int], tuple[int, int], tuple[int, int], tuple[int, int]] | None
+        ) = None
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -594,6 +605,16 @@ class AnalyzeApp(App[None]):
     def _refresh_trajectory(self) -> None:
         if self._traj_node is None:
             return
+
+        sig = (
+            _path_sig(self.session.dir / "prd_phases.md"),
+            _path_sig(self.session.dir / "loop.md"),
+            _path_sig(self.session.dir / "prd.md"),
+            _path_sig(self.session.dir / "phases.md"),
+        )
+        if sig == self._traj_sig:
+            return
+        self._traj_sig = sig
 
         currently_expanded: set[int] = set()
         if self._traj_node.children:

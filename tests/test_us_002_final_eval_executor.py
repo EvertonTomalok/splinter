@@ -280,7 +280,13 @@ class TestCursorProvider:
         from splinter.providers.cursor import CursorProvider, CursorResult
 
         provider = CursorProvider()
-        fake = CursorResult(text="VERDICT: PASS", raw={"returncode": 0})
+        fake = CursorResult(
+            text="VERDICT: PASS",
+            tokens={},
+            raw={"returncode": 0},
+            session_id=None,
+            cost=0.0,
+        )
         with patch("splinter.providers.cursor.run", return_value=fake):
             resp = provider.run("prompt", "cursor")
         assert "PASS" in resp.text

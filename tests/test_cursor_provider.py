@@ -37,6 +37,8 @@ def test_run_cmd_basic(monkeypatch: pytest.MonkeyPatch) -> None:
     assert cmd[0] == "agent"
     assert "-p" in cmd
     assert "--trust" in cmd
+    assert "--output-format" in cmd
+    assert cmd[cmd.index("--output-format") + 1] == "stream-json"
     assert "--" in cmd
     assert cmd[-1] == "hello"
 
@@ -62,6 +64,14 @@ def test_run_omits_model_flag_when_none(monkeypatch: pytest.MonkeyPatch) -> None
     captured = _capture(monkeypatch)
     cursor_module.run("do it", model=None)
     assert "--model" not in captured["cmd"]
+
+
+def test_run_passes_resume_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured = _capture(monkeypatch)
+    cursor_module.run("do it", session="sid-123")
+    cmd = captured["cmd"]
+    assert "--resume" in cmd
+    assert cmd[cmd.index("--resume") + 1] == "sid-123"
 
 
 def test_provider_run_passes_model(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -116,6 +126,41 @@ def test_run_streams_lines_to_live_logger(
 
     assert captured["on_line"] is cursor_module._stream_cursor_line
     assert any("live cursor line" in rec.message for rec in caplog.records)
+
+
+def test_stream_cursor_tool_call_logs_summary(caplog: pytest.LogCaptureFixture) -> None:
+    line = (
+        '{"type":"tool_call","subtype":"started","tool_call":'
+        '{"shellToolCall":{"args":{"description":"Run tests","command":"pytest -q"}}}}'
+    )
+    with caplog.at_level(logging.INFO, logger="splinter.live"):
+        cursor_module._stream_cursor_line(line)
+    assert any("🔧 shell [started] Run tests" in rec.message for rec in caplog.records)
+
+
+def test_run_parses_stream_json_tokens_and_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    usage = (
+        '"usage":{"inputTokens":1000,"outputTokens":200,'
+        '"cacheReadTokens":50,"cacheWriteTokens":10}'
+    )
+    stdout = (
+        '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Draft"}]}}\n'
+        f'{{"type":"result","result":"Final answer","session_id":"sid-abc",{usage}}}\n'
+    )
+
+    def fake_subprocess(
+        cmd: list[str], timeout: int = 0, cwd: str = ".", on_line: object = None
+    ) -> object:
+        return _fake_proc(stdout)
+
+    monkeypatch.setattr(cursor_module, "run_subprocess", fake_subprocess)
+    result = cursor_module.run("do it", model="cursor/composer-2.5")
+
+    assert result.text == "Final answer"
+    assert result.session_id == "sid-abc"
+    assert result.tokens["input"] == 1000
+    assert result.tokens["output"] == 200
+    assert result.cost > 0
 
 
 def test_list_models_parses_output(monkeypatch: pytest.MonkeyPatch) -> None:
