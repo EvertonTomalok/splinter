@@ -34,7 +34,9 @@ def _load_prd_skill() -> str:
     override = Path(".splinter") / "prompts" / "prd.md"
     if override.exists():
         return override.read_text()
-    for p in [Path("skills/prd/SKILL.md"), Path("splinter/skills/prd/SKILL.md")]:
+    from splinter.configure import prd_skill_candidates
+
+    for p in prd_skill_candidates():
         if p.exists():
             return p.read_text()
     return ""

@@ -723,6 +723,22 @@ def template_override_path(key: str) -> Path:
     return _prompts_dir() / f"{key}.md"
 
 
+def prd_skill_candidates() -> list[Path]:
+    """Candidate locations for the packaged PRD skill, cwd- and install-agnostic.
+
+    cwd-relative paths only resolve when run from the repo root; the
+    package-relative paths resolve when ``splinter configure`` runs from any
+    other project directory.
+    """
+    pkg_root = Path(__file__).resolve().parent  # .../splinter
+    return [
+        Path("skills/prd/SKILL.md"),
+        Path("splinter/skills/prd/SKILL.md"),
+        pkg_root.parent / "skills" / "prd" / "SKILL.md",
+        pkg_root / "skills" / "prd" / "SKILL.md",
+    ]
+
+
 def template_default_text(key: str) -> str:
     """Packaged/fallback text for ``key``."""
     if key == "agents":
@@ -730,7 +746,7 @@ def template_default_text(key: str) -> str:
         # writes their own, saved as the .splinter/AGENTS.md override.
         return ""
     if key == "prd":
-        for p in [Path("skills/prd/SKILL.md"), Path("splinter/skills/prd/SKILL.md")]:
+        for p in prd_skill_candidates():
             if p.exists():
                 return p.read_text()
         return ""
