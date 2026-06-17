@@ -707,6 +707,61 @@ def init_prompt_templates(*, overwrite: bool = False) -> list[Path]:
     return written
 
 
+# Templates editable via `splinter configure` → Templates screen: (key, label).
+EDITABLE_TEMPLATES: list[tuple[str, str]] = [
+    ("prd", "PRD"),
+    ("plan", "Planner"),
+    ("eval", "Eval"),
+]
+
+
+def template_override_path(key: str) -> Path:
+    """Path where the project override for ``key`` lives. May not exist."""
+    if key == "agents":
+        return Path(".splinter") / "AGENTS.md"
+    return _prompts_dir() / f"{key}.md"
+
+
+def template_default_text(key: str) -> str:
+    """Packaged/fallback text for ``key``."""
+    if key == "prd":
+        for p in [Path("skills/prd/SKILL.md"), Path("splinter/skills/prd/SKILL.md")]:
+            if p.exists():
+                return p.read_text()
+        return ""
+    return packaged_template(key)
+
+
+def template_current_text(key: str) -> str:
+    """Current text for ``key``: project override if present, else packaged default."""
+    override = template_override_path(key)
+    if override.exists():
+        return override.read_text()
+    return template_default_text(key)
+
+
+def template_is_overridden(key: str) -> bool:
+    """True when a project override file exists for ``key``."""
+    return template_override_path(key).exists()
+
+
+def write_template_override(key: str, text: str) -> Path:
+    """Write ``text`` as the project override for ``key``. Returns path written."""
+    path = template_override_path(key)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+    return path
+
+
+def reset_template_override(key: str) -> bool:
+    """Delete the project override for ``key``. Returns True if it existed."""
+    path = template_override_path(key)
+    if path.exists():
+        path.unlink()
+        return True
+    return False
+
+
 DEFAULT_CC_CONFIG: dict[str, Any] = {
     "defaults": {
         "strategy": "cascade",

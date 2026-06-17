@@ -31,11 +31,10 @@ def _prune_prd_session(session: Session) -> None:
 
 
 def _load_prd_skill() -> str:
-    skill_paths = [
-        Path("skills/prd/SKILL.md"),
-        Path("splinter/skills/prd/SKILL.md"),
-    ]
-    for p in skill_paths:
+    override = Path(".splinter") / "prompts" / "prd.md"
+    if override.exists():
+        return override.read_text()
+    for p in [Path("skills/prd/SKILL.md"), Path("splinter/skills/prd/SKILL.md")]:
         if p.exists():
             return p.read_text()
     return ""

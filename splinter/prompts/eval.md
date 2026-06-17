@@ -20,6 +20,8 @@ this task's acceptance criteria AND the project's Code Conventions (if provided)
 
 {standards_section}
 
+If `.splinter/AGENTS.md` exists, read it for project-specific rules and apply them when judging convention compliance.
+
 How to decide:
 
 - YOU are the authority on quality. Read the actual code/output and judge it

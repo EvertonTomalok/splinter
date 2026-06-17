@@ -29,7 +29,7 @@ from textual.command import DiscoveryHit, Hit, Hits
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.geometry import Offset
 from textual.reactive import reactive
-from textual.screen import ModalScreen
+from textual.screen import ModalScreen, Screen
 from textual.system_commands import SystemCommandsProvider
 from textual.timer import Timer
 from textual.widgets import (
@@ -49,6 +49,7 @@ from textual.widgets import (
     TextArea,
     Tree,
 )
+from textual.widgets.option_list import Option
 from textual.widgets.tree import TreeNode
 from textual.worker import Worker, WorkerState
 
@@ -3421,6 +3422,338 @@ class _PinnedVerticalScroll(VerticalScroll):
         return False
 
 
+class _TemplateEditor(TextArea):
+    """Markdown editor with the keymap users expect.
+
+    - ``ctrl+a`` selects all (TextArea's default ctrl+a is line-start).
+    - ``ctrl+c`` copies the selection, or the whole buffer when nothing is
+      selected, to the system clipboard (OSC-52) with a confirmation toast.
+    - click-and-drag selects text inside the widget; ``ctrl+x`` cuts.
+    """
+
+    BINDINGS = [
+        Binding("ctrl+a", "select_all", "Select all", show=False),
+        Binding("ctrl+shift+a", "select_all", "Select all", show=False),
+        Binding("ctrl+c", "copy", "Copy", show=False),
+    ]
+
+    def action_copy(self) -> None:
+        text = self.selected_text or self.text
+        if not text:
+            return
+        self.app.copy_to_clipboard(text)
+        scope = "selection" if self.selected_text else "whole template"
+        self.notify(f"Copied ({scope}) ✓", timeout=2)
+
+
+# Slot names the harness actually fills per template (see splinter/phases.py,
+# agents/runner.py, agents/evaluator.py). Templates not listed here (PRD, AGENTS.md)
+# are not ``str.format``-rendered, so they have no insertable slots — any ``{...}``
+# in their text is literal and must not be offered.
+_TEMPLATE_SLOTS: dict[str, list[str]] = {
+    "plan": [
+        "task_section",
+        "acceptance_section",
+        "code_context_section",
+        "standards_section",
+    ],
+    "eval": [
+        "task_section",
+        "acceptance_section",
+        "plan_section",
+        "output_section",
+        "gate_section",
+        "previous_evals_section",
+        "skill_section",
+        "standards_section",
+    ],
+}
+
+
+def _template_placeholder_keys(key: str) -> list[str]:
+    """Return the insertable ``{placeholder}`` slot names for template ``key``."""
+    return list(_TEMPLATE_SLOTS.get(key, []))
+
+
+class TemplatesScreen(Screen[None]):
+    """Edit project-level prompt overrides for PRD / Planner / Eval / AGENTS.md."""
+
+    DEFAULT_CSS = """
+    TemplatesScreen { layout: vertical; background: $background; }
+
+    #tmpl-top {
+        height: 3;
+        align: left middle;
+        padding: 0 1;
+        background: $panel;
+        border-bottom: tall $primary;
+    }
+    #tmpl-title {
+        width: 1fr;
+        content-align: left middle;
+        margin: 0 1;
+    }
+    #tmpl-top Button {
+        height: 3;
+        min-width: 12;
+        border: tall $boost;
+        background: $boost;
+        color: $text;
+        text-style: bold;
+        text-align: center;
+        content-align: center middle;
+        margin-right: 1;
+    }
+    #tmpl-top Button:hover { border: tall $accent; background: $panel-lighten-1; }
+    #tmpl-back { color: $text; }
+    #tmpl-back:hover { border: tall $primary; }
+    #tmpl-copy { color: $accent-lighten-2; border: tall $accent-darken-1; }
+    #tmpl-copy:hover { background: $accent; color: $text; border: tall $accent; }
+    #tmpl-default { color: $warning-lighten-2; border: tall $warning-darken-2; }
+    #tmpl-default:hover { background: $warning; color: $text; border: tall $warning; }
+    #tmpl-save { color: $success-lighten-2; border: tall $success-darken-1; }
+    #tmpl-save:hover { background: $success; color: $text; border: tall $success; }
+
+    #tmpl-body { height: 1fr; }
+
+    #tmpl-sidebar {
+        width: 26;
+        background: $panel;
+        border-right: tall $primary;
+    }
+    #tmpl-sidebar-head, #tmpl-keys-head {
+        height: 1;
+        padding: 0 1;
+        color: $text-muted;
+        text-style: bold;
+        background: $boost;
+    }
+    #tmpl-keys-head { margin-top: 1; }
+    #tmpl-list {
+        height: auto;
+        max-height: 12;
+        background: $panel;
+        padding: 1 0;
+        scrollbar-size-vertical: 1;
+    }
+    #tmpl-keys {
+        height: 1fr;
+        padding: 0;
+        background: $panel;
+        color: $accent;
+        scrollbar-size-vertical: 1;
+    }
+    #tmpl-keys > .option-list--option { padding: 0 1; color: $accent; }
+    #tmpl-keys > .option-list--option-highlighted {
+        background: $accent;
+        color: $text;
+        text-style: bold;
+    }
+    #tmpl-keys > .option-list--option-disabled { color: $text-muted; }
+    #tmpl-list > .option-list--option {
+        padding: 0 1;
+    }
+    #tmpl-list > .option-list--option-highlighted {
+        background: $primary;
+        color: $text;
+        text-style: bold;
+    }
+
+    #tmpl-pane { width: 1fr; height: 1fr; }
+    #tmpl-filebar {
+        height: 1;
+        padding: 0 1;
+        color: $text-muted;
+        background: $surface;
+        border-bottom: solid $boost;
+    }
+    #tmpl-editor {
+        width: 1fr;
+        height: 1fr;
+        border: none;
+    }
+    """
+
+    BINDINGS = [
+        ("escape", "go_models", "◂ Models"),
+        ("ctrl+s", "save_template", "Save"),
+    ]
+
+    def __init__(self) -> None:
+        super().__init__()
+        from splinter.configure import EDITABLE_TEMPLATES
+
+        self._keys = [k for k, _ in EDITABLE_TEMPLATES]
+        self._labels = [lbl for _, lbl in EDITABLE_TEMPLATES]
+        self._current_idx = 0
+        self._cur_keys: list[str] = []
+
+    def _item_label(self, idx: int) -> "Text":
+        from rich.text import Text
+
+        from splinter.configure import template_is_overridden
+
+        overridden = template_is_overridden(self._keys[idx])
+        label = Text()
+        if overridden:
+            label.append("● ", style="bold yellow")
+        else:
+            label.append("○ ", style="dim")
+        label.append(self._labels[idx])
+        return label
+
+    def compose(self) -> ComposeResult:
+        yield Horizontal(
+            Button("◂ Models", id="tmpl-back"),
+            Static("[dim]configure ·[/] [b]templates[/]", id="tmpl-title"),
+            Button("⧉ Copy", id="tmpl-copy"),
+            Button("↺ Default", id="tmpl-default"),
+            Button("✓ Save", id="tmpl-save"),
+            id="tmpl-top",
+        )
+        with Horizontal(id="tmpl-body"):
+            with Vertical(id="tmpl-sidebar"):
+                yield Static("TEMPLATES", id="tmpl-sidebar-head")
+                yield OptionList(
+                    *[self._item_label(i) for i in range(len(self._keys))],
+                    id="tmpl-list",
+                )
+                yield Static("INSERT KEY  [dim]· click to insert[/]", id="tmpl-keys-head")
+                yield OptionList(id="tmpl-keys")
+            with Vertical(id="tmpl-pane"):
+                yield Static("", id="tmpl-filebar")
+                yield self._make_editor()
+        yield Footer()
+
+    def _refresh_keys(self) -> None:
+        """Rebuild the clickable placeholder palette for the current template."""
+        box = self.query_one("#tmpl-keys", OptionList)
+        box.clear_options()
+        self._cur_keys = _template_placeholder_keys(self._keys[self._current_idx])
+        if not self._cur_keys:
+            box.add_option(Option("no insertable keys", disabled=True))
+            return
+        for name in self._cur_keys:
+            box.add_option(f"{{{name}}}")
+
+    def _insert_key(self, name: str) -> None:
+        editor = self.query_one("#tmpl-editor", TextArea)
+        editor.replace(f"{{{name}}}", editor.selection.start, editor.selection.end)
+        editor.focus()
+
+    def _make_editor(self) -> TextArea:
+        # "focus" tab behavior (not "indent") so Escape bubbles to the screen
+        # ("◂ Models") instead of being captured by the editor.
+        try:
+            return _TemplateEditor(
+                "",
+                id="tmpl-editor",
+                language="markdown",
+                soft_wrap=True,
+                show_line_numbers=True,
+                tab_behavior="focus",
+                theme="vscode_dark",
+            )
+        except Exception:
+            # syntax extras / theme unavailable — fall back to a plain editor
+            return _TemplateEditor("", id="tmpl-editor", soft_wrap=True)
+
+    def on_mount(self) -> None:
+        self._load_current()
+        # Focus the editor so typing, selection and copy work immediately.
+        self.query_one("#tmpl-editor", TextArea).focus()
+
+    def _do_copy(self) -> None:
+        editor = self.query_one("#tmpl-editor", TextArea)
+        text = editor.selected_text or editor.text
+        if not text:
+            return
+        self.app.copy_to_clipboard(text)
+        scope = "selection" if editor.selected_text else "whole template"
+        self.notify(f"Copied ({scope}) ✓", timeout=2)
+
+    def _load_current(self) -> None:
+        from splinter.configure import (
+            template_current_text,
+            template_is_overridden,
+            template_override_path,
+        )
+
+        key = self._keys[self._current_idx]
+        self.query_one("#tmpl-editor", TextArea).load_text(template_current_text(key))
+        overridden = template_is_overridden(key)
+        path = template_override_path(key)
+        origin = "project override" if overridden else "packaged default"
+        self.query_one("#tmpl-filebar", Static).update(
+            f"[b]{self._labels[self._current_idx]}[/]  [dim]·[/]  {path}  [dim]·[/]  {origin}"
+        )
+        self._refresh_list()
+        self._refresh_keys()
+
+    def _refresh_list(self) -> None:
+        ol = self.query_one("#tmpl-list", OptionList)
+        ol.clear_options()
+        for i in range(len(self._keys)):
+            ol.add_option(self._item_label(i))
+        if ol.highlighted != self._current_idx:
+            ol.highlighted = self._current_idx
+
+    def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:
+        if event.option_list.id != "tmpl-list":
+            return
+        # Re-highlighting the same template (e.g. when _refresh_list resets the
+        # OptionList) must NOT reload the editor — that would wipe unsaved edits.
+        if event.option_index == self._current_idx:
+            return
+        self._current_idx = event.option_index
+        self._load_current()
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        if event.option_list.id == "tmpl-list":
+            # Enter / click on a template → jump straight into editing.
+            self._current_idx = event.option_index
+            self._load_current()
+            self.query_one("#tmpl-editor", TextArea).focus()
+            event.stop()
+        elif event.option_list.id == "tmpl-keys":
+            if 0 <= event.option_index < len(self._cur_keys):
+                self._insert_key(self._cur_keys[event.option_index])
+            event.stop()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        bid = event.button.id or ""
+        if bid == "tmpl-back":
+            self.dismiss()
+        elif bid == "tmpl-copy":
+            self._do_copy()
+        elif bid == "tmpl-save":
+            self._do_save()
+        elif bid == "tmpl-default":
+            self._do_default()
+
+    def _do_save(self) -> None:
+        from splinter.configure import write_template_override
+
+        key = self._keys[self._current_idx]
+        write_template_override(key, self.query_one("#tmpl-editor", TextArea).text)
+        self.notify(f"Saved {self._labels[self._current_idx]} ✓", timeout=2)
+        self._refresh_list()
+
+    def _do_default(self) -> None:
+        from splinter.configure import reset_template_override
+
+        key = self._keys[self._current_idx]
+        reset_template_override(key)
+        self.notify(f"Reset {self._labels[self._current_idx]} to default", timeout=2)
+        self._load_current()
+
+    def action_go_models(self) -> None:
+        self.dismiss()
+
+    def action_save_template(self) -> None:
+        self._do_save()
+
+
 class ConfigureApp(App[bool]):
     """Pick a model per pipeline step, then write config.yaml on save."""
 
@@ -3491,7 +3824,8 @@ class ConfigureApp(App[bool]):
     BINDINGS = [
         ("s", "save", "Save"),
         ("q", "quit", "Quit"),
-        ("ctrl+c", "quit", "Quit"),
+        # ctrl+c is left to the focused widget (TextArea copy); ctrl+q quits.
+        ("ctrl+q", "quit", "Quit"),
     ]
 
     def __init__(self) -> None:
@@ -3711,6 +4045,8 @@ class ConfigureApp(App[bool]):
         bid = event.button.id or ""
         if bid == "sync-prices":
             self._do_sync_prices()
+        elif bid == "goto-templates":
+            self.push_screen(TemplatesScreen())
         elif bid == "gate_preset":
             self.push_screen(_GateLangModal(), self._on_lang_picked)
         elif bid == "gate_add":
@@ -3794,6 +4130,7 @@ class ConfigureApp(App[bool]):
                     "and save to .splinter/pricing.json"
                 ),
             ),
+            Button("Templates ▸", id="goto-templates"),
             id="sync-bar",
         )
         yield _PinnedVerticalScroll(*rows, self._gates_section(), id="rows")

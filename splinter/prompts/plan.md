@@ -10,4 +10,6 @@ You are a senior engineer. Write a concise implementation plan for this task.
 
 {standards_section}
 
+If `.splinter/AGENTS.md` exists, read it for project-specific rules before planning.
+
 Output a numbered list of steps. Be specific about files and functions. The implementation must comply with the Code Conventions above.
