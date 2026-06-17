@@ -1743,10 +1743,11 @@ class _AskUserModal(ModalScreen[tuple[str, str] | None]):
         ("escape", "exit_modal", "Cancel"),
     ]
 
-    def __init__(self, reason: str = "", corrections: str = "") -> None:
+    def __init__(self, reason: str = "", corrections: str = "", prefill: str = "") -> None:
         super().__init__()
         self._reason = reason
         self._corrections = corrections
+        self._prefill = prefill
 
     def compose(self) -> ComposeResult:
         display = self._corrections or self._reason or "The evaluator needs guidance to continue."
@@ -1757,7 +1758,7 @@ class _AskUserModal(ModalScreen[tuple[str, str] | None]):
             with VerticalScroll(id="ask-skill-scroll"):
                 yield Markdown(display)
             yield Label("Your feedback (optional — sent to the runner):", id="ask-input-label")
-            yield TextArea("", id="ask-response")
+            yield TextArea(self._prefill, id="ask-response")
             with Horizontal(id="ask-actions"):
                 yield Button("  Answer  (a)", id="answer", variant="success")
                 yield Button("  ✓ Accept / Done  (f)", id="accept_done", variant="success")
@@ -1800,7 +1801,8 @@ class _AskUserModal(ModalScreen[tuple[str, str] | None]):
         elif bid == "cowabunga":
             self.dismiss(("cowabunga", ""))
         elif bid == "edit_config":
-            self.dismiss(("edit_config", ""))
+            text = self.query_one("#ask-response", TextArea).text.strip()
+            self.dismiss(("edit_config", text))
         else:
             self.dismiss(None)
 
@@ -2481,11 +2483,13 @@ class _ManualValidationModal(ModalScreen[tuple[str, str] | None]):
         summary: str = "",
         all_passed: bool = True,
         show_phase: bool = False,
+        prefill: str = "",
     ) -> None:
         super().__init__()
         self._summary = summary
         self._all_passed = all_passed
         self._show_phase = show_phase
+        self._prefill = prefill
 
     def compose(self) -> ComposeResult:
         status = "✅ checks passed" if self._all_passed else "⚠️  some checks failed"
@@ -2496,7 +2500,7 @@ class _ManualValidationModal(ModalScreen[tuple[str, str] | None]):
                 yield Markdown(self._summary or "_Final eval complete._")
             yield Rule()
             yield Label("Your response (leave blank to approve as-is):", id="val-response-label")
-            yield TextArea("", id="val-response")
+            yield TextArea(self._prefill, id="val-response")
             with Horizontal(id="val-actions"):
                 yield Button("  Approve  (a)", id="approve", variant="success")
                 if self._show_phase:
@@ -2533,7 +2537,7 @@ class _ManualValidationModal(ModalScreen[tuple[str, str] | None]):
         elif bid == "plan_changes":
             self.dismiss(("changes", text))
         elif bid == "edit_config":
-            self.dismiss(("edit_config", ""))
+            self.dismiss(("edit_config", text))
         else:
             self.dismiss(None)
 
@@ -2847,7 +2851,7 @@ class RunApp(App[int]):
         else:
             self.run_worker(self._work, thread=True, name="pipeline", exclusive=True)
 
-    def _show_ask_user_modal(self) -> None:
+    def _show_ask_user_modal(self, prefill: str = "") -> None:
         st = self.session.read_status()
         reason = str(st.get("ask_reason", ""))
         corrections = str(st.get("ask_corrections", ""))
@@ -2911,19 +2915,22 @@ class RunApp(App[int]):
                     resume=True, user_guidance=None, jump_premium=False, cowabunga=True
                 )
             elif action == "edit_config":
+                prefill_text = text
 
                 def _on_cfg(cfg: "dict[str, str | None] | None") -> None:
                     if cfg is not None:
                         self._store_config_overrides(cfg)
-                    self.call_after_refresh(self._show_ask_user_modal)
+                    self.call_after_refresh(
+                        lambda: self._show_ask_user_modal(prefill=prefill_text)
+                    )
 
                 self.push_screen(_EditConfigModal(self._run_config), callback=_on_cfg)
             else:
                 self.exit(3)
 
-        self.push_screen(_AskUserModal(reason, corrections), callback=_on_choice)
+        self.push_screen(_AskUserModal(reason, corrections, prefill=prefill), callback=_on_choice)
 
-    def _show_manual_validation_modal(self) -> None:
+    def _show_manual_validation_modal(self, prefill: str = "") -> None:
         st = self.session.read_status()
         summary = str(st.get("final_eval_summary", ""))
         all_passed = bool(st.get("final_eval_passed", True))
@@ -2968,16 +2975,19 @@ class RunApp(App[int]):
                     self._timer = self.set_interval(0.5, self._refresh)
                 self.call_after_refresh(self._show_phase_modal)
             elif action == "edit_config":
+                prefill = text
 
                 def _on_cfg(cfg: "dict[str, str | None] | None") -> None:
                     if cfg is not None:
                         self._store_config_overrides(cfg)
-                    self.call_after_refresh(self._show_manual_validation_modal)
+                    self.call_after_refresh(
+                        lambda: self._show_manual_validation_modal(prefill=prefill)
+                    )
 
                 self.push_screen(_EditConfigModal(self._run_config), callback=_on_cfg)
 
         self.push_screen(
-            _ManualValidationModal(summary, all_passed, show_phase=self._phased),
+            _ManualValidationModal(summary, all_passed, show_phase=self._phased, prefill=prefill),
             callback=_on_choice,
         )
 

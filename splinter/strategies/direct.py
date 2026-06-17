@@ -1,15 +1,15 @@
 """Raphael — the ``direct`` single-task strategy.
 
 Flow: plan **once**, then *run is the loop*. Each iteration runs the task at the
-current tier; the mechanical gate records a pass/fail (never a veto) and a
-frontier-LLM evaluator judges the code generation against the task. The evaluator
-alone decides what happens next:
+current tier; the mechanical gate records a pass/fail and, on failure, short-circuits
+eval with a RETRY. When the gate passes, a frontier-LLM evaluator judges the code
+generation against the task and decides what happens next:
 
 * **PASS** -> done.
-* **fix, same model** -> re-run in the *same* session with the evaluator's
-  corrections plus the gate output (so the model understands what broke). Cheapest
-  retry — both the runner and the evaluator keep their conversation context. A
-  gate failure is normal and lands here, not in an escalation.
+* **fix, same model** -> re-run in the *same* session with corrections plus the
+  gate output (so the model understands what broke). Cheapest retry — both the
+  runner and the evaluator keep their conversation context. A gate failure lands
+  here via the gate short-circuit, not via eval escalation.
 * **change the runner** (ESCALATE / JUMP_PREMIUM) -> bump the tier; the new model
   AND a fresh quality eval start from clean sessions, with the corrections plus the
   session knowledge memory. The original plan is reused, never regenerated.
@@ -581,9 +581,9 @@ class DirectStrategy(Strategy):
             verdict = ctx.verdict
             assert verdict is not None and ctx.run_result is not None
 
-            # The evaluator owns the verdict. A gate failure never short-circuits
-            # it and never escalates on its own — it is fed back to the runner as
-            # corrections. The runner changes ONLY when the eval says so.
+            # Gate failures short-circuit eval with a RETRY verdict; eval failures
+            # and passes are owned by the evaluator. Gate output is merged into
+            # retry corrections below. The runner tier changes ONLY when eval says so.
             action = evaluator.next_action(verdict, tier, max_tier=MAX_TIER, cowabunga=cowabunga)
 
             if action.stop:
@@ -799,7 +799,7 @@ def _retry_corrections(corrections: str, gate_output: str) -> str:
     parts = []
     if corrections:
         parts.append(corrections)
-    if gate_output:
+    if gate_output and gate_output not in corrections:
         parts.append(f"## Gate Output\n{gate_output}")
     return "\n\n".join(parts)
 

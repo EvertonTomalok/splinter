@@ -692,67 +692,75 @@ def test_single_shot_runs_one_task_on_resume(
     assert len(ran) == 1
 
 
-# --- gate never vetoes the eval; eval session continuity ---------------------
+# --- gate short-circuits eval on failure; eval session continuity ---------------------
 
 
-def test_gate_failure_does_not_veto_eval(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """A failing gate must NOT short-circuit the eval. If the frontier eval says
-    PASS, the task passes — the gate is only a secondary signal."""
+def test_gate_failure_skips_eval_forces_retry(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Gate fail must short-circuit eval and force a RETRY. Eval runs only after gate passes."""
     from splinter.agents.gate import GateResult
 
     monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
-    runs: list[int] = []
+    judge_calls: list[int] = []
+    corrections_seen: list[str] = []
 
-    def fake_run_task(task: Task, plan: str, tier: int, ladder: object, **kw: object) -> RunResult:
-        runs.append(tier)
+    def fake_run_task(
+        task: Task, plan: str, tier: int, ladder: object, *, corrections: str = "", **kw: object
+    ) -> RunResult:
+        corrections_seen.append(corrections)
         return RunResult(
-            text="x",
-            model="stub",
-            tier=tier,
-            tokens={"in": 1},
-            cost=0.0,
-            raw={},
+            text="x", model="stub", tier=tier, tokens={"in": 1}, cost=0.0, raw={},
             opencode_session=None,
         )
 
-    monkeypatch.setattr("splinter.strategies.stages.run_task", fake_run_task)
-    monkeypatch.setattr(
-        "splinter.strategies.stages.run_gate",
-        lambda **k: GateResult(passed=False, checks=[("pytest", False, "boom")]),
-    )
+    gate_calls = [0]
+
+    def fake_run_gate(**k: object) -> GateResult:
+        gate_calls[0] += 1
+        # fail first two calls, pass on the third
+        if gate_calls[0] < 3:
+            return GateResult(passed=False, checks=[("pytest", False, "BOOM output")])
+        return GateResult(passed=True, checks=[("pytest", True, "")])
 
     def fake_judge_pass(self: object, *a: object, **k: object) -> EvalVerdict:
+        judge_calls.append(1)
         return EvalVerdict(decision=Decision.PASS, reason="ok", corrections="", raw="")
 
+    monkeypatch.setattr("splinter.strategies.stages.run_task", fake_run_task)
+    monkeypatch.setattr("splinter.strategies.stages.run_gate", fake_run_gate)
     monkeypatch.setattr("splinter.strategies.stages.Evaluator.judge", fake_judge_pass)
     monkeypatch.setattr("splinter.strategies.direct._make_plan", lambda *a, **k: "plan")
 
     from splinter.models.roster import load_ladder
 
-    session = Session("ses_gate_noveto")
+    session = Session("ses_gate_shortcircuit")
     DirectStrategy().execute(
-        [Task(description="t", acceptance="a")], session, load_ladder(), max_iterations=3
+        [Task(description="t", acceptance="a")], session, load_ladder(), max_iterations=5
     )
-    # Passed on the very first iteration despite the gate failing.
-    assert runs == [1]
+    # Eval only called once (after gate finally passes on iter 3).
+    assert judge_calls == [1]
+    assert any("BOOM output" in c for c in corrections_seen)
+    for c in corrections_seen:
+        if "BOOM output" in c:
+            assert c.count("BOOM output") == 1
     assert "gate: FAIL" in session.read("loop.md")
+    assert "gate: PASS" in session.read("loop.md")
 
 
 def test_eval_session_continues_same_runner_resets_on_escalate(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """Same runner → eval keeps its session; on escalate (runner change) the eval
-    session resets, and the gate output reaches the runner's corrections."""
+    session resets. Gate passes so eval runs normally each iteration."""
     from splinter.agents.gate import GateResult
 
     monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
     eval_sessions_in: list[str | None] = []
-    corrections_in: list[str] = []
 
     def fake_run_task(
         task: Task, plan: str, tier: int, ladder: object, *, corrections: str = "", **kw: object
     ) -> RunResult:
-        corrections_in.append(corrections)
         return RunResult(
             text="x",
             model="stub",
@@ -780,7 +788,7 @@ def test_eval_session_continues_same_runner_resets_on_escalate(
     monkeypatch.setattr("splinter.strategies.stages.run_task", fake_run_task)
     monkeypatch.setattr(
         "splinter.strategies.stages.run_gate",
-        lambda **k: GateResult(passed=False, checks=[("pytest", False, "TRACEBACK boom")]),
+        lambda **k: GateResult(passed=True, checks=[("pytest", True, "")]),
     )
     monkeypatch.setattr("splinter.strategies.stages.Evaluator.judge", fake_judge)
     monkeypatch.setattr("splinter.strategies.direct._make_plan", lambda *a, **k: "plan")
@@ -797,5 +805,3 @@ def test_eval_session_continues_same_runner_resets_on_escalate(
     # iter1 starts with no eval session; iter2 (same tier RETRY) continues "ev1";
     # iter2's ESCALATE resets it, so iter3 (new tier) starts fresh (None).
     assert eval_sessions_in == [None, "ev1", None]
-    # The gate output rode along into the runner's corrections on retry.
-    assert any("TRACEBACK boom" in c for c in corrections_in)

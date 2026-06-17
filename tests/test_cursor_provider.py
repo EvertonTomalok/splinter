@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from splinter.providers import cursor as cursor_module
-from splinter.providers.cursor import CursorProvider
+from splinter.providers.cursor import CursorProvider, _calc_cost
 from splinter.providers.cursor import list_models as _real_list_models
 
 
@@ -232,3 +232,41 @@ def test_cursor_provider_supports_pricing() -> None:
     provider = CursorProvider()
     assert provider.supports_pricing is True
     assert hasattr(provider, "fetch_pricing")
+
+
+# ── _calc_cost cache-exclusion ───────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "tokens,expected_cost",
+    [
+        (
+            {"input": 1_000_000, "output": 0, "cache_read": 5_000_000, "cache_write": 2_000_000},
+            3.0,  # cursor/auto: $3/MTok input; cache terms not billed
+        ),
+        (
+            {"input": 0, "output": 1_000_000, "cache_read": 9_000_000, "cache_write": 9_000_000},
+            15.0,  # 1M * $15 output only
+        ),
+        (
+            {"input": 500_000, "output": 500_000,
+             "cache_read": 999_000_000, "cache_write": 999_000_000},
+            pytest.approx(9.0),  # (0.5*3 + 0.5*15)
+        ),
+        (
+            {"input": 0, "output": 0, "cache_read": 1_000_000, "cache_write": 1_000_000},
+            0.0,
+        ),
+    ],
+)
+def test_calc_cost_ignores_cache_tokens(tokens: dict, expected_cost: float) -> None:
+    cost, indeterminate = _calc_cost("cursor/auto", tokens)
+    assert indeterminate is False
+    assert cost == expected_cost
+
+
+def test_calc_cost_unknown_model_indeterminate() -> None:
+    tokens = {"input": 1_000_000, "output": 1_000_000, "cache_read": 999_000_000}
+    cost, indeterminate = _calc_cost("cursor/nonexistent-model-xyz-v99", tokens)
+    assert cost == 0.0
+    assert indeterminate is True

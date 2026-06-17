@@ -1,11 +1,12 @@
 """Chain-of-Responsibility stages for one iteration of the orchestration loop.
 
-A single iteration is Run -> Gate -> Eval. The gate is NOT a veto: it runs the
-mechanical checks and records the result, but never short-circuits the chain. The
-evaluator is a frontier LLM that judges the actual code generation against the
-task — it is the authority on quality and always runs, with the gate result as a
-secondary signal. The per-task orchestration (retry vs. escalate, budget,
-replanning policy) lives in the strategy that drives this chain.
+A single iteration is Run -> Gate -> Eval. On failure the gate short-circuits
+eval: it records the failing checks, forces a RETRY verdict, and feeds the gate
+output back to the runner. When the gate passes, the evaluator is a frontier LLM
+that judges the actual code generation against the task — it is the authority on
+quality, with the gate result as a secondary signal. The per-task orchestration
+(retry vs. escalate, budget, replanning policy) lives in the strategy that drives
+this chain.
 """
 
 from __future__ import annotations
@@ -219,12 +220,11 @@ class RunStage(Stage):
 
 
 class GateStage(Stage):
-    """Run the deterministic checks and record the result — never a veto.
+    """Run the deterministic checks and record the result.
 
-    The gate is a mechanical signal, not the judge. A failure is normal and gets
-    fed back to the runner (so it understands what's wrong) and to the evaluator
-    (as secondary context); the chain always continues to ``EvalStage``, which
-    owns the quality verdict.
+    On pass the chain continues to ``EvalStage``. On failure the gate short-circuits
+    eval: it sets a RETRY verdict and returns so the runner can fix the mechanical
+    failures before the next iteration.
     """
 
     name = "gate"
@@ -259,6 +259,40 @@ class GateStage(Stage):
                 f"- gate: {'PASS' if result.passed else 'FAIL'} {ctx.gate_detail}".rstrip()
             )
             record_gate_marker()
+
+            if not result.passed:
+                from splinter.enums import Decision
+                from splinter.strategies.base import EvalVerdict
+
+                corrections = (
+                    f"Fix the gate failures before re-attempting:\n\n{ctx.gate_output}"
+                )
+                ctx.verdict = EvalVerdict(
+                    decision=Decision.RETRY,
+                    reason=f"Gate failed ({ctx.gate_detail}); eval skipped.",
+                    corrections=corrections,
+                )
+                ctx.eval_history.append(
+                    f"Iter {ctx.iteration} [{Decision.RETRY}]: "
+                    f"Gate failed ({ctx.gate_detail}) | Corrections: {corrections}"
+                )
+                ctx._loop_lines.append("- verdict: RETRY (gate failed — eval skipped)")
+                ctx.flush_loop()
+                ctx.session.append(
+                    "eval.md",
+                    f"### Iter {ctx.iteration}: RETRY (gate short-circuit)\n"
+                    f"**Reason:** Gate failed ({ctx.gate_detail}); eval skipped.\n"
+                    f"**Corrections:** {corrections}\n\n",
+                )
+                ctx.knowledge.write_note(
+                    f"task{ctx.task_index}-review-iter-{ctx.iteration}",
+                    f"# Review · iter {ctx.iteration} (T{ctx.tier})\n"
+                    f"- decision: {Decision.RETRY}\n"
+                    f"- reason: Gate failed ({ctx.gate_detail}); eval skipped.\n"
+                    f"\n## Corrections\n{corrections}\n",
+                )
+                return False
+
             return True
 
 
@@ -360,7 +394,7 @@ class EvalStage(Stage):
         )
         if verdict.corrections:
             review += f"\n## Corrections\n{verdict.corrections}\n"
-        ctx.knowledge.write_note(f"review-iter-{ctx.iteration}", review)
+        ctx.knowledge.write_note(f"task{ctx.task_index}-review-iter-{ctx.iteration}", review)
         return True
 
 

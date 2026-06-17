@@ -496,10 +496,8 @@ def run_pipeline(
         eval_fix_prompt = _compose_eval_fix_prompt(resume_eval_findings, user_guidance or "")
         tasks = [_build_eval_fix_task(eval_fix_prompt, effective_effort)]
         strategy_name = "direct"
-        if _next_skip_planner:
-            effective_user_guidance = eval_fix_prompt
-        else:
-            effective_user_guidance = None
+        effective_user_guidance = None
+        _clear_round_caches(session)
         session.write(
             f"knowledge/eval-fix-input-{resume_round}.md",
             f"# Eval Fix Input — Round {resume_round}\n\n{eval_fix_prompt}\n",
@@ -762,7 +760,7 @@ def run_pipeline(
             round_index=resume_round + 1,
             next_effort=bump_effort(cur_effort),
             ask_corrections=val_exc.summary,
-            next_skip_planner="true",
+            next_skip_planner="false",
             next_skip_eval="true",
         )
         log.info("run paused — awaiting manual validation")

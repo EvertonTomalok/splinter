@@ -250,7 +250,7 @@ class TestFinalEvalRetry:
         _base_patches(monkeypatch, fe_results=[_fail_fe()])
         run_pipeline(task_path=task_yaml, session=session)
         status = session.read_status()
-        assert status.get("next_skip_planner") == "true"
+        assert status.get("next_skip_planner") == "false"
         assert status.get("next_skip_eval") == "true"
         assert status.get("next_skip_final_eval") in ("", None)
 
@@ -414,24 +414,28 @@ class TestResumeNewRound:
         assert "Final Eval Findings" in captured[0]["tasks"][0].description
         assert "fix all findings" in captured[0]["tasks"][0].description
 
-    def test_final_eval_resume_skip_planner_uses_eval_plus_user_text(
+    def test_final_eval_resume_replans_with_eval_findings_in_task(
         self,
         session: Session,
         task_yaml: str,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        """Final eval resume must clear old plan and call planner fresh with eval findings
+        as task description — not skip the planner or use the stale round-0 plan."""
         session.set_status(
             "awaiting_user",
             stage="final_eval",
             round_index=1,
             next_effort="hard",
             ask_corrections="skill findings from final eval",
-            next_skip_planner="true",
+            next_skip_planner="false",
         )
-        captured: list[dict] = []
+        captured_tasks: list = []
+        captured_kwargs: list[dict] = []
 
         def _capturing_direct_execute(self_, tasks, sess, ladder, **kwargs):
-            captured.append(kwargs)
+            captured_tasks.extend(tasks)
+            captured_kwargs.append(kwargs)
             return [_run_result()]
 
         monkeypatch.setattr("splinter.pipeline.localize", lambda *a, **kw: [])
@@ -452,9 +456,14 @@ class TestResumeNewRound:
             user_guidance="apply urgently",
         )
 
-        assert len(captured) == 1
-        assert "Final Eval Findings" in str(captured[0]["user_guidance"])
-        assert "apply urgently" in str(captured[0]["user_guidance"])
+        assert len(captured_tasks) == 1
+        # Eval findings + user guidance land in task description so the planner uses them.
+        assert "Final Eval Findings" in captured_tasks[0].description
+        assert "apply urgently" in captured_tasks[0].description
+        # Planner must NOT be skipped — it plans fresh from the eval findings.
+        assert captured_kwargs[0].get("skip_planner") is False
+        # user_guidance is not the vehicle anymore; task description carries the context.
+        assert captured_kwargs[0].get("user_guidance") is None
 
     def test_final_eval_resume_skip_final_eval_skips_tail_check(
         self,

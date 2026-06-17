@@ -29,7 +29,7 @@ _CLI_EFFORTS = {"low", "medium", "high", "xhigh", "max"}
 _EFFORT_ALIASES = {"minimal": "low", "auto": None}
 
 # Bootstrap seed USD/MTok (input, output) — used when the public catalogue has
-# no entry for a model id. Cache tiers are derived in fetch_pricing.
+# no entry for a model id.
 _PRICING: dict[str, tuple[float, float]] = {
     "haiku": (1.00, 5.00),
     "claude-haiku-4-5": (1.00, 5.00),
@@ -56,21 +56,6 @@ def _seed_price(model: str) -> ModelPrice | None:
     return None
 
 
-def _with_derived_cache(price: ModelPrice) -> ModelPrice:
-    """Fill cache tiers from base rates when the source omits them.
-
-    Anthropic cache reads bill at ~0.1x input and 5-minute writes at ~1.25x.
-    """
-    if price.cache_read > 0 or price.cache_write > 0:
-        return price
-    return ModelPrice(
-        input=price.input,
-        output=price.output,
-        cache_read=round(price.input * 0.1, 6),
-        cache_write=round(price.input * 1.25, 6),
-    )
-
-
 def _lookup_price(model: str) -> ModelPrice | None:
     from splinter.models.pricing_store import price_for
 
@@ -88,18 +73,7 @@ def _calc_cost(model: str, usage: dict[str, Any]) -> tuple[float, bool]:
         return 0.0, True
     inp = int(usage.get("input_tokens", 0) or 0)
     out = int(usage.get("output_tokens", 0) or 0)
-    cache_read = int(
-        usage.get("cache_read_input_tokens", 0)
-        or usage.get("cached_input_tokens", 0)
-        or 0
-    )
-    cache_write = int(usage.get("cache_creation_input_tokens", 0) or 0)
-    cost = (
-        inp * price.input
-        + out * price.output
-        + cache_read * price.cache_read
-        + cache_write * price.cache_write
-    ) / 1_000_000
+    cost = (inp * price.input + out * price.output) / 1_000_000
     return cost, False
 
 
@@ -128,7 +102,7 @@ def fetch_pricing() -> dict[str, ModelPrice]:
     for alias, (inp, out) in _PRICING.items():
         public = public_price_for(alias, live, aliases=_PUBLIC_ALIASES.get(alias, ()))
         price = public if public is not None else ModelPrice(input=inp, output=out)
-        prices[alias] = _with_derived_cache(price)
+        prices[alias] = price
     return prices
 
 

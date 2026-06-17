@@ -72,10 +72,7 @@ def _calc_cost(model: str, tokens: dict[str, int]) -> tuple[float, bool]:
         return 0.0, True
     inp = int(tokens.get("input", 0) or 0)
     out = int(tokens.get("output", 0) or 0)
-    cached = int(tokens.get("cached_input", 0) or 0)
-    cost = (
-        inp * price.input + out * price.output + cached * price.cache_read
-    ) / 1_000_000
+    cost = (inp * price.input + out * price.output) / 1_000_000
     return cost, False
 
 

@@ -33,13 +33,22 @@ class Trace:
 
     @property
     def total_tokens(self) -> dict[str, int]:
-        inp = sum(e.tokens.get("input", 0) for e in self.entries)
-        out = sum(e.tokens.get("output", 0) for e in self.entries)
-        return {"input": inp, "output": out}
+        out: dict[str, int] = {}
+        for e in self.entries:
+            for key, val in e.tokens.items():
+                out[key] = out.get(key, 0) + val
+        return out
 
     @property
     def elapsed(self) -> float:
         return time.monotonic() - self._start
+
+    @property
+    def cost_by_model(self) -> dict[str, float]:
+        out: dict[str, float] = {}
+        for e in self.entries:
+            out[e.model] = out.get(e.model, 0.0) + e.cost
+        return out
 
     def task_cost(self, task: int) -> float:
         return sum(e.cost for e in self.entries if e.task == task)
@@ -47,14 +56,22 @@ class Trace:
     def task_entries(self, task: int) -> list[RunEntry]:
         return [e for e in self.entries if e.task == task]
 
+    def model_entries(self, model: str) -> list[RunEntry]:
+        return [e for e in self.entries if e.model == model]
+
     def summary(self) -> str:
+        by_model = self.cost_by_model
         lines = [
             "# Trace\n",
             f"- total runs: {len(self.entries)}",
             f"- total cost: ${self.total_cost:.4f}",
             f"- total tokens: {self.total_tokens}",
-            f"- elapsed: {self.elapsed:.1f}s\n",
+            f"- elapsed: {self.elapsed:.1f}s",
         ]
+
+        for model in sorted(by_model):
+            lines.append(f"- {model}: ${by_model[model]:.4f}")
+        lines.append("")
 
         tasks = sorted({e.task for e in self.entries})
         if len(tasks) > 1 or (tasks and tasks[0] > 0):
@@ -67,6 +84,18 @@ class Trace:
                     "output": sum(e.tokens.get("output", 0) for e in t_entries),
                 }
                 lines.append(f"- task {t}: {len(t_entries)} runs, ${t_cost:.4f}, tokens={t_tokens}")
+            lines.append("")
+
+        if self.entries:
+            lines.append("## Per-model\n")
+            for model in sorted(by_model):
+                m_entries = self.model_entries(model)
+                m_cost = by_model[model]
+                m_tokens = {
+                    "input": sum(e.tokens.get("input", 0) for e in m_entries),
+                    "output": sum(e.tokens.get("output", 0) for e in m_entries),
+                }
+                lines.append(f"- {model}: {len(m_entries)} runs, ${m_cost:.4f}, tokens={m_tokens}")
             lines.append("")
 
         lines.append("## Runs\n")

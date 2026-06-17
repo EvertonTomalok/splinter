@@ -109,6 +109,39 @@ def test_calc_cost_zero_tokens() -> None:
     assert indeterminate is False
 
 
+@pytest.mark.parametrize(
+    "tokens,expected_cost",
+    [
+        (
+            {"input": 1_000_000, "output": 0, "cached_input": 5_000_000},
+            10.0,  # 1M * $10 input; cached_input not billed
+        ),
+        (
+            {"input": 0, "output": 1_000_000, "cached_input": 9_000_000},
+            40.0,  # 1M * $40 output only
+        ),
+        (
+            {"input": 500_000, "output": 500_000, "cached_input": 999_000_000},
+            pytest.approx(25.0),  # (0.5*10 + 0.5*40)
+        ),
+        (
+            {"input": 0, "output": 0, "cached_input": 1_000_000},
+            0.0,
+        ),
+    ],
+)
+def test_calc_cost_ignores_cached_input(
+    tmp_path: pytest.TempPathFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    tokens: dict,
+    expected_cost: float,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    cost, indeterminate = _calc_cost("gpt-5-codex", tokens)
+    assert indeterminate is False
+    assert cost == expected_cost
+
+
 # ── _normalize_effort ────────────────────────────────────────────────────────
 
 

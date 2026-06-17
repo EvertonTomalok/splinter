@@ -68,12 +68,7 @@ def _family_price(bare_id: str) -> ModelPrice | None:
     for prefix in sorted(_FAMILY_PRICING, key=len, reverse=True):
         if bare_id == prefix or bare_id.startswith(prefix):
             inp, out = _FAMILY_PRICING[prefix]
-            return ModelPrice(
-                input=inp,
-                output=out,
-                cache_read=round(inp * 0.1, 6),
-                cache_write=round(inp * 1.25, 6),
-            )
+            return ModelPrice(input=inp, output=out)
     return None
 
 _PRICE_LINE_RE = re.compile(
@@ -289,14 +284,7 @@ def _calc_cost(model: str, tokens: dict[str, int]) -> tuple[float, bool]:
         return 0.0, True
     inp = int(tokens.get("input", 0) or 0)
     out = int(tokens.get("output", 0) or 0)
-    cache_read = int(tokens.get("cache_read", 0) or 0)
-    cache_write = int(tokens.get("cache_write", 0) or 0)
-    total = (
-        inp * price.input
-        + out * price.output
-        + cache_read * price.cache_read
-        + cache_write * price.cache_write
-    ) / 1_000_000
+    total = (inp * price.input + out * price.output) / 1_000_000
     return total, False
 
 
