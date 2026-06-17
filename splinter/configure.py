@@ -709,6 +709,7 @@ def init_prompt_templates(*, overwrite: bool = False) -> list[Path]:
 
 # Templates editable via `splinter configure` → Templates screen: (key, label).
 EDITABLE_TEMPLATES: list[tuple[str, str]] = [
+    ("agents", "AGENTS.md"),
     ("prd", "PRD"),
     ("plan", "Planner"),
     ("eval", "Eval"),
@@ -724,6 +725,10 @@ def template_override_path(key: str) -> Path:
 
 def template_default_text(key: str) -> str:
     """Packaged/fallback text for ``key``."""
+    if key == "agents":
+        # No packaged default and the root AGENTS.md is NOT read here — the user
+        # writes their own, saved as the .splinter/AGENTS.md override.
+        return ""
     if key == "prd":
         for p in [Path("skills/prd/SKILL.md"), Path("splinter/skills/prd/SKILL.md")]:
             if p.exists():
