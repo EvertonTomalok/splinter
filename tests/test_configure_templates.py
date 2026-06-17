@@ -82,16 +82,10 @@ class TestAgentsTemplate:
 
 
 class TestPrdOverride:
-    def test_override_wins_over_skill_md(
+    def test_override_wins_over_packaged(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.chdir(tmp_path)
-        # Create packaged fallback so we can verify it's NOT returned
-        skill_dir = tmp_path / "skills" / "prd"
-        skill_dir.mkdir(parents=True)
-        (skill_dir / "SKILL.md").write_text("packaged skill text")
-
-        # Create override
         override_dir = tmp_path / ".splinter" / "prompts"
         override_dir.mkdir(parents=True)
         (override_dir / "prd.md").write_text("custom prd override")
@@ -100,25 +94,28 @@ class TestPrdOverride:
 
         assert _load_prd_skill() == "custom prd override"
 
-    def test_fallback_to_skill_md_when_no_override(
+    def test_packaged_default_when_no_override(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.chdir(tmp_path)
-        skill_dir = tmp_path / "skills" / "prd"
-        skill_dir.mkdir(parents=True)
-        (skill_dir / "SKILL.md").write_text("packaged skill text")
-
-        from splinter.prd import _load_prd_skill
-
-        assert _load_prd_skill() == "packaged skill text"
-
-    def test_empty_string_when_no_files(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+        # No skills/ dir, no override — PRD still resolves from the packaged
+        # splinter/prompts/prd.md template (like plan/eval), regardless of cwd.
         monkeypatch.chdir(tmp_path)
         from splinter.prd import _load_prd_skill
 
-        assert _load_prd_skill() == ""
+        text = _load_prd_skill()
+        assert "name: prd" in text
+
+    def test_blank_override_falls_back_to_packaged(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        override_dir = tmp_path / ".splinter" / "prompts"
+        override_dir.mkdir(parents=True)
+        (override_dir / "prd.md").write_text("   \n")
+
+        from splinter.prd import _load_prd_skill
+
+        assert "name: prd" in _load_prd_skill()
 
 
 # ---------------------------------------------------------------------------

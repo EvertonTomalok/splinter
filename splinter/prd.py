@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import re
-from pathlib import Path
 
 import yaml
 
@@ -31,15 +30,11 @@ def _prune_prd_session(session: Session) -> None:
 
 
 def _load_prd_skill() -> str:
-    override = Path(".splinter") / "prompts" / "prd.md"
-    if override.exists():
-        return override.read_text()
-    from splinter.configure import prd_skill_candidates
+    # Packaged template (splinter/prompts/prd.md) with .splinter override support,
+    # same resolution as plan/eval.
+    from splinter.configure import template_current_text
 
-    for p in prd_skill_candidates():
-        if p.exists():
-            return p.read_text()
-    return ""
+    return template_current_text("prd")
 
 
 def run_prd(*, description: str = "", strategy: str | None = None, no_ground: bool = False) -> int:

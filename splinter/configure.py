@@ -723,41 +723,27 @@ def template_override_path(key: str) -> Path:
     return _prompts_dir() / f"{key}.md"
 
 
-def prd_skill_candidates() -> list[Path]:
-    """Candidate locations for the packaged PRD skill, cwd- and install-agnostic.
-
-    cwd-relative paths only resolve when run from the repo root; the
-    package-relative paths resolve when ``splinter configure`` runs from any
-    other project directory.
-    """
-    pkg_root = Path(__file__).resolve().parent  # .../splinter
-    return [
-        Path("skills/prd/SKILL.md"),
-        Path("splinter/skills/prd/SKILL.md"),
-        pkg_root.parent / "skills" / "prd" / "SKILL.md",
-        pkg_root / "skills" / "prd" / "SKILL.md",
-    ]
-
-
 def template_default_text(key: str) -> str:
     """Packaged/fallback text for ``key``."""
     if key == "agents":
         # No packaged default and the root AGENTS.md is NOT read here — the user
         # writes their own, saved as the .splinter/AGENTS.md override.
         return ""
-    if key == "prd":
-        for p in prd_skill_candidates():
-            if p.exists():
-                return p.read_text()
-        return ""
+    # prd/plan/eval all ship as packaged templates under splinter/prompts/.
     return packaged_template(key)
 
 
 def template_current_text(key: str) -> str:
-    """Current text for ``key``: project override if present, else packaged default."""
+    """Current text for ``key``: project override if present, else packaged default.
+
+    A blank override (e.g. an accidental empty save) falls back to the packaged
+    default — except for ``agents``, which is legitimately empty by default.
+    """
     override = template_override_path(key)
     if override.exists():
-        return override.read_text()
+        text = override.read_text()
+        if text.strip() or key == "agents":
+            return text
     return template_default_text(key)
 
 
