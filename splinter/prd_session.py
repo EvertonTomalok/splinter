@@ -136,8 +136,12 @@ def open_questions(
         f"## Draft PRD / request\n{prd_text}\n"
         f"{ground_section}"
         f"{strat_hint}\n"
-        "Ask 3-5 essential clarifying questions, each with lettered options (A/B/C/D). "
-        "Cover only genuinely ambiguous points. Output ONLY the questions, no preamble."
+        "You MUST ask exactly 3-10 clarifying questions, each with lettered options (A/B/C/D). "
+        "Even if the request looks complete, surface the decisions you would otherwise "
+        "assume — turn each assumed default into a question whose options include that "
+        "default. Never skip, never finalize, never answer the questions yourself, and "
+        "never output an 'assumptions' or 'defaults' list in place of questions. "
+        "Output ONLY the numbered questions with their lettered options, no preamble."
     )
     return _ask(prompt, resume=None, session=session)
 

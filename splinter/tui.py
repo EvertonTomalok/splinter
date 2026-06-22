@@ -3163,13 +3163,24 @@ class RunApp(App[int]):
         self.query_one("#log", RichLog).write(f"[{color}]{safe}[/]" if color else safe)
 
     def _send_live_command(self) -> None:
+        from splinter import procreg
+
         inp = self.query_one("#user-cmd-input", Input)
         text = inp.value.strip()
         if not text:
             return
-        self.session.queue_live_command(text)
         log = self.query_one("#log", RichLog)
         log.write(f"[bold cyan]👤 User → runner:[/] [cyan]{escape(text)}[/]")
+        # Record the directive so the next run picks it up as corrections, then
+        # interrupt the in-flight provider process. Killing it (any provider, via
+        # SIGTERM to the process group) makes the loop restart that single session
+        # with the directive merged in — exactly one process keeps following, no
+        # second subprocess racing the same conversation.
+        self.session.queue_live_command(text)
+        if procreg.request_interrupt():
+            log.write("[dim]interrupting current run to apply directive…[/]")
+        else:
+            log.write("[dim]queued — applies on the next iteration[/]")
         inp.value = ""
         inp.focus()
 

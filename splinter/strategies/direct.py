@@ -34,6 +34,7 @@ from splinter.memory.session import Session
 from splinter.models.roster import Ladder
 from splinter.obs.agentic import agentic_scope, record_exchange
 from splinter.obs.trace import Trace
+from splinter.procreg import DirectiveInterrupt
 from splinter.providers.dispatch import run_text
 from splinter.skills import resolve_eval_skill
 from splinter.strategies.base import AskUserPause, EvalVerdict, GracefulPause, Strategy
@@ -539,6 +540,7 @@ class DirectStrategy(Strategy):
                 oc_session=oc_session,
                 eval_session=eval_session,
                 corrections=corrections,
+                user_directive=live_cmd,
                 eval_history=eval_history,
                 task_index=task_index,
                 skip_eval=skip_eval,
@@ -552,7 +554,17 @@ class DirectStrategy(Strategy):
                 if checkpoint.verdict is not None:
                     ctx.verdict = _deserialize_verdict(checkpoint.verdict)
 
-            chain.handle(ctx)
+            try:
+                chain.handle(ctx)
+            except DirectiveInterrupt:
+                # User pushed a live directive mid-run. The in-flight provider
+                # process was killed; restart the iteration so it re-runs with the
+                # directive merged in (popped at the top of the next pass). The
+                # session ids carried into this iteration are reused, so the same
+                # conversation continues — just one process, now steered.
+                log.info("run interrupted by live directive — restarting iteration")
+                session.write("trace.md", trace.summary())
+                continue
 
             session.write("trace.md", trace.summary())
 

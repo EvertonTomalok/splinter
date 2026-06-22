@@ -66,6 +66,7 @@ class Evaluator:
         eval_skill: ResolvedSkill | None = None,
         gate_passed: bool = True,
         gate_detail: str = "",
+        user_directive: str = "",
         session: str | None = None,
         timeout: int | None = None,
         trace: object = None,
@@ -97,6 +98,7 @@ class Evaluator:
             else:
                 skill_section_text = section("Eval Skill", eval_skill.body)
         gate_text = "PASS" if gate_passed else f"FAIL — {gate_detail or 'mechanical checks failed'}"
+        directive_section = section("User Directive", user_directive) if user_directive else ""
         if session:
             # Session already holds task/acceptance/plan/standards — send only the delta.
             prompt = render(
@@ -104,6 +106,7 @@ class Evaluator:
                 output_section=section("Updated Implementation Output", run_output),
                 gate_section=section("Mechanical Gate Result", gate_text),
                 previous_evals_section=section("Previous Eval Feedback", previous_evals),
+                user_directive_section=directive_section,
             )
         else:
             plan_section_text = section("Implementation Plan", plan) if plan else ""
@@ -115,6 +118,7 @@ class Evaluator:
                 output_section=section("Implementation Output", run_output),
                 gate_section=section("Mechanical Gate Result", gate_text),
                 previous_evals_section=section("Previous Eval Feedback", previous_evals),
+                user_directive_section=directive_section,
                 skill_section=skill_section_text,
                 standards_section=section("Code Conventions", load_standards()),
             )

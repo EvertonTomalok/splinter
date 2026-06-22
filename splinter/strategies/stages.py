@@ -47,6 +47,9 @@ class IterationContext:
     #: Evaluator's provider session — continued across same-runner retries.
     eval_session: str | None = None
     corrections: str = ""
+    #: Live directive popped from the TUI this iteration — also shown to the eval
+    #: so a "no need for make test, pass it" steers the verdict, not just the run.
+    user_directive: str = ""
     eval_history: list[str] = field(default_factory=list)
     task_index: int = 0
     skip_eval: bool = False
@@ -350,6 +353,7 @@ class EvalStage(Stage):
                 eval_skill=self._resolved_skill,
                 gate_passed=ctx.gate_passed,
                 gate_detail=ctx.gate_detail,
+                user_directive=ctx.user_directive,
                 session=ctx.eval_session,
                 timeout=ctx.ladder.eval_timeout,
                 trace=ctx.trace,

@@ -87,7 +87,7 @@ def _run_prd(
         f"User request: {description}\n"
         f"{ground_section}"
         f"{strategy_hint}\n"
-        "Generate 3-5 clarifying questions with lettered options (A/B/C/D). "
+        "Generate 3-10 clarifying questions with lettered options (A/B/C/D). "
         "Include a strategy question unless a strategy was pre-selected. "
         "Output ONLY the questions, no preamble."
     )

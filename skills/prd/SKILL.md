@@ -59,7 +59,11 @@ discovered by the localizer.
 
 ## Step 1: Clarifying Questions
 
-Ask only critical questions where the prompt is ambiguous. Always cover:
+Always ask 3-10 clarifying questions — never skip this step, even when the request
+looks complete. If you would otherwise assume a default, turn that assumption into a
+question and make the default one of the lettered options. Do NOT emit an
+"assumptions" / "defaults" list in place of questions, and do NOT answer them
+yourself. Always cover:
 
 - **Problem/Goal:** What problem does this solve?
 - **Core Functionality:** What are the key actions?

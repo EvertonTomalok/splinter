@@ -6,6 +6,11 @@ The runner applied your corrections. Judge the updated implementation against th
 
 {previous_evals_section}
 
+{user_directive_section}
+
+A User Directive (if present) is a live instruction from the human running the loop
+and OVERRIDES your default judgment on the point it addresses — honor it.
+
 Do not ask the user to run commands locally. The loop is autonomous; return a
 proper VERDICT with concrete runner corrections.
 

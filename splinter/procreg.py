@@ -21,6 +21,14 @@ from typing import Any
 _lock = threading.Lock()
 _active: set[subprocess.Popen[str]] = set()
 _stop_event = threading.Event()
+_interrupt_event = threading.Event()
+
+
+class DirectiveInterrupt(RuntimeError):
+    """Raised by :func:`run_subprocess` when the in-flight provider process is
+    killed to apply a live user directive. The pipeline loop catches it, merges
+    the queued directive into corrections, and restarts the same session — so a
+    single provider process keeps following the conversation."""
 
 
 def request_stop() -> None:
@@ -36,6 +44,27 @@ def stop_requested() -> bool:
 def clear_stop() -> None:
     """Clear the stop flag (called on resume so a fresh run isn't pre-stopped)."""
     _stop_event.clear()
+
+
+def request_interrupt() -> bool:
+    """Kill the in-flight provider process so the loop restarts it with a pending
+    user directive applied. Returns False (a no-op) when nothing is running — the
+    directive then just lands on the next iteration. Provider-agnostic: the kill
+    is a SIGTERM to the process group, same path as a user kill."""
+    with _lock:
+        if not _active:
+            return False
+    _interrupt_event.set()
+    terminate_all()
+    return True
+
+
+def interrupt_requested() -> bool:
+    return _interrupt_event.is_set()
+
+
+def clear_interrupt() -> None:
+    _interrupt_event.clear()
 
 
 @dataclass(frozen=True)
@@ -96,6 +125,14 @@ def run_subprocess(
     finally:
         with _lock:
             _active.discard(proc)
+    # A pending interrupt is one-shot: consume it on the next process to finish.
+    # If this process was signal-killed (negative returncode) it was the target —
+    # surface a DirectiveInterrupt so the loop restarts with the directive. A
+    # clean exit during the race window just clears the flag and returns normally.
+    if interrupt_requested():
+        clear_interrupt()
+        if proc.returncode is not None and proc.returncode < 0:
+            raise DirectiveInterrupt()
     return CompletedProcess(returncode=proc.returncode, stdout=stdout, stderr=stderr)
 
 

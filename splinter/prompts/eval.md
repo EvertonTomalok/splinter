@@ -18,11 +18,18 @@ this task's acceptance criteria AND the project's Code Conventions (if provided)
 
 {previous_evals_section}
 
+{user_directive_section}
+
 {standards_section}
 
 If `.splinter/AGENTS.md` exists, read it for project-specific rules and apply them when judging convention compliance.
 
 How to decide:
+
+- A User Directive (if present) is a live instruction from the human running the
+  loop and OVERRIDES your default judgment on the point it addresses. If it tells
+  you to waive a check or accept a tradeoff (e.g. "no need for make test, pass it"),
+  honor it — do not fail the task on the waived point.
 
 - YOU are the authority on quality. Read the actual code/output and judge it
   against the Acceptance Criteria. Do not defer to the mechanical gate.
