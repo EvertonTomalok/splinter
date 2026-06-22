@@ -58,6 +58,7 @@ from splinter.analyze import (
     _collapse_phases,
     _escalations,
     _eval_segments,
+    _has_final_eval_artifacts,
     _iterations,
     _knowledge_notes,
     _loop_block,
@@ -771,6 +772,8 @@ class AnalyzeApp(App[None]):
         self._kn_labels: set[str] = set()
         self._timer: Any = None
         self._expanded_tasks: set[int] = set()
+        self._steps_node: TreeNode[Any] | None = None
+        self._final_eval_node: TreeNode[Any] | None = None
         self._plan_node: TreeNode[Any] | None = None
         self._plan_idx: int = 0  # 0 = overview, 1..N = plan-N.md
         self._traj_sig: (
@@ -805,6 +808,38 @@ class AnalyzeApp(App[None]):
         self._auto = False
 
     # --- tree ---
+    def _final_eval_step_label(self) -> str:
+        status = self.session.read_status()
+        final_eval_md = self.session.read("final_eval.md").strip()
+        fe_passed = status.get("final_eval_passed")
+        state = str(status.get("state", ""))
+        fe_summary = str(status.get("final_eval_summary", "")).strip()
+        if fe_passed:
+            fe_icon = "✅"
+        elif state == "awaiting_validation":
+            fe_icon = "🔍"
+        elif state == "failed" and status.get("stage") == "final_eval":
+            fe_icon = "❌"
+        elif final_eval_md or fe_summary:
+            fe_icon = "📋"
+        else:
+            fe_icon = "⏳"
+        return f"{fe_icon} final_eval"
+
+    def _refresh_steps(self) -> None:
+        if self._steps_node is None:
+            return
+        if not _has_final_eval_artifacts(self.session):
+            return
+        label = self._final_eval_step_label()
+        if self._final_eval_node is None:
+            self._final_eval_node = self._steps_node.add_leaf(
+                label,
+                data={"kind": "file", "label": "Final Eval", "file": "final_eval.md"},
+            )
+            return
+        self._final_eval_node.label = label
+
     def _build_tree(self) -> None:
         tree = self.query_one("#nav", Tree)
         tree.root.expand()
@@ -816,6 +851,7 @@ class AnalyzeApp(App[None]):
         trace.allow_expand = False
 
         steps = tree.root.add("🧩 Steps", expand=True)
+        self._steps_node = steps
         if self.session.read("prd.md"):
             steps.add_leaf("prd", data={"kind": "file", "label": "PRD", "file": "prd.md"})
         steps.add_leaf(
@@ -828,26 +864,7 @@ class AnalyzeApp(App[None]):
             data={"kind": "file", "label": "Plan", "file": "knowledge/plan.md"},
         )
         steps.add_leaf("eval", data={"kind": "file", "label": "Eval", "file": "eval.md"})
-        has_fe_yaml = (self.session.dir / "final_eval.yaml").exists()
-        has_fe_md = bool(self.session.read("final_eval.md"))
-        if has_fe_yaml or has_fe_md:
-            status = self.session.read_status()
-            fe_passed = status.get("final_eval_passed")
-            state = str(status.get("state", ""))
-            if fe_passed:
-                fe_icon = "✅"
-            elif state == "awaiting_validation":
-                fe_icon = "🔍"
-            elif state == "failed" and status.get("stage") == "final_eval":
-                fe_icon = "❌"
-            elif has_fe_md:
-                fe_icon = "📋"
-            else:
-                fe_icon = "⏳"
-            steps.add_leaf(
-                f"{fe_icon} final_eval",
-                data={"kind": "file", "label": "Final Eval", "file": "final_eval.md"},
-            )
+        self._refresh_steps()
 
         notes = _knowledge_notes(self.session)
         extra = [
@@ -1228,6 +1245,7 @@ class AnalyzeApp(App[None]):
     def _do_reload(self) -> None:
         state = _run_state(self.session)
         self.title = f"splinter analyze · {self.session.id}"
+        self._refresh_steps()
         self._refresh_trajectory()
         self._refresh_knowledge()
 

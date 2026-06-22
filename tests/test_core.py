@@ -1010,6 +1010,39 @@ def test_render_overview_trajectory_shows_prd_phases_without_iterations(
     assert "→" in out
 
 
+def test_render_overview_final_eval_detected_from_round_files(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
+) -> None:
+    monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
+    session = Session("ses_test")
+    session.set_status(
+        "awaiting_user",
+        stage="final_eval",
+        final_eval_summary="- review: FAIL — Manual review requested",
+        final_eval_passed=False,
+    )
+    session.write("knowledge/final-eval-0.md", "# Final Eval — Round 1\n\nreview failed")
+    out = render_overview(session, "AWAITING_USER")
+    assert "final_eval" in out
+    assert "failed" in out
+
+
+def test_render_trajectory_final_eval_detected_from_round_files(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
+) -> None:
+    monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
+    session = Session("ses_test")
+    session.set_status(
+        "awaiting_user",
+        stage="final_eval",
+        final_eval_summary="- review: FAIL — Manual review requested",
+        final_eval_passed=False,
+    )
+    session.write("knowledge/final-eval-0.md", "# Final Eval — Round 1\n\nreview failed")
+    out = render_trajectory(session)
+    assert "final_eval · failed" in out
+
+
 # --- _collapse_phases, _task_iters, _escalations, new trajectory layout ----
 
 
@@ -1376,6 +1409,46 @@ def test_analyze_tui_headless(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch")
             await pilot.pause()
             await pilot.press("r")
             await pilot.pause()
+            await pilot.press("q")
+
+    asyncio.run(drive())
+
+
+def test_analyze_tui_reload_adds_final_eval_step(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
+) -> None:
+    import asyncio
+
+    from textual.widgets import Tree
+
+    from splinter.tui import AnalyzeApp
+
+    monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
+    session = Session("ses_test")
+    _seed_session(session)
+
+    async def drive() -> None:
+        app = AnalyzeApp(session)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            tree = app.query_one("#nav", Tree)
+            steps = next(node for node in tree.root.children if "Steps" in str(node.label))
+            labels = [str(child.label) for child in steps.children]
+            assert not any("final_eval" in label for label in labels)
+
+            session.write("knowledge/final-eval-0.md", "# Final Eval — Round 1\n\nreview failed")
+            session.set_status(
+                "awaiting_user",
+                stage="final_eval",
+                final_eval_summary="- review: FAIL — Manual review requested",
+                final_eval_passed=False,
+            )
+
+            app._do_reload()
+            await pilot.pause()
+
+            labels = [str(child.label) for child in steps.children]
+            assert any("final_eval" in label for label in labels)
             await pilot.press("q")
 
     asyncio.run(drive())

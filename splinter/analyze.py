@@ -25,7 +25,17 @@ from splinter.memory.session import Session
 # Renders the markup in render_overview() for the non-TUI (print) code paths.
 _console = Console()
 
-EXPANDABLE = ("plan", "loop", "eval", "localization", "trace", "knowledge", "agentic", "all")
+EXPANDABLE = (
+    "plan",
+    "loop",
+    "eval",
+    "final_eval",
+    "localization",
+    "trace",
+    "knowledge",
+    "agentic",
+    "all",
+)
 
 _EXPAND_FILES = {
     "plan": "knowledge/plan.md",
@@ -275,6 +285,30 @@ def _knowledge_notes(session: Session) -> list[tuple[str, str]]:
     return [(f"knowledge/{p.name}", p.stem) for p in notes]
 
 
+def _has_final_eval_artifacts(
+    session: Session,
+    *,
+    final_eval_md: str | None = None,
+    status: dict[str, Any] | None = None,
+) -> bool:
+    status_data = session.read_status() if status is None else status
+    final_eval_text = session.read("final_eval.md") if final_eval_md is None else final_eval_md
+    knowledge_dir = session.dir / "knowledge"
+    has_round_knowledge = knowledge_dir.exists() and any(knowledge_dir.glob("final-eval-*.md"))
+    has_round_dirs = any(session.dir.glob("eval-fix-*/final-eval.md"))
+    has_summary = bool(str(status_data.get("final_eval_summary", "")).strip())
+    has_pass_flag = isinstance(status_data.get("final_eval_passed"), bool)
+    return bool(
+        (session.dir / "final_eval.yaml").exists()
+        or final_eval_text.strip()
+        or has_round_knowledge
+        or has_round_dirs
+        or has_summary
+        or has_pass_flag
+        or str(status_data.get("stage", "")) == "final_eval"
+    )
+
+
 def _collapse_phases(phases: list[tuple[str, str]]) -> list[tuple[str, int]]:
     out: list[tuple[str, int]] = []
     for name, _ in phases:
@@ -409,7 +443,11 @@ def _trajectory_lines(
     status_data = session.read_status() if status is None else status
     final_eval_text = session.read("final_eval.md") if final_eval_md is None else final_eval_md
     phase_text = session.read("phases.md") if phase_md is None else phase_md
-    has_final_eval = bool((session.dir / "final_eval.yaml").exists() or final_eval_text)
+    has_final_eval = _has_final_eval_artifacts(
+        session,
+        final_eval_md=final_eval_text,
+        status=status_data,
+    )
     has_phases = bool(phase_text.strip())
     if not (phases or iters or has_final_eval or has_phases):
         return []
@@ -475,12 +513,13 @@ def _trajectory_lines(
     if has_final_eval:
         raw_state = str(status_data.get("state", ""))
         fe_passed = status_data.get("final_eval_passed")
+        fe_summary = str(status_data.get("final_eval_summary", "")).strip()
         awaiting = raw_state == "awaiting_validation"
-        if final_eval_text and fe_passed:
+        if fe_passed:
             fe_label = "[green]✓ approved[/]"
         elif awaiting:
             fe_label = "[cyan]🔍 awaiting review[/]"
-        elif final_eval_text:
+        elif final_eval_text or fe_summary:
             fe_label = "[red]✗ failed[/]"
         else:
             fe_label = "[dim]pending[/]"
@@ -665,8 +704,13 @@ def render_overview(session: Session, state: str) -> str:
     last_verdict = iters[-1][2] if iters else ""
     has_eval = any(v in ("PASS", "RETRY", "ESCALATE") for _, _, v in iters)
 
-    has_final_eval_cfg = bool((session.dir / "final_eval.yaml").exists() or final_eval_md)
+    has_final_eval_cfg = _has_final_eval_artifacts(
+        session,
+        final_eval_md=final_eval_md,
+        status=status,
+    )
     fe_passed = status.get("final_eval_passed")
+    fe_summary = str(status.get("final_eval_summary", "")).strip()
     awaiting_validation = state == "AWAITING_VALIDATION"
 
     lines.append("")
@@ -714,7 +758,7 @@ def render_overview(session: Session, state: str) -> str:
             fe_detail = "awaiting review"
         elif fe_passed:
             fe_detail = "approved"
-        elif final_eval_md:
+        elif final_eval_md or fe_summary:
             fe_detail = "failed"
         else:
             fe_detail = ""
@@ -744,7 +788,12 @@ def render_trajectory(session: Session) -> str:
     loop = session.read("loop.md")
     iters = _iterations(loop)
     final_eval_md = session.read("final_eval.md")
-    has_final_eval = bool((session.dir / "final_eval.yaml").exists() or final_eval_md)
+    status = session.read_status()
+    has_final_eval = _has_final_eval_artifacts(
+        session,
+        final_eval_md=final_eval_md,
+        status=status,
+    )
     phase_md = session.read("phases.md")
     has_phases = bool(phase_md.strip())
     if not phases and not iters and not has_final_eval and not has_phases:
@@ -769,14 +818,14 @@ def render_trajectory(session: Session) -> str:
         for pnum, pstatus, pmodel, pcost in phase_entries:
             lines.append(f"  Phase {pnum}. {pstatus} · {pmodel} · ${pcost}")
     if has_final_eval:
-        status = session.read_status()
         raw_state = str(status.get("state", ""))
         fe_passed = status.get("final_eval_passed")
+        fe_summary = str(status.get("final_eval_summary", "")).strip()
         if fe_passed:
             fe_verdict = "approved"
         elif raw_state == "awaiting_validation":
             fe_verdict = "awaiting review"
-        elif final_eval_md:
+        elif final_eval_md or fe_summary:
             fe_verdict = "failed"
         else:
             fe_verdict = "pending"
