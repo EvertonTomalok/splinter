@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import subprocess
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -354,6 +355,227 @@ def _compute_summary_cost(trace: Trace, results: list[RunResult]) -> tuple[float
     return sum(r.cost for r in results), len(results)
 
 
+@dataclass
+class ResumeState:
+    round: int = 0
+    effort: str | None = None
+    planner_model: str | None = None
+    planner_effort: str | None = None
+    runner_model: str | None = None
+    runner_effort: str | None = None
+    eval_model: str | None = None
+    eval_effort: str | None = None
+    skip_planner: bool = False
+    skip_eval: bool = False
+    skip_final_eval: bool = False
+    from_final_eval: bool = False
+    eval_findings: str = ""
+
+
+def _load_resume_state(session: Session) -> ResumeState:
+    cur = session.read_status()
+    round_idx = int(cur.get("round_index", 0))
+    from_final_eval = (
+        str(cur.get("stage", "")) == "final_eval"
+        and str(cur.get("state", "")) in {"awaiting_user", "awaiting_validation"}
+        and round_idx > 0
+    )
+    return ResumeState(
+        round=round_idx,
+        effort=cur.get("next_effort") or None,
+        planner_model=cur.get("next_planner_model") or None,
+        planner_effort=cur.get("next_planner_effort") or None,
+        runner_model=cur.get("next_runner_model") or None,
+        runner_effort=cur.get("next_runner_effort") or None,
+        eval_model=cur.get("next_eval_model") or None,
+        eval_effort=cur.get("next_eval_effort") or None,
+        skip_planner=str(cur.get("next_skip_planner", "")).lower() == "true",
+        skip_eval=str(cur.get("next_skip_eval", "")).lower() == "true",
+        skip_final_eval=str(cur.get("next_skip_final_eval", "")).lower() == "true",
+        from_final_eval=from_final_eval,
+        eval_findings=str(cur.get("ask_corrections", "")).strip() if from_final_eval else "",
+    )
+
+
+def _apply_ladder_overrides(ladder: Ladder, state: ResumeState, session: Session) -> None:
+    if state.planner_model:
+        ladder.planner_model = state.planner_model
+    if state.planner_effort:
+        ladder.planner_effort = state.planner_effort
+    if state.eval_model:
+        ladder.eval_model = state.eval_model
+    if state.eval_effort:
+        ladder.eval_effort = state.eval_effort
+    if state.runner_model:
+        from splinter.models.roster import rewrite_runner_tiers
+
+        rewrite_runner_tiers(
+            ladder,
+            model=state.runner_model,
+            variant=state.runner_effort or "high",
+        )
+        log.info(
+            "runtime: runner tiers rewritten to %s @ %s",
+            state.runner_model,
+            state.runner_effort or "high",
+        )
+    if any([
+        state.planner_model,
+        state.planner_effort,
+        state.runner_model,
+        state.runner_effort,
+        state.eval_model,
+        state.eval_effort,
+        state.skip_planner,
+        state.skip_eval,
+        state.skip_final_eval,
+    ]):
+        session.clear_next_config()
+
+
+def _localize_and_filter(
+    session: Session,
+    ladder: Ladder,
+    prd_text: str,
+    tasks: list[Task],
+    single_shot: bool,
+    resume: bool,
+    resume_round: int,
+) -> tuple[str, list[CodeAnchor]]:
+    """Run localization then per-task context filtering. Mutates task.filtered_context."""
+    localization = ""
+    anchors: list[CodeAnchor] = []
+    if not prd_text:
+        return localization, anchors
+
+    if resume and resume_round == 0 and session.has("knowledge/localization.md"):
+        log.info("resume: reusing existing localization")
+        localization = session.read("knowledge/localization.md")
+        from splinter.agents.localizer import _parse_anchors
+
+        anchors = _parse_anchors(
+            localization,
+            hot=ladder.localizer_relevance_hot,
+            medium=ladder.localizer_relevance_medium,
+        )
+        log.info("resume: re-parsed %d anchor(s)", len(anchors))
+    else:
+        log.info("localizing against the codebase…")
+        with agentic_scope(session, "locate", 0, 0):
+            anchors = localize(prd_text, session, ladder)
+        localization = session.read("knowledge/localization.md")
+
+    if not (anchors and tasks and not single_shot):
+        return localization, anchors
+
+    planner.assign_target_files(tasks, anchors)
+    session.set_status("running", stage="filter")
+    log.info("filtering code context per task…")
+    for i, task in enumerate(tasks):
+        cache_key = f"knowledge/filter-{i + 1}.md"
+        cached = session.read(cache_key)
+        if resume and cached.strip():
+            task.filtered_context = cached
+            log.info("resume: reusing filtered context for task %d", i + 1)
+        else:
+            task.filtered_context = filter_task_context(task, ladder, session=session)
+            if task.filtered_context:
+                session.write(cache_key, task.filtered_context)
+
+    for i, task in enumerate(tasks):
+        loc_key = f"knowledge/localization-{i + 1}.md"
+        if resume and session.read(loc_key).strip():
+            log.info("resume: reusing per-task localization for task %d", i + 1)
+            continue
+        task_files = set(task.target_files or [])
+        task_anchors = [a for a in anchors if a.file in task_files]
+        if not task_anchors:
+            continue
+        loc_lines = [f"# Localization — Task {i + 1}\n"]
+        for a in task_anchors:
+            loc_part = f"L{a.line_start}-L{a.line_end}" if a.line_start else ""
+            label = (
+                f"{a.file}:{loc_part} — {a.symbol}"
+                if loc_part
+                else f"{a.file} — {a.symbol}"
+            )
+            rtk_tip = rtk_cat_tip(a)
+            loc_lines.append(
+                f"### {label}\n"
+                f"file: {a.file}\n"
+                f"symbol: {a.symbol}\n"
+                + (
+                    f"line_start: {a.line_start}\nline_end: {a.line_end}\n"
+                    if a.line_start
+                    else ""
+                )
+                + f"rtk: {rtk_tip}\n"
+                f"reason: {a.reason}\n"
+            )
+        session.write(loc_key, "\n".join(loc_lines))
+
+    return localization, anchors
+
+
+def _execute_final_eval(
+    session: Session,
+    ladder: Ladder,
+    tasks: list[Task],
+    resume_round: int,
+) -> None:
+    """Run all configured final evals. Raises ManualValidationPause on failure."""
+    from splinter.agents.final_eval import run_all_final_evals
+    from splinter.configure import load_config, load_final_eval
+
+    _session_fe_path = session.dir / "final_eval.yaml"
+    if _session_fe_path.exists():
+        _fe_config = yaml.safe_load(_session_fe_path.read_text()) or {}
+        final_eval_entries = load_final_eval(_fe_config)
+        log.info("final eval: loaded from session dir (%d entries)", len(final_eval_entries))
+    else:
+        final_eval_entries = load_final_eval(load_config())
+    if not final_eval_entries:
+        return
+
+    session.set_status("running", stage="final_eval")
+    log.info("running %d final eval(s)…", len(final_eval_entries))
+    task_for_eval = tasks[0] if tasks else None
+    fe_results = run_all_final_evals(
+        final_eval_entries,
+        task=task_for_eval,
+        project_dir=str(Path.cwd()),
+        ladder=ladder,
+    )
+    fe_summary = "\n".join(
+        f"- {r.name}: {'PASS' if r.passed else 'FAIL'} — {r.output}" for r in fe_results
+    )
+    fe_verbatim = "\n\n---\n\n".join(r.output for r in fe_results)
+    session.write("final_eval.md", fe_verbatim + "\n")
+    round_content = f"# Final Eval — Round {resume_round + 1}\n\n{fe_verbatim}\n"
+    session.write(f"round-final-eval-{resume_round}.md", round_content)
+    session.write(f"knowledge/final-eval-{resume_round}.md", round_content)
+    rd = session.round_dir(resume_round)
+    (rd / "final-eval.md").write_text(round_content)
+    log.info("final eval results:\n%s", fe_summary)
+
+    all_passed = all(r.passed for r in fe_results)
+    if not all_passed:
+        failed = [r.name for r in fe_results if not r.passed]
+        log.warning("final eval FAILED: %s", ", ".join(failed))
+        fe_fail_text = "\n".join(r.output for r in fe_results if not r.passed)
+        round_eval_content = f"# Round {resume_round} Eval\n\n{fe_fail_text}\n"
+        session.write(f"knowledge/round-eval-{resume_round}.md", round_eval_content)
+        (rd / "round-eval.md").write_text(round_eval_content)
+        raise ManualValidationPause(summary=fe_summary, all_passed=False)
+
+    session.set_status(
+        "running",
+        stage="final_eval",
+        final_eval_passed=True,
+        final_eval_summary=fe_summary,
+    )
+
+
 def run_pipeline(
     *,
     strategy: str | None = None,
@@ -396,75 +618,10 @@ def run_pipeline(
         # Fresh session per run so prior runs (especially failed ones) are kept.
         session = Session(new_session_id())
 
-    # Read resume context now that session is guaranteed to exist.
-    resume_round = 0
-    resume_effort: str | None = None
-    _next_planner_model: str | None = None
-    _next_planner_effort: str | None = None
-    _next_runner_model: str | None = None
-    _next_runner_effort: str | None = None
-    _next_eval_model: str | None = None
-    _next_eval_effort: str | None = None
-    _next_skip_planner: bool = False
-    _next_skip_eval: bool = False
-    _next_skip_final_eval: bool = False
-    resume_from_final_eval = False
-    resume_eval_findings = ""
-    if resume:
-        _cur = session.read_status()
-        resume_round = int(_cur.get("round_index", 0))
-        resume_effort = _cur.get("next_effort") or None
-        _next_planner_model = _cur.get("next_planner_model") or None
-        _next_planner_effort = _cur.get("next_planner_effort") or None
-        _next_runner_model = _cur.get("next_runner_model") or None
-        _next_runner_effort = _cur.get("next_runner_effort") or None
-        _next_eval_model = _cur.get("next_eval_model") or None
-        _next_eval_effort = _cur.get("next_eval_effort") or None
-        _next_skip_planner = str(_cur.get("next_skip_planner", "")).lower() == "true"
-        _next_skip_eval = str(_cur.get("next_skip_eval", "")).lower() == "true"
-        _next_skip_final_eval = str(_cur.get("next_skip_final_eval", "")).lower() == "true"
-        resume_from_final_eval = (
-            str(_cur.get("stage", "")) == "final_eval"
-            and str(_cur.get("state", "")) in {"awaiting_user", "awaiting_validation"}
-            and resume_round > 0
-        )
-        if resume_from_final_eval:
-            resume_eval_findings = str(_cur.get("ask_corrections", "")).strip()
-    effective_effort = effort or resume_effort
-
-    if _next_planner_model:
-        ladder.planner_model = _next_planner_model
-    if _next_planner_effort:
-        ladder.planner_effort = _next_planner_effort
-    if _next_eval_model:
-        ladder.eval_model = _next_eval_model
-    if _next_eval_effort:
-        ladder.eval_effort = _next_eval_effort
-    if _next_runner_model:
-        from splinter.models.roster import rewrite_runner_tiers
-
-        rewrite_runner_tiers(
-            ladder,
-            model=_next_runner_model,
-            variant=_next_runner_effort or "high",
-        )
-        _eff = _next_runner_effort or "high"
-        log.info("runtime: runner tiers rewritten to %s @ %s", _next_runner_model, _eff)
+    rs = _load_resume_state(session) if resume else ResumeState()
+    effective_effort = effort or rs.effort
+    _apply_ladder_overrides(ladder, rs, session)
     _warn_ladder_pricing(ladder)
-    if any(
-        [
-            _next_planner_model,
-            _next_planner_effort,
-            _next_runner_model,
-            _next_runner_effort,
-            _next_eval_model,
-            _next_eval_effort,
-            _next_skip_planner,
-            _next_skip_eval,
-            _next_skip_final_eval,
-        ]
-    ):
-        session.clear_next_config()
 
     tasks: list[Task] = []
     if task_path:
@@ -479,12 +636,12 @@ def run_pipeline(
         return 1
 
     strategy_name = strategy or DEFAULT_STRATEGY
-    eval_fix_prompt = ""
     effective_user_guidance = user_guidance
-    if resume_from_final_eval:
+    skip_planner = rs.skip_planner
+    if rs.from_final_eval:
         _loc_path = session.dir / "knowledge" / "localization.md"
         eval_fix_prompt = _compose_eval_fix_prompt(
-            resume_eval_findings,
+            rs.eval_findings,
             user_guidance or "",
             localization_path=str(_loc_path) if _loc_path.exists() else "",
         )
@@ -493,14 +650,14 @@ def run_pipeline(
         effective_user_guidance = None
         # Skip planner so stale plan-N.md from the previous cascade round is not
         # reused — the eval-fix task description already IS the plan.
-        _next_skip_planner = True
+        skip_planner = True
         session.write(
-            f"knowledge/eval-fix-input-{resume_round}.md",
-            f"# Eval Fix Input — Round {resume_round}\n\n{eval_fix_prompt}\n",
+            f"knowledge/eval-fix-input-{rs.round}.md",
+            f"# Eval Fix Input — Round {rs.round}\n\n{eval_fix_prompt}\n",
         )
         log.info(
             "final-eval resume round %d: forcing direct single-task eval-fix flow",
-            resume_round,
+            rs.round,
         )
     try:
         strat = get_strategy(strategy_name)
@@ -569,74 +726,13 @@ def run_pipeline(
         elif tasks:
             prd_text = tasks[0].description
 
-        localization = ""
-        anchors: list[CodeAnchor] = []
-        if prd_text and not resume_from_final_eval:
-            if resume and resume_round == 0 and session.has("knowledge/localization.md"):
-                log.info("resume: reusing existing localization")
-                localization = session.read("knowledge/localization.md")
-                from splinter.agents.localizer import _parse_anchors
-
-                anchors = _parse_anchors(
-                    localization,
-                    hot=ladder.localizer_relevance_hot,
-                    medium=ladder.localizer_relevance_medium,
-                )
-                log.info("resume: re-parsed %d anchor(s)", len(anchors))
-            else:
-                log.info("localizing against the codebase…")
-                with agentic_scope(session, "locate", 0, 0):
-                    anchors = localize(prd_text, session, ladder)
-                localization = session.read("knowledge/localization.md")
-
-        if anchors and tasks and not single_shot:
-            planner.assign_target_files(tasks, anchors)
-            session.set_status("running", stage="filter")
-            log.info("filtering code context per task…")
-            for i, task in enumerate(tasks):
-                # Cache filter output so resume doesn't re-call the LLM.
-                cache_key = f"knowledge/filter-{i + 1}.md"
-                cached = session.read(cache_key)
-                if resume and cached.strip():
-                    task.filtered_context = cached
-                    log.info("resume: reusing filtered context for task %d", i + 1)
-                else:
-                    task.filtered_context = filter_task_context(task, ladder, session=session)
-                    if task.filtered_context:
-                        session.write(cache_key, task.filtered_context)
-
-            # Write per-task localization file: relevant anchors + rtk tips.
-            for i, task in enumerate(tasks):
-                loc_key = f"knowledge/localization-{i + 1}.md"
-                if resume and session.read(loc_key).strip():
-                    log.info("resume: reusing per-task localization for task %d", i + 1)
-                    continue
-                task_files = set(task.target_files or [])
-                task_anchors = [a for a in anchors if a.file in task_files]
-                if not task_anchors:
-                    continue
-                loc_lines = [f"# Localization — Task {i + 1}\n"]
-                for a in task_anchors:
-                    loc_part = f"L{a.line_start}-L{a.line_end}" if a.line_start else ""
-                    label = (
-                        f"{a.file}:{loc_part} — {a.symbol}"
-                        if loc_part
-                        else f"{a.file} — {a.symbol}"
-                    )
-                    rtk_tip = rtk_cat_tip(a)
-                    loc_lines.append(
-                        f"### {label}\n"
-                        f"file: {a.file}\n"
-                        f"symbol: {a.symbol}\n"
-                        + (
-                            f"line_start: {a.line_start}\nline_end: {a.line_end}\n"
-                            if a.line_start
-                            else ""
-                        )
-                        + f"rtk: {rtk_tip}\n"
-                        f"reason: {a.reason}\n"
-                    )
-                session.write(loc_key, "\n".join(loc_lines))
+        localization: str
+        anchors: list[CodeAnchor]
+        localization, anchors = ("", [])
+        if not rs.from_final_eval:
+            localization, anchors = _localize_and_filter(
+                session, ladder, prd_text, tasks, single_shot, resume, rs.round
+            )
 
         _resolve_gate(session, ladder, tasks)
 
@@ -649,7 +745,7 @@ def run_pipeline(
         _runner_variant = ladder.tier_variants.get(_first_tier_level, "?") if ladder.tiers else "?"
         session.append(
             "events.md",
-            f"round {resume_round} config · "
+            f"round {rs.round} config · "
             f"planner={ladder.planner_model}@{ladder.planner_effort} · "
             f"runner={_runner_model}@{_runner_variant} · "
             f"eval={ladder.eval_model}@{ladder.eval_effort}",
@@ -657,7 +753,7 @@ def run_pipeline(
 
         # New rounds must replan from scratch: plan files are kept on disk for
         # observability but should not be reused when starting a fresh round.
-        _force_replan = resume and resume_round > 0 and not resume_from_final_eval
+        _force_replan = resume and rs.round > 0 and not rs.from_final_eval
 
         session.set_status("running", stage="run")
         results = strat.execute(
@@ -674,57 +770,13 @@ def run_pipeline(
             claude_runner_fallback=claude_runner_fallback,
             user_guidance=effective_user_guidance,
             jump_premium=jump_premium,
-            skip_planner=_next_skip_planner,
-            skip_eval=_next_skip_eval,
+            skip_planner=skip_planner,
+            skip_eval=rs.skip_eval,
             force_replan=_force_replan,
         )
 
-        from splinter.agents.final_eval import run_all_final_evals
-        from splinter.configure import load_config, load_final_eval
-
-        _session_fe_path = session.dir / "final_eval.yaml"
-        if _session_fe_path.exists():
-            _fe_config = yaml.safe_load(_session_fe_path.read_text()) or {}
-            final_eval_entries = load_final_eval(_fe_config)
-            log.info("final eval: loaded from session dir (%d entries)", len(final_eval_entries))
-        else:
-            final_eval_entries = load_final_eval(load_config())
-        if final_eval_entries and not _next_skip_final_eval:
-            session.set_status("running", stage="final_eval")
-            log.info("running %d final eval(s)…", len(final_eval_entries))
-            task_for_eval = tasks[0] if tasks else None
-            fe_results = run_all_final_evals(
-                final_eval_entries,
-                task=task_for_eval,
-                project_dir=str(Path.cwd()),
-                ladder=ladder,
-            )
-            fe_summary = "\n".join(
-                f"- {r.name}: {'PASS' if r.passed else 'FAIL'} — {r.output}" for r in fe_results
-            )
-            fe_verbatim = "\n\n---\n\n".join(r.output for r in fe_results)
-            session.write("final_eval.md", fe_verbatim + "\n")
-            round_content = f"# Final Eval — Round {resume_round + 1}\n\n{fe_verbatim}\n"
-            session.write(f"round-final-eval-{resume_round}.md", round_content)
-            session.write(f"knowledge/final-eval-{resume_round}.md", round_content)
-            rd = session.round_dir(resume_round)
-            (rd / "final-eval.md").write_text(round_content)
-            log.info("final eval results:\n%s", fe_summary)
-            all_passed = all(r.passed for r in fe_results)
-            if not all_passed:
-                failed = [r.name for r in fe_results if not r.passed]
-                log.warning("final eval FAILED: %s", ", ".join(failed))
-                fe_fail_text = "\n".join(r.output for r in fe_results if not r.passed)
-                round_eval_content = f"# Round {resume_round} Eval\n\n{fe_fail_text}\n"
-                session.write(f"knowledge/round-eval-{resume_round}.md", round_eval_content)
-                (rd / "round-eval.md").write_text(round_eval_content)
-                raise ManualValidationPause(summary=fe_summary, all_passed=False)
-            session.set_status(
-                "running",
-                stage="final_eval",
-                final_eval_passed=True,
-                final_eval_summary=fe_summary,
-            )
+        if not rs.skip_final_eval:
+            _execute_final_eval(session, ladder, tasks, rs.round)
 
         session.set_status("completed", stage="done")
         trace_md = session.read("trace.md")
@@ -756,7 +808,7 @@ def run_pipeline(
             stage="final_eval",
             final_eval_summary=val_exc.summary,
             final_eval_passed=val_exc.all_passed,
-            round_index=resume_round + 1,
+            round_index=rs.round + 1,
             next_effort=bump_effort(cur_effort),
             ask_corrections=val_exc.summary,
             next_skip_planner="false",
