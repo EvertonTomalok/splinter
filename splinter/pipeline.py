@@ -302,12 +302,14 @@ def _merge_stories_into_task(prd_text: str, stories: list[Task]) -> Task:
     )
 
 
-def _compose_eval_fix_prompt(eval_output: str, user_reply: str) -> str:
+def _compose_eval_fix_prompt(eval_output: str, user_reply: str, localization_path: str = "") -> str:
     parts: list[str] = []
     if eval_output.strip():
         parts.append(f"## Final Eval Findings\n\n{eval_output.strip()}")
     if user_reply.strip():
         parts.append(f"## User Guidance\n\n{user_reply.strip()}")
+    if localization_path:
+        parts.append(f"## Codebase Context\n\nLocalization file (read if relevant): {localization_path}")
     merged = "\n\n".join(parts).strip()
     return merged or "Address the latest final eval findings and return for user review."
 
@@ -320,26 +322,6 @@ def _build_eval_fix_task(fix_prompt: str, effort: str | None) -> Task:
     )
 
 
-def _clear_round_caches(session: Session) -> None:
-    """Remove stale filter/per-task-localization files before a new round.
-
-    Plan files are intentionally kept for observability — they are readable in
-    ``splinter analyze`` even after an eval-fix round overwrites the run.
-    """
-    import re as _re
-
-    kdir = session.dir / "knowledge"
-    if not kdir.exists():
-        return
-    for p in kdir.iterdir():
-        if not p.suffix == ".md":
-            continue
-        name = p.stem
-        # keep localization.md (main) and all plan-*.md (observability)
-        if name == "localization":
-            continue
-        if _re.match(r"^(filter-\d+|localization-\d+)$", name):
-            p.unlink(missing_ok=True)
 
 
 def _load_round_history(session: Session) -> str:
@@ -497,14 +479,18 @@ def run_pipeline(
     eval_fix_prompt = ""
     effective_user_guidance = user_guidance
     if resume_from_final_eval:
-        eval_fix_prompt = _compose_eval_fix_prompt(resume_eval_findings, user_guidance or "")
+        _loc_path = session.dir / "knowledge" / "localization.md"
+        eval_fix_prompt = _compose_eval_fix_prompt(
+            resume_eval_findings,
+            user_guidance or "",
+            localization_path=str(_loc_path) if _loc_path.exists() else "",
+        )
         tasks = [_build_eval_fix_task(eval_fix_prompt, effective_effort)]
         strategy_name = "direct"
         effective_user_guidance = None
         # Skip planner so stale plan-N.md from the previous cascade round is not
         # reused — the eval-fix task description already IS the plan.
         _next_skip_planner = True
-        _clear_round_caches(session)
         session.write(
             f"knowledge/eval-fix-input-{resume_round}.md",
             f"# Eval Fix Input — Round {resume_round}\n\n{eval_fix_prompt}\n",
@@ -583,8 +569,6 @@ def run_pipeline(
         localization = ""
         anchors: list[CodeAnchor] = []
         if prd_text and not resume_from_final_eval:
-            if resume and resume_round > 0:
-                _clear_round_caches(session)
             if resume and resume_round == 0 and session.has("knowledge/localization.md"):
                 log.info("resume: reusing existing localization")
                 localization = session.read("knowledge/localization.md")

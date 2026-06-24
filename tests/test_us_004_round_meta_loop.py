@@ -4,8 +4,8 @@ Covers:
  1. final-eval PASS  → status "completed", no AskUserPause, localize called once
  2. final-eval FAIL  → AskUserPause / status "awaiting_user", round_index=1,
                        next_effort = bump_effort(start)
- 3. resume round>0   → _clear_round_caches, localize re-invoked, bumped effort
-                       forwarded to strat.execute
+ 3. resume round>0   → plan files kept (no cache clearing), localize re-invoked,
+                       bumped effort forwarded to strat.execute
  4. round-eval notes → knowledge/previous_rounds.md written; content lands in
                        the next plan's code_ctx via _plan_all_tasks
 """
@@ -23,7 +23,6 @@ from splinter.memory.session import Session
 from splinter.models.roster import bump_effort
 from splinter.pipeline import (
     _build_eval_fix_task,
-    _clear_round_caches,
     _compose_eval_fix_prompt,
     _load_round_history,
     run_pipeline,
@@ -292,24 +291,22 @@ class TestResumeNewRound:
         run_pipeline(task_path=task_yaml, session=session, resume=True)
         assert len(calls) == 1, "localize must re-run on round > 0"
 
-    def test_plan_cache_cleared_on_resume(
+    def test_plan_files_kept_on_resume(
         self,
         session: Session,
         task_yaml: str,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """_clear_round_caches removes plan/filter files before re-planning."""
+        """Plan files are never deleted on resume — observability invariant."""
         self._seed_resume(session)
-        session.write("knowledge/plan.md", "# stale plan\n")
-        session.write("knowledge/plan-1.md", "# stale plan-1\n")
-        session.write("knowledge/filter-1.md", "# stale filter\n")
+        session.write("knowledge/plan.md", "# round-1 plan\n")
+        session.write("knowledge/plan-1.md", "# round-1 plan-1\n")
 
         _base_patches(monkeypatch, fe_results=[_pass_fe()])
         run_pipeline(task_path=task_yaml, session=session, resume=True)
 
-        assert not (session.dir / "knowledge" / "plan.md").exists()
-        assert not (session.dir / "knowledge" / "plan-1.md").exists()
-        assert not (session.dir / "knowledge" / "filter-1.md").exists()
+        assert (session.dir / "knowledge" / "plan.md").exists()
+        assert (session.dir / "knowledge" / "plan-1.md").exists()
 
     def test_bumped_effort_forwarded_to_execute(
         self,
@@ -420,8 +417,7 @@ class TestResumeNewRound:
         task_yaml: str,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Final eval resume must clear old plan and call planner fresh with eval findings
-        as task description — not skip the planner or use the stale round-0 plan."""
+        """Final eval resume uses eval findings as task description (the plan); planner is skipped."""
         session.set_status(
             "awaiting_user",
             stage="final_eval",
@@ -457,11 +453,11 @@ class TestResumeNewRound:
         )
 
         assert len(captured_tasks) == 1
-        # Eval findings + user guidance land in task description so the planner uses them.
+        # Eval findings + user guidance land in task description — the description IS the plan.
         assert "Final Eval Findings" in captured_tasks[0].description
         assert "apply urgently" in captured_tasks[0].description
-        # Planner must NOT be skipped — it plans fresh from the eval findings.
-        assert captured_kwargs[0].get("skip_planner") is False
+        # Planner is skipped — eval-fix task description already IS the plan.
+        assert captured_kwargs[0].get("skip_planner") is True
         # user_guidance is not the vehicle anymore; task description carries the context.
         assert captured_kwargs[0].get("user_guidance") is None
 
@@ -666,29 +662,10 @@ class TestRoundHistory:
         assert any("FALLBACK_SENTINEL" in ctx for ctx in captured)
 
 
-# ── helpers tests (_clear_round_caches, _load_round_history) ──────────────────
+# ── helpers tests (_load_round_history) ───────────────────────────────────────
 
 
 class TestHelpers:
-    def test_clear_round_caches_removes_plan_files(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
-        s = Session("ses_clear")
-        s.write("knowledge/plan.md", "p")
-        s.write("knowledge/plan-1.md", "p1")
-        s.write("knowledge/plan-2.md", "p2")
-        s.write("knowledge/filter-1.md", "f1")
-        s.write("knowledge/localization-1.md", "l1")
-        s.write("knowledge/localization.md", "main-loc")  # must be kept
-
-        _clear_round_caches(s)
-
-        assert not (s.dir / "knowledge" / "plan.md").exists()
-        assert not (s.dir / "knowledge" / "plan-1.md").exists()
-        assert not (s.dir / "knowledge" / "filter-1.md").exists()
-        assert not (s.dir / "knowledge" / "localization-1.md").exists()
-        assert (s.dir / "knowledge" / "localization.md").exists()
 
     def test_load_round_history_empty_when_no_notes(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

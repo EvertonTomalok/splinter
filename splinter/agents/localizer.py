@@ -70,6 +70,19 @@ def _strip_frontmatter(text: str) -> str:
     return text.strip()
 
 
+def _norm_reason(reason: object, file: str, symbol: str) -> str:
+    """Normalise a reason from the LLM: coerce None→"", fill empty with file/symbol."""
+    r = reason if isinstance(reason, str) else ""
+    if r.strip():
+        return r.strip()
+    if symbol:
+        return f"contains {symbol}"
+    if file:
+        stem = file.rsplit(".", 1)[0].rsplit("/", 1)[-1].replace("_", " ").replace("-", " ")
+        return f"relevant to {stem}"
+    return ""
+
+
 def _parse_anchors(text: str, *, hot: float = 0.8, medium: float = 0.4) -> list[CodeAnchor]:
     anchors: list[CodeAnchor] = []
 
@@ -90,11 +103,13 @@ def _parse_anchors(text: str, *, hot: float = 0.8, medium: float = 0.4) -> list[
             rel = item.get("relevance")
             if not rel:
                 rel = _relevance_from_confidence(conf, hot=hot, medium=medium)
+            f = item.get("file", "")
+            s = item.get("symbol", "")
             result.append(
                 CodeAnchor(
-                    file=item.get("file", ""),
-                    symbol=item.get("symbol", ""),
-                    reason=item.get("reason", ""),
+                    file=f,
+                    symbol=s,
+                    reason=_norm_reason(item.get("reason"), f, s),
                     confidence=conf,
                     line_start=int(ls) if ls is not None else None,
                     line_end=int(le) if le is not None else None,
@@ -123,11 +138,14 @@ def _parse_anchors(text: str, *, hot: float = 0.8, medium: float = 0.4) -> list[
         if not file_m:
             continue
         symbol_m = re.search(r"^symbol:\s*(.*)$", block, re.MULTILINE)
-        reason_m = re.search(r"^reason:\s*(.+)$", block, re.MULTILINE)
+        reason_m = re.search(r"^reason:\s*([^\n]+)", block)
         conf_m = re.search(r"^confidence:\s*([\d.]+)$", block, re.MULTILINE)
         ls_m = re.search(r"^line_start:\s*(\d+)$", block, re.MULTILINE)
         le_m = re.search(r"^line_end:\s*(\d+)$", block, re.MULTILINE)
         rel_m = re.search(r"^relevance:\s*(.+)$", block, re.MULTILINE)
+        f_val = file_m.group(1).strip()
+        s_val = symbol_m.group(1).strip() if symbol_m else ""
+        r_val = reason_m.group(1).strip() if reason_m else ""
         conf = float(conf_m.group(1)) if conf_m else 0.5
         if rel_m:
             rel = rel_m.group(1).strip()
@@ -135,9 +153,9 @@ def _parse_anchors(text: str, *, hot: float = 0.8, medium: float = 0.4) -> list[
             rel = _relevance_from_confidence(conf, hot=hot, medium=medium)
         anchors.append(
             CodeAnchor(
-                file=file_m.group(1).strip(),
-                symbol=symbol_m.group(1).strip() if symbol_m else "",
-                reason=reason_m.group(1).strip() if reason_m else "",
+                file=f_val,
+                symbol=s_val,
+                reason=_norm_reason(r_val, f_val, s_val),
                 confidence=conf,
                 line_start=int(ls_m.group(1)) if ls_m else None,
                 line_end=int(le_m.group(1)) if le_m else None,
@@ -251,13 +269,13 @@ def _recall_phase(
         "of why it matters for this feature.\n\n"
         f"## Feature\n{text}\n\n"
         f"## All Tracked Files\n{search_results}\n\n"
-        "Return a JSON array. Each item MUST have:\n"
+        "Return a JSON array. Each item MUST have ALL five fields — no field may be omitted:\n"
         '  "file": path string,\n'
         '  "symbol": function/class/symbol name or "" for file-level,\n'
-        '  "reason": one sentence — why this file is relevant to the feature,\n'
+        '  "reason": one sentence — why this file is relevant to the feature (REQUIRED),\n'
         '  "confidence": 0.0–1.0,\n'
-        '  "line_start": null,\n'
-        '  "line_end": null\n'
+        '  "line_start": integer line number where symbol starts, or null if unknown,\n'
+        '  "line_end": integer line number where symbol ends, or null if unknown\n'
         "Use file names and directory structure to infer relevance. "
         "Be thorough — include implementation files, tests, and config. "
         "Always include AGENTS.md, CLAUDE.md, and skills/*/SKILL.md if present — "
@@ -325,7 +343,15 @@ def _read_candidate_files(paths: list[str]) -> str:
 def _anchors_from_recall(recall_output: str) -> list[CodeAnchor]:
     """Parse file paths from recall plain-text output into minimal CodeAnchors."""
     files = _extract_candidate_files(recall_output)
-    return [CodeAnchor(file=f, symbol="", reason="", confidence=1.0) for f in files]
+    return [
+        CodeAnchor(
+            file=f,
+            symbol="",
+            reason=_norm_reason("", f, ""),
+            confidence=1.0,
+        )
+        for f in files
+    ]
 
 
 _META_ANCHOR_REASONS: dict[str, str] = {
