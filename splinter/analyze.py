@@ -277,44 +277,48 @@ def _plan_files(session: Session) -> list[tuple[str, str]]:
     return result
 
 
-def _plans_from_agentic(session: Session) -> str:
-    """Fallback: reconstruct plan content from agentic/task-N.jsonl exchange records.
+def _plans_from_agentic(session: Session) -> int:
+    """Recover missing plan files by writing them back from agentic/task-N.jsonl.
 
     Called only when knowledge/plan*.md files are absent (cleared by an older
-    eval-fix round before the observability fix).  Returns rendered markdown or
-    empty string if no plan exchanges are found.
+    eval-fix round before the observability fix).  Writes knowledge/plan-N.md
+    for each task JSONL found.  Tasks that reused an earlier plan (no plan-stage
+    exchange recorded) receive the nearest previously-recovered plan content so
+    every task that ran gets a plan file.  Returns the count of files written.
     """
-    import json
+    from splinter.obs.agentic import read_events
 
     agentic_dir = session.dir / "agentic"
     if not agentic_dir.exists():
-        return ""
+        return 0
 
-    sections: list[str] = []
-    for jsonl_path in sorted(agentic_dir.glob("task-*.jsonl")):
+    task_paths = sorted(agentic_dir.glob("task-*.jsonl"))
+    if not task_paths:
+        return 0
+
+    written = 0
+    last_response: str = ""
+    for jsonl_path in task_paths:
         m = re.match(r"task-(\d+)\.jsonl$", jsonl_path.name)
         if not m:
             continue
-        task_num = int(m.group(1)) + 1  # task-0 → plan-1
-        for raw in jsonl_path.read_text().splitlines():
-            raw = raw.strip()
-            if not raw:
-                continue
-            try:
-                ev = json.loads(raw)
-            except json.JSONDecodeError:
-                continue
-            if ev.get("stage") != "plan":
-                continue
-            response = (ev.get("response") or "").strip()
-            if not response:
-                continue
-            sections.append(f"## plan-{task_num}\n\n{response}")
-            break  # one plan per task file
+        task_index = int(m.group(1))
+        task_num = task_index + 1  # task-0 → plan-1
+        events = read_events(session, task_index)
+        # Use the LAST plan-stage entry — replanning overwrites earlier plans.
+        plan_events = [e for e in events if e.stage == "plan" and e.response.strip()]
+        if plan_events:
+            last_response = plan_events[-1].response.strip()
+        # Tasks that reused plan.md (no plan-stage exchange) carry the last known
+        # plan — each task that executed deserves its own plan file.
+        if not last_response:
+            continue
+        session.write(f"knowledge/plan-{task_num}.md", f"# Plan\n\n{last_response}\n")
+        if task_num == 1:
+            session.write("knowledge/plan.md", f"# Plan\n\n{last_response}\n")
+        written += 1
 
-    if not sections:
-        return ""
-    return "# Plans _(recovered from agentic trace)_\n\n" + "\n\n---\n\n".join(sections)
+    return written
 
 
 def _knowledge_notes(session: Session) -> list[tuple[str, str]]:

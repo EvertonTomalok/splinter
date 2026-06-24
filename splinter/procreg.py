@@ -126,13 +126,11 @@ def run_subprocess(
         with _lock:
             _active.discard(proc)
     # A pending interrupt is one-shot: consume it on the next process to finish.
-    # If this process was signal-killed (negative returncode) it was the target —
-    # surface a DirectiveInterrupt so the loop restarts with the directive. A
-    # clean exit during the race window just clears the flag and returns normally.
+    # Always restart the iteration — whether the process was signal-killed or
+    # happened to exit cleanly before SIGTERM landed, the directive must be applied.
     if interrupt_requested():
         clear_interrupt()
-        if proc.returncode is not None and proc.returncode < 0:
-            raise DirectiveInterrupt()
+        raise DirectiveInterrupt()
     return CompletedProcess(returncode=proc.returncode, stdout=stdout, stderr=stderr)
 
 

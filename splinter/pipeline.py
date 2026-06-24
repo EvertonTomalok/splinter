@@ -668,6 +668,10 @@ def run_pipeline(
             f"eval={ladder.eval_model}@{ladder.eval_effort}",
         )
 
+        # New rounds must replan from scratch: plan files are kept on disk for
+        # observability but should not be reused when starting a fresh round.
+        _force_replan = resume and resume_round > 0 and not resume_from_final_eval
+
         session.set_status("running", stage="run")
         results = strat.execute(
             tasks,
@@ -685,6 +689,7 @@ def run_pipeline(
             jump_premium=jump_premium,
             skip_planner=_next_skip_planner,
             skip_eval=_next_skip_eval,
+            force_replan=_force_replan,
         )
 
         from splinter.agents.final_eval import run_all_final_evals

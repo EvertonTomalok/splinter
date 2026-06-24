@@ -47,6 +47,7 @@ class CascadeStrategy(DirectStrategy):
         jump_premium: bool = False,
         skip_planner: bool = False,
         skip_eval: bool = False,
+        force_replan: bool = False,
     ) -> list[RunResult]:
         ordered = self._topo_sort(tasks)
 
@@ -71,6 +72,7 @@ class CascadeStrategy(DirectStrategy):
             trace=trace,
             skip_planner=skip_planner,
             resume=resume,
+            force_replan=force_replan,
         )
 
         for i, task in enumerate(ordered):
@@ -106,6 +108,7 @@ class CascadeStrategy(DirectStrategy):
                 resume=False,
                 skip_planner=skip_planner,
                 skip_eval=skip_eval,
+                force_replan=force_replan,
             )
 
             if result is not None:

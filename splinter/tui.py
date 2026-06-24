@@ -262,10 +262,12 @@ def _plan_overview_md(session: Session) -> str:
         content = session.read("knowledge/plan.md").strip()
         if content:
             return _file_md(session, "Plan", "knowledge/plan.md")
-        agentic_md = _plans_from_agentic(session)
-        if agentic_md:
-            return agentic_md
-        return "# Plans\n\n_no plan yet._"
+        # Recover plan files from agentic trace (legacy sessions where they were
+        # deleted by an older eval-fix round) then re-scan so normal flow applies.
+        if _plans_from_agentic(session) > 0:
+            plans = _plan_files(session)
+        if not plans:
+            return "# Plans\n\n_no plan yet._"
     lines = [
         "# Plans",
         "",
@@ -833,7 +835,11 @@ class AnalyzeApp(App[None]):
     def _refresh_steps(self) -> None:
         if self._steps_node is None:
             return
-        if not _has_final_eval_artifacts(self.session):
+        has_fe = _has_final_eval_artifacts(self.session)
+        if not has_fe:
+            if self._final_eval_node is not None:
+                self._final_eval_node.remove()
+                self._final_eval_node = None
             return
         label = self._final_eval_step_label()
         if self._final_eval_node is None:

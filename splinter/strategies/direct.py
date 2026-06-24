@@ -272,6 +272,7 @@ class DirectStrategy(Strategy):
         jump_premium: bool = False,
         skip_planner: bool = False,
         skip_eval: bool = False,
+        force_replan: bool = False,
     ) -> list[RunResult]:
         existing_trace = session.read("trace.md")
         if resume and existing_trace.strip():
@@ -323,6 +324,7 @@ class DirectStrategy(Strategy):
             jump_premium=jump_premium if task_resume else False,
             skip_planner=skip_planner,
             skip_eval=skip_eval,
+            force_replan=force_replan,
         )
         results = [result] if result is not None else []
 
@@ -340,14 +342,15 @@ class DirectStrategy(Strategy):
         trace: object = None,
         skip_planner: bool = False,
         resume: bool = False,
+        force_replan: bool = False,
     ) -> None:
         """Pre-generate plans for all tasks; reuses existing files on resume."""
         for i, task in enumerate(tasks):
             task_plan_file = f"knowledge/plan-{i + 1}.md"
-            if session.read(task_plan_file).strip():
+            if not skip_planner and not force_replan and session.read(task_plan_file).strip():
                 log.info("plan exists for task %d — reusing", i + 1)
                 continue
-            if resume:
+            if resume and not force_replan:
                 log.info("plan missing for task %d on resume — deferring", i + 1)
                 continue
             if skip_planner:
@@ -387,6 +390,7 @@ class DirectStrategy(Strategy):
         trace: object = None,
         skip_planner: bool = False,
         resume: bool = False,
+        force_replan: bool = False,
     ) -> None:
         session.set_status("running", stage="plan")
         self._plan_all_tasks(
@@ -397,6 +401,7 @@ class DirectStrategy(Strategy):
             trace=trace,
             skip_planner=skip_planner,
             resume=resume,
+            force_replan=force_replan,
         )
         session.set_status("running", stage="run")
 
@@ -423,6 +428,7 @@ class DirectStrategy(Strategy):
         jump_premium: bool = False,
         skip_planner: bool = False,
         skip_eval: bool = False,
+        force_replan: bool = False,
     ) -> RunResult | None:
         if checkpoint is not None:
             _clear_checkpoint(session)
@@ -465,8 +471,10 @@ class DirectStrategy(Strategy):
             plan = corrections
         else:
             # Reuse any existing plan — opus calls are expensive and the plan is
-            # deterministic for this task. Always check the task-specific file first.
-            existing_plan = (
+            # deterministic for this task. Skip reuse when skip_planner=True (caller
+            # wants corrections as the plan) or force_replan=True (caller needs a
+            # fresh LLM plan, e.g. a new cascade round).
+            existing_plan = "" if (skip_planner or force_replan) else (
                 session.read(task_plan_file).strip() or session.read("knowledge/plan.md").strip()
             )
             if existing_plan:
