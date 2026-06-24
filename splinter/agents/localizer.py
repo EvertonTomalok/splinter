@@ -134,15 +134,15 @@ def _parse_anchors(text: str, *, hot: float = 0.8, medium: float = 0.4) -> list[
     # Split on blank lines to get individual anchor blocks.
     blocks = re.split(r"\n\s*\n", text)
     for block in blocks:
-        file_m = re.search(r"^file:\s*(.+)$", block, re.MULTILINE)
+        file_m = re.search(r"^file:[ \t]*(.+)$", block, re.MULTILINE)
         if not file_m:
             continue
-        symbol_m = re.search(r"^symbol:\s*(.*)$", block, re.MULTILINE)
-        reason_m = re.search(r"^reason:\s*([^\n]+)", block)
-        conf_m = re.search(r"^confidence:\s*([\d.]+)$", block, re.MULTILINE)
-        ls_m = re.search(r"^line_start:\s*(\d+)$", block, re.MULTILINE)
-        le_m = re.search(r"^line_end:\s*(\d+)$", block, re.MULTILINE)
-        rel_m = re.search(r"^relevance:\s*(.+)$", block, re.MULTILINE)
+        symbol_m = re.search(r"^symbol:[ \t]*(.*)$", block, re.MULTILINE)
+        reason_m = re.search(r"^reason:[ \t]*([^\n]+)", block, re.MULTILINE)
+        conf_m = re.search(r"^confidence:[ \t]*([\d.]+)$", block, re.MULTILINE)
+        ls_m = re.search(r"^line_start:[ \t]*(\d+)$", block, re.MULTILINE)
+        le_m = re.search(r"^line_end:[ \t]*(\d+)$", block, re.MULTILINE)
+        rel_m = re.search(r"^relevance:[ \t]*(.+)$", block, re.MULTILINE)
         f_val = file_m.group(1).strip()
         s_val = symbol_m.group(1).strip() if symbol_m else ""
         r_val = reason_m.group(1).strip() if reason_m else ""
@@ -264,23 +264,31 @@ def _recall_phase(
     """Cheap model filters the raw search results to a candidate list."""
     text = _strip_frontmatter(prd_text)
     prompt = (
-        "I want to implement this feature — look at all tracked files in the repo and "
-        "find the relevant sources. For each relevant file, give me a quick description "
-        "of why it matters for this feature.\n\n"
+        "You are a codebase scout. Given a feature description and a list of all tracked files, "
+        "identify every relevant source file. For each file you MUST write a one-sentence "
+        '"reason" explaining why that file matters for this feature — do NOT skip or omit the '
+        'reason field, not even for a single file.\n\n'
+        "## Output format — JSON array, each element has SIX mandatory keys. "
+        "Every key is required on every element:\n"
+        "```json\n"
+        '[\n'
+        '  {\n'
+        '    "file": "src/auth/login.py",\n'
+        '    "symbol": "LoginHandler",\n'
+        '    "reason": "implements the user authentication endpoint this feature extends",\n'
+        '    "confidence": 0.95,\n'
+        '    "line_start": 42,\n'
+        '    "line_end": 78\n'
+        '  }\n'
+        ']\n'
+        '```\n'
         f"## Feature\n{text}\n\n"
         f"## All Tracked Files\n{search_results}\n\n"
-        "Return a JSON array. Each item MUST have ALL five fields — no field may be omitted:\n"
-        '  "file": path string,\n'
-        '  "symbol": function/class/symbol name or "" for file-level,\n'
-        '  "reason": one sentence — why this file is relevant to the feature (REQUIRED),\n'
-        '  "confidence": 0.0–1.0,\n'
-        '  "line_start": integer line number where symbol starts, or null if unknown,\n'
-        '  "line_end": integer line number where symbol ends, or null if unknown\n'
         "Use file names and directory structure to infer relevance. "
         "Be thorough — include implementation files, tests, and config. "
         "Always include AGENTS.md, CLAUDE.md, and skills/*/SKILL.md if present — "
         "they define how the runner must behave. "
-        "Output ONLY the JSON array."
+        "Output ONLY the JSON array. No markdown fences, no prose."
     )
     text = run_text(
         prompt,
@@ -506,6 +514,20 @@ def localize(
         hot=ladder.localizer_relevance_hot,
         medium=ladder.localizer_relevance_medium,
     ) or _anchors_from_recall(recall_output)
+
+    # Log a warning whenever the recall model omitted the reason field — _norm_reason
+    # fills it with a generated fallback, but the model SHOULD be returning it.
+    generated_reasons = [
+        a.file for a in anchors
+        if a.reason.startswith("contains ") or a.reason.startswith("relevant to ")
+    ]
+    if generated_reasons:
+        log.warning(
+            "localize: recall model omitted 'reason' for %d anchor(s): %s — "
+            "using generated fallback reasons",
+            len(generated_reasons),
+            generated_reasons[:5],
+        )
 
     # Deterministically inject AGENTS.md / CLAUDE.md / skill files the LLM missed.
     existing_files = {a.file for a in anchors}

@@ -309,7 +309,10 @@ def _compose_eval_fix_prompt(eval_output: str, user_reply: str, localization_pat
     if user_reply.strip():
         parts.append(f"## User Guidance\n\n{user_reply.strip()}")
     if localization_path:
-        parts.append(f"## Codebase Context\n\nLocalization file (read if relevant): {localization_path}")
+        parts.append(
+            "## Codebase Context\n\n"
+            f"Localization file (read if relevant): {localization_path}"
+        )
     merged = "\n\n".join(parts).strip()
     return merged or "Address the latest final eval findings and return for user review."
 

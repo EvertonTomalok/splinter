@@ -63,6 +63,7 @@ class AdaptiveStrategy(CascadeStrategy):
         jump_premium: bool = False,
         skip_planner: bool = False,
         skip_eval: bool = False,
+        force_replan: bool = False,
     ) -> list[RunResult]:
         effective_budget = budget if budget is not None else configured_budget()
         effective_soft_budget = configured_soft_budget()

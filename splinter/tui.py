@@ -120,9 +120,12 @@ def _overview_md(session: Session, state: str) -> str:
     metrics = _trace_metrics(session.read("trace.md"))
     loop = session.read("loop.md")
     iters = _iterations(loop)
-    from splinter.agents.localizer import _count_anchors
+    from splinter.agents.localizer import _count_anchors, _parse_anchors
 
-    anchors_count = _count_anchors(session.read("knowledge/localization.md"))
+    localization_text = session.read("knowledge/localization.md")
+    anchors_count = _count_anchors(localization_text)
+    parsed = _parse_anchors(localization_text) if localization_text else []
+    hot = [a for a in parsed if a.relevance == "hot"]
 
     lines = [
         _SPLINTER,
@@ -140,6 +143,15 @@ def _overview_md(session: Session, state: str) -> str:
 
     lines.append("## Steps")
     lines.append(f"- localize — {anchors_count} anchors")
+    if hot:
+        for a in hot[:5]:
+            reason_snip = a.reason
+            if len(reason_snip) > 100:
+                reason_snip = reason_snip[:97] + "..."
+            loc = a.file + (f":L{a.line_start}" if a.line_start else "")
+            lines.append(f"  - `{loc}` — {reason_snip}")
+        if len(hot) > 5:
+            lines.append(f"  - + {len(hot) - 5} more hot anchors")
     all_plans = _plan_files(session)
     if len(all_plans) > 1:
         lines.append(f"- plan — {len(all_plans)} plans")

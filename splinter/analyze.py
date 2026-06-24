@@ -729,9 +729,12 @@ def render_overview(session: Session, state: str) -> str:
     running = state == "RUNNING"
     passed = any(v == "PASS" for _, _, v in iters)
 
-    from splinter.agents.localizer import _count_anchors
+    from splinter.agents.localizer import _count_anchors, _parse_anchors
 
-    anchors = _count_anchors(localization)
+    anchors_count = _count_anchors(localization)
+    parsed_anchors = _parse_anchors(localization) if localization else []
+    hot_anchors = [a for a in parsed_anchors if a.relevance == "hot"]
+    hot_label = f" ({len(hot_anchors)} hot)" if hot_anchors else ""
     plan_steps = len(re.findall(r"^\s*\d+\.", plan, re.MULTILINE))
     all_plans = _plan_files(session)
 
@@ -759,14 +762,24 @@ def render_overview(session: Session, state: str) -> str:
 
     lines.append("")
     lines.append("[bold]STEPS[/]")
+    detail = f"{anchors_count} anchors{hot_label}" if localization else ""
     lines.append(
         step(
             bool(localization),
             current_stage == "localize",
             "localize",
-            f"{anchors} anchors" if localization else "",
+            detail,
         )
     )
+    if hot_anchors:
+        for a in hot_anchors[:5]:
+            reason_snip = a.reason
+            if len(reason_snip) > 100:
+                reason_snip = reason_snip[:97] + "..."
+            loc = f"{a.file}" + (f":L{a.line_start}" if a.line_start else "")
+            lines.append(f"    [dim]{loc}[/] — {reason_snip}")
+        if len(hot_anchors) > 5:
+            lines.append(f"    [dim]+ {len(hot_anchors) - 5} more hot anchors[/]")
     plan_detail = ""
     if plan:
         if len(all_plans) > 1:

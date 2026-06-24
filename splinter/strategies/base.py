@@ -87,4 +87,5 @@ class Strategy(ABC):
         jump_premium: bool = False,
         skip_planner: bool = False,
         skip_eval: bool = False,
+        force_replan: bool = False,
     ) -> list[RunResult]: ...

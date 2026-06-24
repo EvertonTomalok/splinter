@@ -417,7 +417,8 @@ class TestResumeNewRound:
         task_yaml: str,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Final eval resume uses eval findings as task description (the plan); planner is skipped."""
+        """Final eval resume uses eval findings as task description (the plan); planner
+        is skipped."""
         session.set_status(
             "awaiting_user",
             stage="final_eval",
