@@ -277,6 +277,46 @@ def _plan_files(session: Session) -> list[tuple[str, str]]:
     return result
 
 
+def _plans_from_agentic(session: Session) -> str:
+    """Fallback: reconstruct plan content from agentic/task-N.jsonl exchange records.
+
+    Called only when knowledge/plan*.md files are absent (cleared by an older
+    eval-fix round before the observability fix).  Returns rendered markdown or
+    empty string if no plan exchanges are found.
+    """
+    import json
+
+    agentic_dir = session.dir / "agentic"
+    if not agentic_dir.exists():
+        return ""
+
+    sections: list[str] = []
+    for jsonl_path in sorted(agentic_dir.glob("task-*.jsonl")):
+        m = re.match(r"task-(\d+)\.jsonl$", jsonl_path.name)
+        if not m:
+            continue
+        task_num = int(m.group(1)) + 1  # task-0 → plan-1
+        for raw in jsonl_path.read_text().splitlines():
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                ev = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if ev.get("stage") != "plan":
+                continue
+            response = (ev.get("response") or "").strip()
+            if not response:
+                continue
+            sections.append(f"## plan-{task_num}\n\n{response}")
+            break  # one plan per task file
+
+    if not sections:
+        return ""
+    return "# Plans _(recovered from agentic trace)_\n\n" + "\n\n---\n\n".join(sections)
+
+
 def _knowledge_notes(session: Session) -> list[tuple[str, str]]:
     kdir = session.dir / "knowledge"
     if not kdir.exists():

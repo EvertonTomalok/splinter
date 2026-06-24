@@ -321,7 +321,11 @@ def _build_eval_fix_task(fix_prompt: str, effort: str | None) -> Task:
 
 
 def _clear_round_caches(session: Session) -> None:
-    """Remove stale plan/filter/per-task-localization files before a new round."""
+    """Remove stale filter/per-task-localization files before a new round.
+
+    Plan files are intentionally kept for observability — they are readable in
+    ``splinter analyze`` even after an eval-fix round overwrites the run.
+    """
     import re as _re
 
     kdir = session.dir / "knowledge"
@@ -331,10 +335,10 @@ def _clear_round_caches(session: Session) -> None:
         if not p.suffix == ".md":
             continue
         name = p.stem
-        # keep localization.md (main); remove localization-N.md, plan*.md, filter-*.md
+        # keep localization.md (main) and all plan-*.md (observability)
         if name == "localization":
             continue
-        if _re.match(r"^(plan(-\d+)?|filter-\d+|localization-\d+)$", name):
+        if _re.match(r"^(filter-\d+|localization-\d+)$", name):
             p.unlink(missing_ok=True)
 
 
@@ -497,6 +501,9 @@ def run_pipeline(
         tasks = [_build_eval_fix_task(eval_fix_prompt, effective_effort)]
         strategy_name = "direct"
         effective_user_guidance = None
+        # Skip planner so stale plan-N.md from the previous cascade round is not
+        # reused — the eval-fix task description already IS the plan.
+        _next_skip_planner = True
         _clear_round_caches(session)
         session.write(
             f"knowledge/eval-fix-input-{resume_round}.md",

@@ -63,6 +63,7 @@ from splinter.analyze import (
     _knowledge_notes,
     _loop_block,
     _plan_files,
+    _plans_from_agentic,
     _prd_feature_name,
     _prd_phases,
     _prd_story_titles,
@@ -261,6 +262,9 @@ def _plan_overview_md(session: Session) -> str:
         content = session.read("knowledge/plan.md").strip()
         if content:
             return _file_md(session, "Plan", "knowledge/plan.md")
+        agentic_md = _plans_from_agentic(session)
+        if agentic_md:
+            return agentic_md
         return "# Plans\n\n_no plan yet._"
     lines = [
         "# Plans",
