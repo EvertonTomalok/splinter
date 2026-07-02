@@ -34,6 +34,7 @@ EXPANDABLE = (
     "trace",
     "knowledge",
     "agentic",
+    "prd_versions",
     "all",
 )
 
@@ -910,6 +911,17 @@ def render_iteration(session: Session, n: int) -> str:
 
 
 def render_expand(session: Session, what: str) -> str:
+    if what == "prd_versions":
+        from splinter import prd_session
+
+        versions = prd_session.list_prd_versions(session)
+        if not versions:
+            return "===== prd_versions =====\n(no versioned snapshots)"
+        parts = ["# PRD versions"]
+        for ver in versions:
+            parts.append(prd_session.render_prd_version_compare(session, ver))
+        return "\n\n---\n\n".join(parts)
+
     if what == "knowledge":
         notes = _knowledge_notes(session)
         if not notes:

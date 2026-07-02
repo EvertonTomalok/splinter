@@ -86,6 +86,11 @@ def _log_session(session: object, model: str, tokens: dict[str, int], cost: floa
         pass
 
 
+def _provider_agent(*, role: str, agent: str) -> str:
+    """Map pipeline role onto the provider agent hint (codex uses it for sandbox)."""
+    return role if role != "run" else agent
+
+
 def run_text(
     prompt: str,
     model: str,
@@ -117,7 +122,7 @@ def run_text(
             variant=variant,
             output_format=output_format,
             timeout=timeout,
-            agent=agent,
+            agent=_provider_agent(role=role, agent=agent),
         )
     except Exception as exc:
         if trace is not None:
@@ -169,7 +174,7 @@ def run_text_session(
             output_format=output_format,
             session=session,
             timeout=timeout,
-            agent=agent,
+            agent=_provider_agent(role=role, agent=agent),
         )
     except Exception as exc:
         if trace is not None:
@@ -219,7 +224,7 @@ def run_provider_session(
             output_format=output_format,
             session=session,
             timeout=timeout,
-            agent=agent,
+            agent=_provider_agent(role=role, agent=agent),
         )
     except Exception as exc:
         if trace is not None:

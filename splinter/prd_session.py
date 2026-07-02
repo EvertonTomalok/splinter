@@ -41,11 +41,158 @@ _DONE_WORDS = {"fulfilled", "done", "ready", "go", "ship", "lgtm"}
 #: PRD refinement is itself a trajectory; phases land here so ``splinter analyze``
 #: can show them next to the run-loop iterations. One ``- <phase> · <detail>`` per line.
 PRD_PHASE_FILE = "prd_phases.md"
+#: Numbered PRD snapshots + manifest for analyze (old vs new per refine step).
+PRD_VERSION_DIR = "prd-versions"
+PRD_VERSION_MANIFEST = "prd_versions.md"
 
 
 def log_phase(session: "Session", phase: str, detail: str = "") -> None:
     """Append a PRD refinement phase to the session phase log (read by analyze)."""
     session.append(PRD_PHASE_FILE, f"- {phase} · {detail}" if detail else f"- {phase}")
+
+
+@dataclass(frozen=True)
+class PrdVersion:
+    """One numbered PRD snapshot on disk."""
+
+    num: int
+    label: str
+    detail: str = ""
+
+
+def _prd_versions_dir(session: "Session") -> Path:
+    d = session.dir / PRD_VERSION_DIR
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def prd_version_file(num: int) -> str:
+    return f"{PRD_VERSION_DIR}/{num:03d}.md"
+
+
+def list_prd_versions(session: "Session") -> list[PrdVersion]:
+    """Parse the version manifest; falls back to scanning numbered files."""
+    out: list[PrdVersion] = []
+    for raw in session.read(PRD_VERSION_MANIFEST).splitlines():
+        line = raw.strip()
+        if not line.startswith("- "):
+            continue
+        body = line[2:]
+        num_s, _, rest = body.partition(" · ")
+        try:
+            num = int(num_s)
+        except ValueError:
+            continue
+        label, _, detail = rest.partition(" · ")
+        out.append(PrdVersion(num=num, label=label.strip(), detail=detail.strip()))
+    if out:
+        return out
+    files = sorted(_prd_versions_dir(session).glob("*.md"), key=lambda p: p.stem)
+    return [PrdVersion(num=int(p.stem), label="snapshot") for p in files]
+
+
+def read_prd_version(session: "Session", num: int) -> str:
+    return session.read(prd_version_file(num))
+
+
+def _next_prd_version_num(session: "Session") -> int:
+    versions = list_prd_versions(session)
+    if versions:
+        return versions[-1].num + 1
+    existing = sorted(_prd_versions_dir(session).glob("*.md"), key=lambda p: p.stem)
+    if existing:
+        return int(existing[-1].stem) + 1
+    return 0
+
+
+def save_prd_version(
+    session: "Session", md: str, *, label: str, detail: str = ""
+) -> int | None:
+    """Persist a numbered PRD snapshot and append to the manifest.
+
+    Skips when ``md`` is empty or identical to the latest saved version.
+    Returns the new version number, or ``None`` when nothing was written.
+    """
+    text = md.strip()
+    if not text:
+        return None
+    normalized = text + ("\n" if not text.endswith("\n") else "")
+    versions = list_prd_versions(session)
+    if versions:
+        latest = read_prd_version(session, versions[-1].num).strip()
+        if latest == normalized.strip():
+            return None
+    num = _next_prd_version_num(session)
+    session.write(prd_version_file(num), normalized)
+    manifest_line = f"- {num:03d} · {label}" + (f" · {detail}" if detail else "")
+    session.append(PRD_VERSION_MANIFEST, manifest_line + "\n")
+    return num
+
+
+def should_accept_prd_update(previous: str, proposed: str) -> bool:
+    """Reject updates that would wipe a substantive PRD with a tiny fragment."""
+    prev = previous.strip()
+    prop = proposed.strip()
+    if not prop:
+        return False
+    if not prev:
+        return True
+    prev_stories = len(user_story_titles(prev))
+    prop_stories = len(user_story_titles(prop))
+    if prev_stories >= 2 and prop_stories < prev_stories:
+        return False
+    if len(prev) > 500 and len(prop) < max(100, len(prev) // 10):
+        return False
+    return True
+
+
+def version_for_phase(
+    versions: list[PrdVersion], phase: str, occurrence: int = 0
+) -> PrdVersion | None:
+    """Map the *n*th occurrence of a phase label to its saved version."""
+    phase_l = phase.lower()
+    seen = 0
+    for ver in versions:
+        if ver.label.lower() == phase_l:
+            if seen == occurrence:
+                return ver
+            seen += 1
+    return None
+
+
+def render_prd_version_compare(session: "Session", version: PrdVersion) -> str:
+    """Markdown for analyze: previous snapshot, current snapshot, and deltas."""
+    current = read_prd_version(session, version.num).strip()
+    prev_text = ""
+    if version.num > 0:
+        prev_text = read_prd_version(session, version.num - 1).strip()
+    head = f"# PRD · {version.label}"
+    if version.detail:
+        head += f" — {version.detail}"
+    head += f"\n\n_version {version.num:03d}_"
+    parts = [head]
+    prev_stories = user_story_titles(prev_text) if prev_text else []
+    cur_stories = user_story_titles(current) if current else []
+    if prev_text or cur_stories:
+        parts.append(
+            f"_Stories: {len(prev_stories)} → {len(cur_stories)} · "
+            f"chars: {len(prev_text)} → {len(current)}_"
+        )
+    if prev_text:
+        parts.append("## Previous\n\n" + prev_text)
+    parts.append("## Current\n\n" + (current or "_(empty)_"))
+    return "\n\n".join(parts)
+
+
+def prd_version_files(session: "Session") -> list[tuple[str, str]]:
+    """``(relative_path, label)`` pairs for analyze tree / expand."""
+    out: list[tuple[str, str]] = []
+    for v in list_prd_versions(session):
+        label = f"v{v.num:03d} · {v.label}"
+        if v.detail:
+            label += f" · {v.detail}"
+        out.append((prd_version_file(v.num), label))
+    return out
 
 
 def ground_localization(session: "Session", ladder: "Ladder", text: str) -> str:
@@ -291,16 +438,27 @@ def generate_prd(
 def extract_working_draft(text: str) -> str:
     """Extract the PRD content from a refine response.
 
-    The refine prompt asks the model to output '## Working Draft' followed by
-    the PRD in a fenced code block, then '## Open Questions'. Strip all that
-    and return just the PRD markdown. Falls back to the full text if the
-    expected structure is absent.
+    Prefer the section between ``## Working Draft`` and ``## Open Questions``,
+    stripping optional fenced code blocks. Falls back to frontmatter or full text.
     """
-    # Try to pull out the first fenced code block after ## Working Draft
+    section = re.search(
+        r"## Working Draft\s*\n(.*?)(?=\n## Open Questions\b)",
+        text,
+        re.DOTALL | re.IGNORECASE,
+    )
+    if section:
+        body = section.group(1).strip()
+        fenced = re.search(r"^```(?:markdown)?\s*\n(.*?)```", body, re.DOTALL | re.MULTILINE)
+        if fenced:
+            inner = fenced.group(1).strip()
+            tail = body[fenced.end() :].strip()
+            if tail and len(tail) > len(inner):
+                return (inner + "\n\n" + tail).strip()
+            return inner
+        return body
     m = re.search(r"## Working Draft.*?```(?:markdown)?\n(.*?)```", text, re.DOTALL | re.IGNORECASE)
     if m:
         return m.group(1).strip()
-    # Fallback: strip everything up to the first --- frontmatter marker
     m2 = re.search(r"^(---\n.*)", text, re.DOTALL | re.MULTILINE)
     if m2:
         return m2.group(1).strip()

@@ -692,6 +692,80 @@ def test_single_shot_runs_one_task_on_resume(
     assert len(ran) == 1
 
 
+# --- PRD version snapshots -----------------------------------------------------
+
+
+def test_save_prd_version_numbers_and_dedupes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from splinter.memory.session import Session
+
+    monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
+    session = Session("ses_prd_ver")
+    v1 = "# PRD v1\n\n### US-001: A"
+    v2 = "# PRD v2\n\n### US-001: A\n### US-002: B"
+    prd_session.save_prd_version(session, v1, label="generate", detail="1 stories")
+    n2 = prd_session.save_prd_version(session, v2, label="refine")
+    assert n2 == 1
+    assert prd_session.save_prd_version(session, v2, label="refine") is None
+    versions = prd_session.list_prd_versions(session)
+    assert [v.num for v in versions] == [0, 1]
+    assert versions[0].label == "generate"
+    assert versions[1].label == "refine"
+
+
+def test_should_accept_prd_update_rejects_wipe(tmp_path: Path) -> None:
+    stories = "\n".join(f"### US-{i:03d}: Story {i}\n**Description:** x\n" for i in range(1, 26))
+    big = f"---\nfeature: x\n---\n\n{stories}"
+    assert prd_session.should_accept_prd_update(big, "### PresentmentAmount") is False
+    assert prd_session.should_accept_prd_update(big, big + "\n\nmore detail") is True
+
+
+def test_render_prd_version_compare_shows_previous_and_current(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from splinter.memory.session import Session
+
+    monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
+    session = Session("ses_prd_cmp")
+    prd_session.save_prd_version(session, "# before\n\n### US-001: A", label="generate")
+    prd_session.save_prd_version(session, "# after\n\n### US-001: A\n### US-002: B", label="refine")
+    versions = prd_session.list_prd_versions(session)
+    md = prd_session.render_prd_version_compare(session, versions[1])
+    assert "## Previous" in md
+    assert "# before" in md
+    assert "## Current" in md
+    assert "# after" in md
+    assert "Stories: 1 → 2" in md
+
+
+def test_version_for_phase_maps_occurrence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from splinter.memory.session import Session
+
+    monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
+    session = Session("ses_prd_map")
+    prd_session.save_prd_version(session, "v0", label="generate")
+    prd_session.save_prd_version(session, "v1", label="refine")
+    prd_session.save_prd_version(session, "v2", label="refine")
+    versions = prd_session.list_prd_versions(session)
+    assert prd_session.version_for_phase(versions, "refine", 0).num == 1
+    assert prd_session.version_for_phase(versions, "refine", 1).num == 2
+
+
+def test_extract_working_draft_prefers_section_over_small_fence() -> None:
+    text = (
+        "## Working Draft\n\n"
+        "```markdown\n### PresentmentAmount\n```\n\n"
+        "---\nfeature: x\n---\n\n### US-001: Full PRD\n\n"
+        "## Open Questions\nNone"
+    )
+    out = prd_session.extract_working_draft(text)
+    assert "### US-001: Full PRD" in out
+    assert "---" in out
+
+
 # --- gate short-circuits eval on failure; eval session continuity ---------------------
 
 

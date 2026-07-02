@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import tempfile
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from splinter.procreg import run_subprocess
@@ -25,6 +28,8 @@ class CodexResult:
 
 
 _CLI_EFFORTS = {"low", "medium", "high", "xhigh"}
+_BUILD_AGENTS = frozenset({"build", "run"})
+_MESSAGE_KINDS = frozenset({"agent_message", "assistant_message"})
 _EFFORT_ALIASES: dict[str, str | None] = {
     "minimal": "low",
     "auto": None,
@@ -122,6 +127,55 @@ def _strip_prefix(model: str) -> str:
     return model[len("codex/") :] if model.startswith("codex/") else model
 
 
+def _use_read_only_sandbox(agent: str) -> bool:
+    """Text-only roles (PRD/plan/eval) must not let Codex edit files on disk."""
+    return agent not in _BUILD_AGENTS
+
+
+def _item_kind(item: dict[str, Any]) -> str:
+    kind = item.get("type") or item.get("item_type")
+    return str(kind) if kind else ""
+
+
+def _item_text(item: dict[str, Any]) -> str:
+    return str(item.get("text") or "")
+
+
+def _is_message_item(item: dict[str, Any]) -> bool:
+    return _item_kind(item) in _MESSAGE_KINDS
+
+
+def _build_base_flags(bare_model: str, *, effort: str | None, agent: str) -> list[str]:
+    flags: list[str] = ["--json", "--skip-git-repo-check", "-m", bare_model]
+    if _use_read_only_sandbox(agent):
+        flags.extend(["-s", "read-only"])
+    else:
+        flags.append("--dangerously-bypass-approvals-and-sandbox")
+    if effort is not None:
+        flags.extend(["-c", f"model_reasoning_effort={effort}"])
+    return flags
+
+
+def _record_message(
+    item: dict[str, Any],
+    *,
+    message_texts: dict[str, str],
+    message_order: list[str],
+) -> None:
+    text = _item_text(item)
+    if not text:
+        return
+    item_id = str(item.get("id") or "")
+    if item_id:
+        if item_id not in message_texts:
+            message_order.append(item_id)
+        message_texts[item_id] = text
+        return
+    anon = f"__msg_{len(message_order)}"
+    message_order.append(anon)
+    message_texts[anon] = text
+
+
 def _stream_codex_event(line: str) -> None:
     line = line.strip()
     if not line:
@@ -132,17 +186,18 @@ def _stream_codex_event(line: str) -> None:
         return
     if not isinstance(obj, dict):
         return
-    if obj.get("type") == "item.completed":
+    if obj.get("type") in {"item.updated", "item.completed"}:
         item = obj.get("item")
-        if isinstance(item, dict) and item.get("type") == "agent_message":
-            txt = str(item.get("text", "")).strip().replace("\n", " ")
+        if isinstance(item, dict) and _is_message_item(item):
+            txt = _item_text(item).strip().replace("\n", " ")
             if txt:
                 _stream_log.info("  \U0001f4ac %s", txt)
 
 
 def _parse_jsonl(stdout: str) -> dict[str, Any]:
     session_id: str | None = None
-    text_parts: list[str] = []
+    message_texts: dict[str, str] = {}
+    message_order: list[str] = []
     tokens: dict[str, int] = {}
     error_text: str | None = None
     for line in stdout.splitlines():
@@ -158,16 +213,29 @@ def _parse_jsonl(stdout: str) -> dict[str, Any]:
         event_type = obj.get("type")
         if event_type == "thread.started":
             session_id = str(obj["thread_id"]) if obj.get("thread_id") else None
-        elif event_type in {"error", "turn.failed", "response.error"}:
+        elif event_type == "error":
             msg = obj.get("message") or obj.get("error") or obj.get("text")
+            if isinstance(msg, str) and msg.strip().startswith("Reconnecting..."):
+                continue
             if isinstance(msg, str) and msg.strip():
                 error_text = msg.strip()
             else:
                 error_text = json.dumps(obj)
-        elif event_type == "item.completed":
+        elif event_type in {"turn.failed", "response.error"}:
+            nested = obj.get("error")
+            msg = (
+                nested.get("message")
+                if isinstance(nested, dict)
+                else obj.get("message") or obj.get("error") or obj.get("text")
+            )
+            if isinstance(msg, str) and msg.strip():
+                error_text = msg.strip()
+            else:
+                error_text = json.dumps(obj)
+        elif event_type in {"item.updated", "item.completed"}:
             item = obj.get("item")
-            if isinstance(item, dict) and item.get("type") == "agent_message":
-                text_parts.append(str(item.get("text", "")))
+            if isinstance(item, dict) and _is_message_item(item):
+                _record_message(item, message_texts=message_texts, message_order=message_order)
         elif event_type == "turn.completed":
             raw_usage = obj.get("usage")
             if isinstance(raw_usage, dict):
@@ -177,6 +245,7 @@ def _parse_jsonl(stdout: str) -> dict[str, Any]:
                     "cached_input": int(raw_usage.get("cached_input_tokens", 0) or 0),
                     "reasoning": int(raw_usage.get("reasoning_output_tokens", 0) or 0),
                 }
+    text_parts = [message_texts[item_id] for item_id in message_order if message_texts.get(item_id)]
     return {
         "text": "\n".join(text_parts),
         "session_id": session_id,
@@ -192,6 +261,7 @@ def run(
     effort: str | None = None,
     resume: str | None = None,
     timeout: int | None = None,
+    agent: str = "build",
 ) -> CodexResult:
     if timeout is None:
         from splinter.configure import configured_timeout
@@ -200,40 +270,45 @@ def run(
 
     bare_model = _strip_prefix(model)
     normalized_effort = _normalize_effort(effort)
+    base_flags = _build_base_flags(bare_model, effort=normalized_effort, agent=agent)
 
-    base_flags: list[str] = [
-        "--json",
-        "--skip-git-repo-check",
-        "--dangerously-bypass-approvals-and-sandbox",
-        "-m",
-        bare_model,
-    ]
-    if normalized_effort is not None:
-        base_flags.extend(["-c", f"model_reasoning_effort={normalized_effort}"])
+    last_msg_path: Path | None = None
+    fd, last_msg_name = tempfile.mkstemp(suffix=".md")
+    os.close(fd)
+    last_msg_path = Path(last_msg_name)
+    try:
+        base_flags.extend(["-o", str(last_msg_path)])
 
-    if resume is not None:
-        cmd: list[str] = ["codex", "exec", "resume", *base_flags, resume, prompt]
-    else:
-        cmd = ["codex", "exec", *base_flags, prompt]
+        if resume is not None:
+            cmd: list[str] = ["codex", "exec", "resume", *base_flags, resume, prompt]
+        else:
+            cmd = ["codex", "exec", *base_flags, prompt]
 
-    proc = run_subprocess(cmd, timeout=timeout, on_line=_stream_codex_event)
-    if proc.returncode != 0:
-        raise RuntimeError(f"codex exited {proc.returncode}: {proc.stderr.strip()}")
+        proc = run_subprocess(cmd, timeout=timeout, on_line=_stream_codex_event)
+        if proc.returncode != 0:
+            raise RuntimeError(f"codex exited {proc.returncode}: {proc.stderr.strip()}")
 
-    parsed = _parse_jsonl(proc.stdout)
-    if parsed.get("error"):
-        raise RuntimeError(str(parsed["error"]))
-    tokens = parsed["tokens"]
-    cost, cost_indeterminate = _calc_cost(bare_model, tokens)
+        parsed = _parse_jsonl(proc.stdout)
+        if parsed.get("error"):
+            raise RuntimeError(str(parsed["error"]))
+        text = str(parsed.get("text") or "")
+        if not text.strip() and last_msg_path.exists():
+            text = last_msg_path.read_text()
+        session_id = parsed.get("session_id") or resume
+        tokens = parsed["tokens"]
+        cost, cost_indeterminate = _calc_cost(bare_model, tokens)
 
-    return CodexResult(
-        text=parsed["text"],
-        tokens=tokens,
-        cost=cost,
-        raw={**parsed, "_session_id": parsed["session_id"]},
-        session_id=parsed["session_id"],
-        cost_indeterminate=cost_indeterminate,
-    )
+        return CodexResult(
+            text=text,
+            tokens=tokens,
+            cost=cost,
+            raw={**parsed, "_session_id": session_id},
+            session_id=session_id,
+            cost_indeterminate=cost_indeterminate,
+        )
+    finally:
+        if last_msg_path is not None:
+            last_msg_path.unlink(missing_ok=True)
 
 
 def ping(model: str = "gpt-5-codex", timeout: int = 30) -> bool:
@@ -264,7 +339,9 @@ class CodexProvider(ModelProvider):
         from splinter.providers.base import detect_provider_gap
 
         try:
-            result = run(prompt, model, effort=variant, resume=session, timeout=timeout)
+            result = run(
+                prompt, model, effort=variant, resume=session, timeout=timeout, agent=agent
+            )
         except Exception as exc:
             gap = detect_provider_gap(exc, self.name, model)
             if gap:

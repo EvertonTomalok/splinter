@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -14,6 +15,7 @@ from splinter.providers.codex import (
     _normalize_effort,
     _parse_jsonl,
     _strip_prefix,
+    _use_read_only_sandbox,
     fetch_pricing,
 )
 
@@ -69,6 +71,60 @@ def test_parse_jsonl_ignores_non_agent_message_items() -> None:
     )
     result = _parse_jsonl(jsonl)
     assert result["text"] == "kept"
+
+
+def test_parse_jsonl_assistant_message_item_type() -> None:
+    jsonl = (
+        '{"type":"thread.started","thread_id":"abc-123"}\n'
+        '{"type":"item.completed","item":{"id":"0","item_type":"assistant_message",'
+        '"text":"legacy assistant shape"}}\n'
+        '{"type":"turn.completed","usage":{"input_tokens":5,"cached_input_tokens":0,'
+        '"output_tokens":3,"reasoning_output_tokens":0}}\n'
+    )
+    result = _parse_jsonl(jsonl)
+    assert result["text"] == "legacy assistant shape"
+
+
+def test_parse_jsonl_item_updated_streams_message() -> None:
+    jsonl = (
+        '{"type":"thread.started","thread_id":"abc-123"}\n'
+        '{"type":"item.updated","item":{"id":"msg_1","type":"agent_message",'
+        '"text":"partial"}}\n'
+        '{"type":"item.completed","item":{"id":"msg_1","type":"agent_message",'
+        '"text":"final answer"}}\n'
+        '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,'
+        '"output_tokens":1,"reasoning_output_tokens":0}}\n'
+    )
+    result = _parse_jsonl(jsonl)
+    assert result["text"] == "final answer"
+
+
+def test_parse_jsonl_turn_failed_nested_error() -> None:
+    jsonl = (
+        '{"type":"thread.started","thread_id":"abc"}\n'
+        '{"type":"turn.failed","error":{"message":"model stream ended"}}\n'
+    )
+    result = _parse_jsonl(jsonl)
+    assert result["error"] == "model stream ended"
+
+
+def test_parse_jsonl_ignores_transient_reconnect_error() -> None:
+    jsonl = (
+        '{"type":"error","message":"Reconnecting... 1/5"}\n'
+        '{"type":"item.completed","item":{"id":"0","type":"agent_message","text":"ok"}}\n'
+        '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,'
+        '"output_tokens":1,"reasoning_output_tokens":0}}\n'
+    )
+    result = _parse_jsonl(jsonl)
+    assert result["error"] is None
+    assert result["text"] == "ok"
+
+
+def test_use_read_only_sandbox_for_prd_role() -> None:
+    assert _use_read_only_sandbox("prd") is True
+    assert _use_read_only_sandbox("plan") is True
+    assert _use_read_only_sandbox("build") is False
+    assert _use_read_only_sandbox("run") is False
 
 
 def test_parse_jsonl_empty_stdout() -> None:
@@ -202,10 +258,62 @@ def test_run_normal_cmd_construction(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "--json" in cmd
     assert "--skip-git-repo-check" in cmd
     assert "--dangerously-bypass-approvals-and-sandbox" in cmd
+    assert "-o" in cmd
+    assert "-s" not in cmd
     assert "-m" in cmd
     idx = cmd.index("-m")
     assert cmd[idx + 1] == "gpt-5-codex"
     assert cmd[-1] == "hello"
+
+
+def test_run_read_only_sandbox_for_prd_agent(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_subprocess(cmd: list[str], timeout: int = 0, on_line: object = None) -> object:
+        captured["cmd"] = cmd
+        return _fake_proc(_SAMPLE_JSONL)
+
+    monkeypatch.setattr(codex_module, "run_subprocess", fake_subprocess)
+    codex_module.run("draft prd", "codex/gpt-5-codex", agent="prd", timeout=30)
+
+    cmd = captured["cmd"]
+    assert "-s" in cmd
+    assert cmd[cmd.index("-s") + 1] == "read-only"
+    assert "--dangerously-bypass-approvals-and-sandbox" not in cmd
+
+
+def test_run_falls_back_to_output_last_message(monkeypatch: pytest.MonkeyPatch) -> None:
+    empty_jsonl = (
+        '{"type":"thread.started","thread_id":"abc"}\n'
+        '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,'
+        '"output_tokens":1,"reasoning_output_tokens":0}}\n'
+    )
+
+    def fake_subprocess(cmd: list[str], timeout: int = 0, on_line: object = None) -> object:
+        out_idx = cmd.index("-o")
+        Path(cmd[out_idx + 1]).write_text("from output-last-message file")
+        return _fake_proc(empty_jsonl)
+
+    monkeypatch.setattr(codex_module, "run_subprocess", fake_subprocess)
+    result = codex_module.run("hi", "codex/gpt-5-codex", timeout=30)
+    assert result.text == "from output-last-message file"
+
+
+def test_run_resume_preserves_session_id_without_thread_started(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    jsonl = (
+        '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,'
+        '"output_tokens":1,"reasoning_output_tokens":0}}\n'
+    )
+
+    def fake_subprocess(cmd: list[str], timeout: int = 0, on_line: object = None) -> object:
+        return _fake_proc(jsonl)
+
+    monkeypatch.setattr(codex_module, "run_subprocess", fake_subprocess)
+    session_id = "019eb885-0bf2-7be2-b265-81dc3637472b"
+    result = codex_module.run("continue", "codex/gpt-5-codex", resume=session_id, timeout=30)
+    assert result.session_id == session_id
 
 
 def test_run_strips_codex_prefix_from_model_flag(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -458,6 +566,7 @@ def test_dispatch_run_text_routes_codex(monkeypatch: pytest.MonkeyPatch) -> None
         effort: str | None = None,
         resume: str | None = None,
         timeout: int | None = None,
+        agent: str = "build",
     ) -> CodexResult:
         return CodexResult(
             text="dispatched",
@@ -482,6 +591,7 @@ def test_dispatch_run_text_session_routes_codex(monkeypatch: pytest.MonkeyPatch)
         effort: str | None = None,
         resume: str | None = None,
         timeout: int | None = None,
+        agent: str = "build",
     ) -> CodexResult:
         return CodexResult(
             text="session-text",
@@ -508,6 +618,7 @@ def test_dispatch_run_provider_session_routes_codex(monkeypatch: pytest.MonkeyPa
         effort: str | None = None,
         resume: str | None = None,
         timeout: int | None = None,
+        agent: str = "build",
     ) -> CodexResult:
         return CodexResult(
             text="full-resp",
@@ -523,6 +634,36 @@ def test_dispatch_run_provider_session_routes_codex(monkeypatch: pytest.MonkeyPa
     assert resp.text == "full-resp"
     assert resp.cost == pytest.approx(0.05)
     assert sid == "sid-xyz"
+
+
+def test_dispatch_run_provider_session_passes_role_as_agent_for_prd(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from splinter.providers import dispatch
+
+    captured: dict[str, str] = {}
+
+    def fake_run(
+        prompt: str,
+        model: str,
+        *,
+        effort: str | None = None,
+        resume: str | None = None,
+        timeout: int | None = None,
+        agent: str = "build",
+    ) -> CodexResult:
+        captured["agent"] = agent
+        return CodexResult(
+            text="ok",
+            tokens={"input": 1, "output": 1},
+            cost=0.0,
+            raw={},
+            session_id="sid",
+        )
+
+    monkeypatch.setattr(codex_module, "run", fake_run)
+    dispatch.run_provider_session("hello", "codex/gpt-5-codex", role="prd", timeout=30)
+    assert captured["agent"] == "prd"
 
 
 def test_fetch_pricing_enumerates_live_codex_ids(monkeypatch: pytest.MonkeyPatch) -> None:

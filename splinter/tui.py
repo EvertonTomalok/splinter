@@ -603,9 +603,10 @@ def _story_md(session: Session, us_id: str, title: str) -> str:
     return block.group(1).strip()
 
 
-def _prd_phase_md(session: Session, phase: str, detail: str) -> str:
-    """Detail for a trajectory phase — routed to the artifact that phase produced,
-    not the PRD for every node."""
+def _prd_phase_md(session: Session, phase: str, detail: str, occurrence: int = 0) -> str:
+    """Detail for a trajectory phase — routed to the artifact that phase produced."""
+    from splinter import prd_session
+
     phase_l = phase.lower()
     head = f"# {phase}" + (f" — {detail}" if detail else "")
 
@@ -642,14 +643,17 @@ def _prd_phase_md(session: Session, phase: str, detail: str) -> str:
         return "\n\n".join(parts)
 
     if phase_l == "strategy":
-        from splinter import prd_session
-
         titles = prd_session.user_story_titles(session.read("prd.md"))
         chosen = detail or str(session.read_status().get("strategy", "?"))
         parts = [head, f"**Strategy:** `{chosen}`"]
         if titles:
             parts.append("## Tasks\n" + "\n".join(f"- {escape(t)}" for t in titles))
         return "\n\n".join(parts)
+
+    versions = prd_session.list_prd_versions(session)
+    matched = prd_session.version_for_phase(versions, phase, occurrence)
+    if matched is not None:
+        return prd_session.render_prd_version_compare(session, matched)
 
     prd = session.read("prd.md").strip()
     body = _cap_payload(prd) if prd else "_PRD draft not captured yet._"
@@ -794,9 +798,7 @@ class AnalyzeApp(App[None]):
         self._final_eval_node: TreeNode[Any] | None = None
         self._plan_node: TreeNode[Any] | None = None
         self._plan_idx: int = 0  # 0 = overview, 1..N = plan-N.md
-        self._traj_sig: (
-            tuple[tuple[int, int], tuple[int, int], tuple[int, int], tuple[int, int]] | None
-        ) = None
+        self._traj_sig: tuple[Any, ...] | None = None
         self._trace_offset: int = 0
         self._trace_selected_row: int = 1
         self._trace_expanded_row: int | None = None
@@ -875,7 +877,22 @@ class AnalyzeApp(App[None]):
         steps = tree.root.add("🧩 Steps", expand=True)
         self._steps_node = steps
         if self.session.read("prd.md"):
-            steps.add_leaf("prd", data={"kind": "file", "label": "PRD", "file": "prd.md"})
+            from splinter import prd_session
+
+            prd_versions = prd_session.prd_version_files(self.session)
+            if prd_versions:
+                prd_node = steps.add("📄 PRD", expand=True)
+                prd_node.add_leaf(
+                    "current",
+                    data={"kind": "file", "label": "PRD (current)", "file": "prd.md"},
+                )
+                for vfile, vlabel in prd_versions:
+                    prd_node.add_leaf(
+                        vlabel,
+                        data={"kind": "prd_version", "label": vlabel, "file": vfile},
+                    )
+            else:
+                steps.add_leaf("prd", data={"kind": "file", "label": "PRD", "file": "prd.md"})
         steps.add_leaf(
             "localize",
             data={"kind": "file", "label": "Localization", "file": "knowledge/localization.md"},
@@ -915,6 +932,7 @@ class AnalyzeApp(App[None]):
             _path_sig(self.session.dir / "prd_phases.md"),
             _path_sig(self.session.dir / "loop.md"),
             _path_sig(self.session.dir / "prd.md"),
+            _path_sig(self.session.dir / "prd_versions.md"),
             _path_sig(self.session.dir / "phases.md"),
         )
         if sig == self._traj_sig:
@@ -935,10 +953,19 @@ class AnalyzeApp(App[None]):
         self._expanded_tasks.update(currently_expanded)
 
         self._traj_node.remove_children()
+        phase_counts: dict[str, int] = {}
         for phase, detail in _prd_phases(self.session.read("prd_phases.md")):
+            occ = phase_counts.get(phase, 0)
+            phase_counts[phase] = occ + 1
             label = f"📝 {phase}" + (f" · {detail}" if detail else "")
             self._traj_node.add_leaf(
-                label, data={"kind": "prd_phase", "phase": phase, "detail": detail}
+                label,
+                data={
+                    "kind": "prd_phase",
+                    "phase": phase,
+                    "detail": detail,
+                    "occurrence": occ,
+                },
             )
 
         loop_md = self.session.read("loop.md")
@@ -1014,11 +1041,29 @@ class AnalyzeApp(App[None]):
         elif kind == "story":
             self._detail().update(_story_md(self.session, data["id"], data.get("title", "")))
         elif kind == "prd_phase":
-            self._detail().update(_prd_phase_md(self.session, data["phase"], data["detail"]))
+            self._detail().update(
+                _prd_phase_md(
+                    self.session,
+                    data["phase"],
+                    data["detail"],
+                    int(data.get("occurrence", 0) or 0),
+                )
+            )
         elif kind == "phase":
             self._detail().update(_phase_detail_md(self.session, data["n"]))
         elif kind == "trace":
             self._render_trace(force=False)
+        elif kind == "prd_version":
+            from splinter import prd_session
+
+            versions = prd_session.list_prd_versions(self.session)
+            num_s = re.search(r"v(\d+)", str(data.get("label", "")))
+            if num_s:
+                ver = next((v for v in versions if v.num == int(num_s.group(1))), None)
+                if ver is not None:
+                    self._detail().update(prd_session.render_prd_version_compare(self.session, ver))
+                    return
+            self._detail().update(_file_md(self.session, data["label"], data["file"]))
         elif kind == "file":
             if data.get("file") == "knowledge/plan.md":
                 self._render_plan()
@@ -4835,7 +4880,7 @@ class PrdSessionApp(App[int | None]):
         fm, _ = _fm_block(self._initial_prd)
         if not self._desc:
             self._desc = str(fm.get("feature", "")) or self._first_line(self._initial_prd)
-        self._set_preview(self._initial_prd)
+        self._set_preview(self._initial_prd, label="initial")
 
         if self.resuming:
             self._resume()
@@ -4984,7 +5029,7 @@ class PrdSessionApp(App[int | None]):
         self.final_prd = prd_session.ensure_frontmatter(
             text, description=self._desc, strategy=self.strategy
         )
-        self._set_preview(self.final_prd)
+        self._set_preview(self.final_prd, label="trust-accept")
         prd_session.log_phase(self.session, "trust-accept")
         n_stories = len(prd_session.user_story_titles(self.final_prd))
         if n_stories:
@@ -5079,15 +5124,31 @@ class PrdSessionApp(App[int | None]):
 
         self.run_worker(_swap, name="actions")  # type: ignore[arg-type]
 
-    def _set_preview(self, md: str) -> None:
-        if not md.strip():
-            return
-        self.session.write("prd.md", md)
-        self._write_source_prd(md)
+    def _commit_prd(self, md: str, *, label: str, detail: str = "") -> bool:
+        """Write ``prd.md``, version the snapshot, and sync the editor preview."""
+        from splinter import prd_session
+
+        text = md.strip()
+        if not text:
+            return False
+        current = (self._read_draft() or self.session.read("prd.md")).strip()
+        if current and current != text and not prd_session.should_accept_prd_update(current, text):
+            self._say(
+                "[yellow]Rejected PRD update — content shrank too much. "
+                "Previous version kept (see prd-versions/ in analyze).[/]"
+            )
+            return False
+        prd_session.save_prd_version(self.session, text, label=label, detail=detail)
+        self.session.write("prd.md", text if text.endswith("\n") else text + "\n")
+        self._write_source_prd(text)
         try:
-            self.query_one("#draft-edit", TextArea).text = md
+            self.query_one("#draft-edit", TextArea).text = text
         except Exception:
             pass
+        return True
+
+    def _set_preview(self, md: str, *, label: str = "update", detail: str = "") -> None:
+        self._commit_prd(md, label=label, detail=detail)
 
     def _write_source_prd(self, md: str) -> None:
         if not self._source_prd_path:
@@ -5217,7 +5278,7 @@ class PrdSessionApp(App[int | None]):
         prd_session.log_phase(self.session, "clarify")
         self.phase = "chat"
         self._save_state()
-        self._set_preview(self._initial_prd)
+        self._set_preview(self._initial_prd, label="initial")
         self._say(escape(questions))
         self._say(
             "[green]Answer (e.g. 1A,2C), or type 'fulfilled' to finalize, "
@@ -5234,7 +5295,7 @@ class PrdSessionApp(App[int | None]):
         prd_session.log_phase(self.session, "refine")
         self.phase = "chat"
         self._save_state()
-        self._set_preview(prd_session.extract_working_draft(draft))
+        self._set_preview(prd_session.extract_working_draft(draft), label="refine")
         self._say("[green]Updated. Answer remaining questions, 'fulfilled', or 'cowabunga'.[/]")
         self._render_actions("chat")
         self._set_busy(False, "your answers / fulfilled / cowabunga")
@@ -5246,7 +5307,7 @@ class PrdSessionApp(App[int | None]):
         self.final_prd = prd
         n_stories = len(prd_session.user_story_titles(prd))
         prd_session.log_phase(self.session, "finalize", f"{n_stories} stories")
-        self._set_preview(prd)
+        self._set_preview(prd, label="finalize", detail=f"{n_stories} stories")
         if self.cowabunga:
             self._begin_run(autopick=True)
             return
@@ -5260,7 +5321,7 @@ class PrdSessionApp(App[int | None]):
         prd_session.log_phase(self.session, "revise")
         self.phase = "review"
         self._save_state()
-        self._set_preview(prd)
+        self._set_preview(prd, label="revise")
         self._show_stories()
         self._show_final_eval_hint()
         self._say("[green]Revised. Type 'accept' to run, or describe more changes.[/]")
@@ -5288,7 +5349,7 @@ class PrdSessionApp(App[int | None]):
         self._generating = False
         n_stories = len(prd_session.user_story_titles(prd))
         prd_session.log_phase(self.session, "generate", f"{n_stories} stories")
-        self._set_preview(prd)
+        self._set_preview(prd, label="generate", detail=f"{n_stories} stories")
         self._mount_draft_editor(prd)
         # Enter Q&A phase on the generated PRD — user types "fulfilled" to proceed to strategy.
         self._initial_prd = prd
@@ -5419,7 +5480,7 @@ class PrdSessionApp(App[int | None]):
         self.final_prd = _set_fm_strategy(self._read_draft(), self.strategy)
         self.phase = "review"
         self._save_state()
-        self._set_preview(self.final_prd)
+        self._set_preview(self.final_prd, label="strategy", detail=self.strategy or "")
         self._show_stories()
         self._show_final_eval_hint()
         self._say("[green]Type 'accept' to run, 'cowabunga' to run as-is, or describe changes.[/]")
@@ -5533,8 +5594,7 @@ class PrdSessionApp(App[int | None]):
             draft = _set_fm_strategy(draft, self.strategy)
         self.final_prd = draft
         prd_session.log_phase(self.session, "run", self.strategy or "cascade")
-        self.session.write("prd.md", self.final_prd)
-        self._write_source_prd(self.final_prd)
+        self._commit_prd(self.final_prd, label="run", detail=self.strategy or "cascade")
         self.session.update_index(
             f"# Session {self.session.id}\n- prd: prd.md\n- strategy: {self.strategy}\n"
         )

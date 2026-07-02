@@ -160,6 +160,11 @@ def _run_prd(
         prd_text = frontmatter + prd_text
 
     session.write("prd.md", prd_text)
+    from splinter import prd_session
+
+    n_stories = len(prd_session.user_story_titles(prd_text))
+    detail = f"{n_stories} stories" if n_stories else ""
+    prd_session.save_prd_version(session, prd_text, label="generate", detail=detail)
 
     fm: dict[str, str] = {}
     if prd_text.startswith("---"):

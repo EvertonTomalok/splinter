@@ -200,8 +200,8 @@ class TestSourcePrdPersistence:
         app = PrdSessionApp(session, run_kwargs)
         app._set_preview("# new")
 
-        assert src.read_text() == "# new"
-        assert session.read("prd.md") == "# new"
+        assert src.read_text().strip() == "# new"
+        assert session.read("prd.md").strip() == "# new"
 
     def test_begin_run_writes_final_prd_to_source_prd_path(
         self,
@@ -222,8 +222,8 @@ class TestSourcePrdPersistence:
                     with patch.object(app, "exit"):
                         app._begin_run()
 
-        assert src.read_text() == "# final from draft"
-        assert session.read("prd.md") == "# final from draft"
+        assert src.read_text().strip() == "# final from draft"
+        assert session.read("prd.md").strip() == "# final from draft"
 
 
 class TestAcceptButton:
