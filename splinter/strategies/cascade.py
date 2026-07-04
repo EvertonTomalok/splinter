@@ -17,6 +17,7 @@ import logging
 import threading
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 
+from splinter.agents.evaluator import is_premium_task
 from splinter.agents.runner import RunResult, Task
 from splinter.memory.knowledge import KnowledgeStore
 from splinter.memory.session import Session
@@ -264,8 +265,19 @@ class CascadeStrategy(DirectStrategy):
                     log.info("parallel: budget exhausted — draining in-flight, no new dispatch")
                     stop_dispatch = True
 
+                # Re-read kowabunga on every dispatch pass (each is a scheduling
+                # decision) so a mid-run toggle takes effect on the next pass. When ON,
+                # premium tasks jump the queue — stuck premium work gets unblocked
+                # first. When OFF, ready() order is left exactly as today (no regression).
+                live_cowabunga = session.read_cowabunga()
+
                 if not stop_dispatch:
-                    for task in scheduler.ready():
+                    ready = scheduler.ready()
+                    if live_cowabunga:
+                        ready = sorted(
+                            ready, key=lambda t: 0 if is_premium_task(t, ladder) else 1
+                        )
+                    for task in ready:
                         if budget_pool.exhausted(trace.total_cost):
                             stop_dispatch = True
                             break
@@ -289,7 +301,7 @@ class CascadeStrategy(DirectStrategy):
                             max_iterations=max_iterations,
                             localization=localization,
                             eval_skill=eval_skill,
-                            cowabunga=cowabunga,
+                            cowabunga=live_cowabunga,
                             skip_planner=skip_planner,
                             skip_eval=skip_eval,
                             start_tier_override=tier_override,

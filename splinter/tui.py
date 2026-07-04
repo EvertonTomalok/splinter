@@ -75,6 +75,7 @@ from splinter.analyze import (
     format_run_completion,
     render_overview,
 )
+from splinter.enums import DEFAULT_RUNNER_MODE, RunnerMode
 from splinter.memory.session import Session, delete_session, list_sessions
 
 REFRESH_SECONDS = 2.0
@@ -2856,6 +2857,8 @@ class RunApp(App[int]):
     }
     #user-cmd-input { width: 1fr; height: 3; }
     #cmd-send { width: 10; height: 3; margin-left: 1; border: none; text-style: bold; }
+    #footer-bar { height: 1; }
+    #kowabunga-ind { width: auto; padding: 0 1; dock: right; }
     """
         + _PALETTE_CSS
         + _SCROLL_LEFT_PANE_CSS
@@ -2869,9 +2872,11 @@ class RunApp(App[int]):
         ("ctrl+c", "quit", "Quit"),
         ("p", "pause_graceful", "Pause/Chat"),
         ("escape", "pause_kill", "Kill"),
+        ("ctrl+k", "toggle_kowabunga", "Kowabunga"),
     ]
 
     _maximized: reactive[bool] = reactive(False)
+    _kowabunga: reactive[RunnerMode] = reactive(DEFAULT_RUNNER_MODE)
 
     def __init__(self, session: Session, run_kwargs: dict[str, Any]) -> None:
         super().__init__()
@@ -2898,9 +2903,13 @@ class RunApp(App[int]):
                         id="user-cmd-input",
                     )
                     yield Button("Send", id="cmd-send", variant="primary")
-        yield Footer()
+        with Horizontal(id="footer-bar"):
+            yield Footer()
+            yield Static(id="kowabunga-ind")
 
     def on_mount(self) -> None:
+        self._kowabunga = self.session.read_kowabunga()
+        self._render_kowabunga_ind(self._kowabunga)
         self._refresh()
         self.query_one("#overview-scroll", VerticalScroll).focus()
         self._timer = self.set_interval(0.5, self._refresh)
@@ -3294,6 +3303,19 @@ class RunApp(App[int]):
         self.title = f"splinter run · {self.session.id}"
         self.sub_title = f"{_STATE_EMOJI.get(state, '⚪')} {state}"
         self.query_one("#overview", Static).update(render_overview(self.session, state))
+        # Re-sync the mode + read-error flag from the session each tick. The
+        # pipeline can seed the mode ON from --cowabunga on the worker thread
+        # *after* on_mount snapshots it, so the reactive would otherwise show a
+        # stale OFF while scheduling runs as ON. Both reads touch status.json and
+        # may raise a transient OSError (read_status only swallows JSONDecodeError);
+        # keep the last-known mode / no error on failure so one bad read never
+        # throws inside the interval callback.
+        try:
+            self._kowabunga = self.session.read_kowabunga()
+            read_error = bool(self.session.read_status().get("kowabunga_read_error"))
+        except Exception:
+            read_error = False
+        self._render_kowabunga_ind(self._kowabunga, error=read_error)
 
     def _show_gap_modal(self, kind: str, provider: str = "", retry_after: object = None) -> None:
         try:
@@ -3501,6 +3523,27 @@ class RunApp(App[int]):
 
     def watch__maximized(self, val: bool) -> None:
         self.set_class(val, "--maximized")
+
+    def action_toggle_kowabunga(self) -> None:
+        new_mode = (
+            RunnerMode.KOWABUNGA_OFF
+            if self._kowabunga == RunnerMode.KOWABUNGA_ON
+            else RunnerMode.KOWABUNGA_ON
+        )
+        self.session.set_kowabunga(new_mode)
+        self._kowabunga = new_mode
+
+    def watch__kowabunga(self, val: RunnerMode) -> None:
+        self._render_kowabunga_ind(val)
+
+    def _render_kowabunga_ind(self, val: RunnerMode, *, error: bool = False) -> None:
+        ind = self.query_one("#kowabunga-ind", Static)
+        if error:
+            ind.update("[b $error]⚠ KOWABUNGA STATE UNREADABLE — OFF[/]")
+        elif val == RunnerMode.KOWABUNGA_ON:
+            ind.update("[b $warning]KOWABUNGA: ON[/]")
+        else:
+            ind.update("KOWABUNGA: OFF")
 
 
 def run_with_tui(run_kwargs: dict[str, Any], session: Session | None = None) -> int:

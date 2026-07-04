@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import threading
@@ -8,10 +9,20 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from splinter.enums import DEFAULT_RUNNER_MODE, RunnerMode
+
+log = logging.getLogger("splinter.session")
+
 #: Serialises the read-modify-write of ``worktrees.json`` across parallel worker
 #: threads. Module-level so it holds even for sessions built via ``__new__``
 #: (which bypasses ``__init__``), and shared by every Session in-process.
 _WORKTREE_LOCK = threading.Lock()
+
+#: Serialises the read-modify-write of ``status.json``. The kowabunga read path
+#: clears its error flag from many parallel worker threads + the cascade dispatch
+#: thread; without this lock those clearing-writes race concurrent ``set_status``
+#: calls (e.g. ``state="completed"``) and clobber/revert fields.
+_STATUS_LOCK = threading.Lock()
 
 
 def _base_dir() -> Path:
@@ -253,13 +264,14 @@ class Session:
     def set_status(self, state: str, **fields: Any) -> None:
         """Persist run state (running/completed/failed) plus arbitrary fields."""
         self._ensure_dir()
-        data = self.read_status()
-        if "started_at" not in data:
-            data["started_at"] = datetime.now(timezone.utc).isoformat()
-        data["state"] = state
-        data["updated"] = datetime.now(timezone.utc).isoformat()
-        data.update(fields)
-        self.status_path().write_text(json.dumps(data, indent=2))
+        with _STATUS_LOCK:
+            data = self.read_status()
+            if "started_at" not in data:
+                data["started_at"] = datetime.now(timezone.utc).isoformat()
+            data["state"] = state
+            data["updated"] = datetime.now(timezone.utc).isoformat()
+            data.update(fields)
+            self.status_path().write_text(json.dumps(data, indent=2))
 
     def read_status(self) -> dict[str, Any]:
         p = self.status_path()
@@ -270,6 +282,59 @@ class Session:
             except json.JSONDecodeError:
                 return {}
         return {}
+
+    def read_kowabunga(self) -> RunnerMode:
+        """Session-scoped kowabunga toggle; absent or bad value -> OFF, never raises."""
+        raw = self.read_status().get("kowabunga")
+        try:
+            return RunnerMode(raw) if raw is not None else DEFAULT_RUNNER_MODE
+        except ValueError:
+            return DEFAULT_RUNNER_MODE
+
+    def set_kowabunga(self, mode: RunnerMode) -> None:
+        state = str(self.read_status().get("state", "running"))
+        self.set_status(state, kowabunga=str(RunnerMode(mode)))
+
+    def read_cowabunga(self) -> bool:
+        """Is kowabunga ON? Re-read from session state on every scheduling decision.
+
+        Fault-tolerant by contract: any failure reading the persisted state falls
+        back to OFF and records ``kowabunga_read_error`` so the runner screen can
+        surface a warning. The error is logged, never silently swallowed. A clean
+        read clears a previously-set error flag.
+        """
+        try:
+            data = self.read_status()
+        except Exception as exc:
+            log.warning("kowabunga: state read failed, defaulting OFF: %s", exc)
+            self._flag_kowabunga_read_error()
+            return False
+        raw = data.get("kowabunga")
+        try:
+            mode = RunnerMode(raw) if raw is not None else DEFAULT_RUNNER_MODE
+        except ValueError:
+            mode = DEFAULT_RUNNER_MODE
+        if data.get("kowabunga_read_error"):
+            self.set_status(str(data.get("state", "running")), kowabunga_read_error=False)
+        return mode == RunnerMode.KOWABUNGA_ON
+
+    def _flag_kowabunga_read_error(self) -> None:
+        """Persist the read-error flag directly, bypassing ``read_status`` (which just
+        failed), so the warning survives to the runner screen."""
+        self._ensure_dir()
+        p = self.status_path()
+        with _STATUS_LOCK:
+            data: dict[str, Any] = {}
+            try:
+                if p.exists():
+                    loaded = json.loads(p.read_text())
+                    if isinstance(loaded, dict):
+                        data = loaded
+            except Exception:
+                data = {}
+            data["state"] = data.get("state", "running")
+            data["kowabunga_read_error"] = True
+            p.write_text(json.dumps(data, indent=2))
 
     def log_llm_usage(self, model: str, tokens: dict[str, int], cost: float) -> None:
         """Accumulate LLM usage outside the main run trace (PRD, planner, etc.)."""

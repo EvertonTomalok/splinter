@@ -49,3 +49,13 @@ class FinalEvalKind(StrEnum):
     REVIEW = "review"
     SKILL = "skill"
     COMMAND = "command"
+
+
+class RunnerMode(StrEnum):
+    """Kowabunga execution mode toggled from the runner screen."""
+
+    KOWABUNGA_ON = "KOWABUNGA_ON"
+    KOWABUNGA_OFF = "KOWABUNGA_OFF"
+
+
+DEFAULT_RUNNER_MODE = RunnerMode.KOWABUNGA_OFF

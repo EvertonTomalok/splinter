@@ -27,7 +27,7 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 from splinter import prd_session
-from splinter.agents.evaluator import PREMIUM_TIER, Evaluator
+from splinter.agents.evaluator import PREMIUM_TIER, Evaluator, is_stuck_premium
 from splinter.agents.runner import RunResult, Task
 from splinter.enums import Decision
 from splinter.memory.knowledge import KnowledgeStore
@@ -625,6 +625,11 @@ class DirectStrategy(Strategy):
             verdict = ctx.verdict
             assert verdict is not None and ctx.run_result is not None
 
+            # Re-read kowabunga from session state on every scheduling decision so a
+            # mid-run toggle takes effect on the next iteration — never the value
+            # frozen into the call once at start.
+            cowabunga = session.read_cowabunga()
+
             # Gate failures short-circuit eval with a RETRY verdict; eval failures
             # and passes are owned by the evaluator. Gate output is merged into
             # retry corrections below. The runner tier changes ONLY when eval says so.
@@ -679,28 +684,51 @@ class DirectStrategy(Strategy):
                     eval_history=eval_history,
                 )
 
-            if (
-                verdict.decision == Decision.JUMP_PREMIUM
-                and action.next_tier == tier
-                and not cowabunga
-            ):
-                reason = (
-                    f"Eval requests JUMP_PREMIUM but already at T{tier}. "
-                    f"Use Jump Premium to switch models or answer to steer."
+            if is_stuck_premium(verdict, action, tier):
+                if not cowabunga:
+                    reason = (
+                        f"Eval requests JUMP_PREMIUM but already at T{tier}. "
+                        f"Use Jump Premium to switch models or answer to steer."
+                    )
+                    _pause_for_user(
+                        session=session,
+                        knowledge=knowledge,
+                        task_index=task_index,
+                        iteration=iteration,
+                        tier=tier,
+                        reason=reason,
+                        corrections=verdict.corrections,
+                        gate_output=ctx.gate_output,
+                        oc_session=oc_session,
+                        eval_session=eval_session,
+                        eval_history=eval_history,
+                    )
+                # Enforce the hard budget BEFORE spending another paid iteration on
+                # the auto-jump path. This branch ends in `continue`, which skips the
+                # budget guard further below; without this check a repeatedly-stuck
+                # premium task (JUMP_PREMIUM every pass, or stalled at MAX_TIER) would
+                # run paid iterations up to `max_iterations`, blowing past a hard budget.
+                over_budget = budget is not None and trace.total_cost >= budget
+                if over_budget and not soft_budget:
+                    session.append("loop.md", f"## Budget exhausted (${trace.total_cost:.4f})\n")
+                    return ctx.run_result
+                # Kowabunga ON: the automatic equivalent of the manual Jump Premium —
+                # climb one tier higher (capped) with fresh runner/eval sessions
+                # instead of pausing for a human. At MAX_TIER this stays put but still
+                # resets sessions and retries; the loop's iteration cap bounds it.
+                new_tier = min(tier + 1, MAX_TIER)
+                log.info("kowabunga: auto-jumping stuck premium task T%d → T%d", tier, new_tier)
+                session.append(
+                    "loop.md",
+                    f"## Kowabunga auto-jump: stuck premium T{tier} → T{new_tier}\n\n",
                 )
-                _pause_for_user(
-                    session=session,
-                    knowledge=knowledge,
-                    task_index=task_index,
-                    iteration=iteration,
-                    tier=tier,
-                    reason=reason,
-                    corrections=verdict.corrections,
-                    gate_output=ctx.gate_output,
-                    oc_session=oc_session,
-                    eval_session=eval_session,
-                    eval_history=eval_history,
-                )
+                retry_notes = _retry_corrections(verdict.corrections, ctx.gate_output)
+                tier = new_tier
+                tier_tries = 0
+                oc_session = None
+                eval_session = None
+                corrections = _correction_context(knowledge, retry_notes)
+                continue
 
             retry_notes = _retry_corrections(verdict.corrections, ctx.gate_output)
 

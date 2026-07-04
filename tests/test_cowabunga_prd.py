@@ -8,7 +8,7 @@ import pytest
 
 from splinter import prd_session
 from splinter.agents.runner import RunResult, Task
-from splinter.enums import Decision
+from splinter.enums import DEFAULT_RUNNER_MODE, Decision, RunnerMode
 from splinter.memory.session import Session
 from splinter.providers.claude_cli import _normalize_effort
 from splinter.strategies.base import EvalVerdict
@@ -435,6 +435,11 @@ def _drive_loop(
     from splinter.models.roster import load_ladder
 
     run_session = session or Session("ses_test_loop")
+    # Decisions re-read kowabunga from session state, so seed it from the param
+    # (mirrors run_pipeline seeding the live state from the launch flag).
+    run_session.set_kowabunga(
+        RunnerMode.KOWABUNGA_ON if cowabunga else RunnerMode.KOWABUNGA_OFF
+    )
     if prd:
         run_session.write("prd.md", prd)
     run_task = task or Task(description="t", acceptance="a", effort="normal")
@@ -482,6 +487,94 @@ def test_jump_premium_skips_to_premium_tier(
     # Started at tier 1 (normal), jumped straight to premium tier 3.
     assert tiers[0] == 1
     assert tiers[1] == 3
+
+
+def test_kowabunga_auto_jumps_stuck_premium(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Start at premium (hard → T3). JUMP_PREMIUM there is stuck (can't climb via
+    # next_action), so kowabunga ON auto-jumps a tier each time instead of pausing.
+    session, tiers = _drive_loop(
+        monkeypatch,
+        tmp_path,
+        [_v(Decision.JUMP_PREMIUM), _v(Decision.JUMP_PREMIUM), _v(Decision.PASS)],
+        cowabunga=True,
+        task=Task(description="t", acceptance="a", effort="hard"),
+    )
+    assert tiers == [3, 4, 5]
+    assert "Kowabunga auto-jump" in session.read("loop.md")
+
+
+def test_kowabunga_off_stuck_premium_still_pauses(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from splinter.strategies.base import AskUserPause
+
+    with pytest.raises(AskUserPause):
+        _drive_loop(
+            monkeypatch,
+            tmp_path,
+            [_v(Decision.JUMP_PREMIUM)],
+            cowabunga=False,
+            task=Task(description="t", acceptance="a", effort="hard"),
+        )
+
+
+def test_mid_run_toggle_picked_up_next_decision(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Launch OFF from a normal tier. The first JUMP_PREMIUM escalates T1→T3 (not
+    # stuck, no pause). Flip the session state to ON on the second decision, where
+    # the task is now stuck at premium T3 — it must auto-jump, not pause.
+    monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
+    session = Session("ses_toggle")
+
+    original = Session.read_cowabunga
+    calls = {"n": 0}
+
+    def toggling_read(self: Session) -> bool:
+        calls["n"] += 1
+        if calls["n"] == 2:
+            self.set_kowabunga(RunnerMode.KOWABUNGA_ON)
+        return original(self)
+
+    monkeypatch.setattr(Session, "read_cowabunga", toggling_read)
+
+    out_session, tiers = _drive_loop(
+        monkeypatch,
+        tmp_path,
+        [_v(Decision.JUMP_PREMIUM), _v(Decision.JUMP_PREMIUM), _v(Decision.PASS)],
+        cowabunga=False,
+        task=Task(description="t", acceptance="a", effort="normal"),
+        session=session,
+    )
+    # T1 → escalate to T3 (OFF, not stuck) → toggle ON → auto-jump T3→T4 → PASS.
+    assert tiers == [1, 3, 4]
+    assert "Kowabunga auto-jump" in out_session.read("loop.md")
+
+
+def test_read_cowabunga_read_error_falls_back_off(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    import json as _json
+    import logging
+
+    monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
+    session = Session("ses_read_err")
+    session.set_status("running")
+
+    def boom(self: Session) -> dict[str, object]:
+        raise OSError("status unreadable")
+
+    monkeypatch.setattr(Session, "read_status", boom)
+
+    with caplog.at_level(logging.WARNING, logger="splinter.session"):
+        assert session.read_cowabunga() is False
+
+    # Flag persisted to disk despite read_status raising; warning was logged.
+    data = _json.loads(session.status_path().read_text())
+    assert data.get("kowabunga_read_error") is True
+    assert any("state read failed" in r.getMessage() for r in caplog.records)
 
 
 def test_max_tier_without_pass_pauses(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -882,3 +975,59 @@ def test_eval_session_continues_same_runner_resets_on_escalate(
     # iter1 starts with no eval session; iter2 (same tier RETRY) continues "ev1";
     # iter2's ESCALATE resets it, so iter3 (new tier) starts fresh (None).
     assert eval_sessions_in == [None, "ev1", None]
+
+
+# --- RunnerMode enum (US-001) -------------------------------------------------
+
+
+def test_runner_mode_members_exist() -> None:
+    assert RunnerMode.KOWABUNGA_ON
+    assert RunnerMode.KOWABUNGA_OFF
+    assert len(RunnerMode) == 2
+
+
+def test_runner_mode_default_off() -> None:
+    assert DEFAULT_RUNNER_MODE == RunnerMode.KOWABUNGA_OFF
+
+
+@pytest.mark.parametrize("member", list(RunnerMode))
+def test_runner_mode_roundtrip(member: RunnerMode) -> None:
+    assert RunnerMode(member.value) == member
+    assert str(member) == member.value
+    assert member == member.value
+
+
+# --- Session kowabunga toggle (US-002) ----------------------------------------
+
+
+def test_kowabunga_default_off(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
+    session = Session("ses_kowa_default")
+    assert session.read_kowabunga() == RunnerMode.KOWABUNGA_OFF
+
+
+def test_kowabunga_roundtrip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
+    session = Session("ses_kowa_roundtrip")
+    session.set_kowabunga(RunnerMode.KOWABUNGA_ON)
+    assert session.read_kowabunga() == RunnerMode.KOWABUNGA_ON
+
+
+def test_kowabunga_session_scoped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
+    session_a = Session("ses_kowa_a")
+    session_a.set_kowabunga(RunnerMode.KOWABUNGA_ON)
+
+    session_b = Session("ses_kowa_b")
+    assert session_b.read_kowabunga() == RunnerMode.KOWABUNGA_OFF
+
+
+def test_kowabunga_persists_across_reload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
+    session = Session("ses_kowa_reload")
+    session.set_kowabunga(RunnerMode.KOWABUNGA_ON)
+
+    reloaded = Session("ses_kowa_reload")
+    assert reloaded.read_kowabunga() == RunnerMode.KOWABUNGA_ON

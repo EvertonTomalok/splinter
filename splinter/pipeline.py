@@ -692,6 +692,15 @@ def run_pipeline(
         cowabunga=cowabunga,
     )
 
+    # Seed the live-readable kowabunga state from the launch flag so scheduling
+    # decisions (which re-read session state each pass) honour a CLI `--cowabunga`
+    # even before any TUI toggle. A later ctrl+k toggle overrides it. When the flag
+    # is off we leave the state untouched so a persisted toggle survives resume.
+    from splinter.enums import RunnerMode
+
+    if cowabunga and session.read_kowabunga() != RunnerMode.KOWABUNGA_ON:
+        session.set_kowabunga(RunnerMode.KOWABUNGA_ON)
+
     idx_lines = [
         f"# Session {session.id}",
         f"- strategy: {strategy_name}",

@@ -76,3 +76,48 @@ class TestValidateDeps:
         tasks = [_t("A", deps=["C"]), _t("B", deps=["A"]), _t("C", deps=["B"])]
         with pytest.raises(ValueError, match="cycle"):
             validate_deps(tasks)
+
+
+# --- kowabunga scheduler ordering (US-004) ------------------------------------
+
+
+def _te(id: str, effort: str) -> Task:
+    return Task(description=f"{id} task", acceptance="done", id=id, effort=effort)
+
+
+def _reorder(ready: list[Task], ladder: object, *, cowabunga: bool) -> list[Task]:
+    """Mirror the exact reorder the parallel scheduler applies each dispatch pass."""
+    from splinter.agents.evaluator import is_premium_task
+
+    if cowabunga:
+        return sorted(ready, key=lambda t: 0 if is_premium_task(t, ladder) else 1)
+    return list(ready)
+
+
+class TestKowabungaSchedulerOrdering:
+    def test_is_premium_task_by_effort(self) -> None:
+        from splinter.agents.evaluator import is_premium_task
+        from splinter.models.roster import load_ladder
+
+        ladder = load_ladder()
+        assert is_premium_task(_te("A", "hard"), ladder) is True
+        assert is_premium_task(_te("B", "critical"), ladder) is True
+        assert is_premium_task(_te("C", "normal"), ladder) is False
+        assert is_premium_task(_te("D", "trivial"), ladder) is False
+
+    def test_on_reorders_premium_first(self) -> None:
+        from splinter.models.roster import load_ladder
+
+        ladder = load_ladder()
+        ready = [_te("A", "normal"), _te("B", "hard"), _te("C", "normal"), _te("D", "critical")]
+        out = [t.id for t in _reorder(ready, ladder, cowabunga=True)]
+        # Premium tasks jump ahead; stable within groups (B before D, A before C).
+        assert out == ["B", "D", "A", "C"]
+
+    def test_off_leaves_order_unchanged(self) -> None:
+        from splinter.models.roster import load_ladder
+
+        ladder = load_ladder()
+        ready = [_te("A", "normal"), _te("B", "hard"), _te("C", "normal"), _te("D", "critical")]
+        out = [t.id for t in _reorder(ready, ladder, cowabunga=False)]
+        assert out == ["A", "B", "C", "D"]

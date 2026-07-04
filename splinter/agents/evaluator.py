@@ -258,6 +258,24 @@ class Evaluator:
         return EvalAction(decision=Decision.RETRY, next_tier=tier)
 
 
+def is_stuck_premium(verdict: EvalVerdict, action: EvalAction, tier: int) -> bool:
+    """The exact stuck-premium condition the manual ``jump_premium`` path implies.
+
+    Eval asked to JUMP_PREMIUM but ``next_action`` could not climb any higher
+    (``next_tier == tier``) — the task is already at/above the premium tier and
+    stuck. This is the single source of truth for both the manual pause path and
+    the automatic kowabunga auto-jump; neither redefines it.
+    """
+    return verdict.decision == Decision.JUMP_PREMIUM and action.next_tier == tier
+
+
+def is_premium_task(task: Task, ladder: Ladder, *, premium_tier: int = PREMIUM_TIER) -> bool:
+    """A task whose effort maps to a premium start-tier (hard/critical)."""
+    em = ladder.effort_mapping(task.effort)
+    start_tier = em.start_tier if em is not None else task.suggested_tier
+    return start_tier >= premium_tier
+
+
 def _sum_tokens(a: dict[str, int], b: dict[str, int]) -> dict[str, int]:
     total: Counter[str] = Counter()
     total.update(a)
