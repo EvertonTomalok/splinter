@@ -4714,6 +4714,53 @@ class ConfirmQuit(ModalScreen[bool]):
         self.dismiss(False)
 
 
+class _ParallelModal(ModalScreen[bool]):
+    """Ask, on the accept screen, whether independent tasks should run
+    concurrently in git worktrees. Only shown when the flag was not passed on
+    the CLI and the run can actually parallelize (multi-task strategy, 2+
+    stories). Escape / Sequential → run one task at a time."""
+
+    CSS = """
+    _ParallelModal { align: center middle; }
+    #box {
+        width: 80; max-width: 90%; height: auto; padding: 1 2;
+        border: thick $warning; background: $surface;
+    }
+    #box Static { width: 100%; height: auto; }
+    #hint { color: $text-muted; margin-top: 1; }
+    #qbuttons { height: 3; align-horizontal: center; margin-top: 1; }
+    #qbuttons Button { margin: 0 1; }
+    """
+
+    BINDINGS = [("escape", "sequential", "Sequential")]
+
+    def __init__(self, n_stories: int) -> None:
+        super().__init__()
+        self.n_stories = n_stories
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="box"):
+            yield Static("Run independent tasks in parallel?")
+            yield Static(
+                f"{self.n_stories} stories can run concurrently, each isolated in "
+                "its own git worktree and merged back on PASS."
+            )
+            yield Static(
+                "Dependencies (`Depends on US-NNN`) are always honored. "
+                "Sequential is safer; parallel is faster.",
+                id="hint",
+            )
+            with Horizontal(id="qbuttons"):
+                yield Button("Parallel", id="yes", variant="warning")
+                yield Button("Sequential", id="no", variant="primary")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.dismiss(event.button.id == "yes")
+
+    def action_sequential(self) -> None:
+        self.dismiss(False)
+
+
 class ComposerTextArea(TextArea):
     """PRD composer box: Enter inserts a newline; Ctrl+S submits."""
 
@@ -5595,7 +5642,7 @@ class PrdSessionApp(App[int | None]):
             return
 
         if prd_session.is_cowabunga(text):
-            self._begin_run()
+            self._begin_run(auto=True)
             return
         if text.lower() in {"accept", "run", "yes", "go", "y"}:
             self._begin_run()
@@ -5640,21 +5687,58 @@ class PrdSessionApp(App[int | None]):
         self.query_one("#entry", TextArea).focus()
 
     # --- finish ---
-    def _begin_run(self, autopick: bool = False) -> None:
+    def _should_ask_parallel(self) -> bool:
+        """Prompt for parallel only when it was left unspecified on the CLI and the
+        run can actually parallelize: a multi-task strategy, 2+ stories, and git
+        worktree support. `--parallel`/`--no-parallel` and cowabunga skip the ask."""
         from splinter import prd_session
 
+        if self.run_kwargs.get("parallel") is not None:
+            return False
+        if (self.strategy or "cascade").lower() in ("direct", "raphael"):
+            return False
+        if len(prd_session.user_story_titles(self.final_prd)) < 2:
+            return False
+        from splinter.vcs.worktree import worktree_supported
+
+        return worktree_supported()
+
+    def _begin_run(self, autopick: bool = False, auto: bool = False) -> None:
         draft = self._read_draft()
         if autopick or not self.strategy:
             fm, _ = _fm_block(draft)
             self.strategy = self.strategy or str(fm.get("strategy") or "") or "cascade"
             draft = _set_fm_strategy(draft, self.strategy)
         self.final_prd = draft
+
+        # Cowabunga/auto never prompts; otherwise ask on the accept screen when the
+        # parallel flag was not passed explicitly and the run can parallelize.
+        if not (auto or autopick) and self._should_ask_parallel():
+            from splinter import prd_session
+
+            n = len(prd_session.user_story_titles(self.final_prd))
+
+            def _after(choice: bool | None) -> None:
+                self.run_kwargs["parallel"] = bool(choice)
+                self._finish_run()
+
+            self.push_screen(_ParallelModal(n), _after)
+            return
+
+        if self.run_kwargs.get("parallel") is None:
+            self.run_kwargs["parallel"] = False
+        self._finish_run()
+
+    def _finish_run(self) -> None:
+        from splinter import prd_session
+
         prd_session.log_phase(self.session, "run", self.strategy or "cascade")
         self._commit_prd(self.final_prd, label="run", detail=self.strategy or "cascade")
         self.session.update_index(
             f"# Session {self.session.id}\n- prd: prd.md\n- strategy: {self.strategy}\n"
         )
-        self._say(f"[green]▶ running with strategy '{self.strategy}'…[/]")
+        mode = " · parallel" if self.run_kwargs.get("parallel") else ""
+        self._say(f"[green]▶ running with strategy '{self.strategy}'{mode}…[/]")
         self.phase = "run"
         self._save_state()
         self.exit(0)

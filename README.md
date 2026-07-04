@@ -429,9 +429,13 @@ splinter run [OPTIONS]
 | `--eval-model TEXT` | Override evaluator model |
 | `--eval-effort TEXT` | Override evaluator reasoning effort |
 | `--cowabunga` | Full autonomy — skip PRD Q&A, never stop on `ASK_USER` |
+| `--parallel` / `--no-parallel` | Run independent tasks concurrently, each in its own git worktree (multi-task strategies only). When omitted on an interactive PRD run, you are asked on the accept screen |
+| `--max-concurrency INT` | Cap on parallel tasks (default: `cpu_count - 1`) |
 | `--no-ground` | Skip codebase grounding before PRD Q&A |
 | `--quiet` | Plain log output instead of the live TUI |
 | `--use-cc-only` | Swap to Claude-only runners before running |
+
+**Parallel execution.** `--parallel` lets independent user stories run at the same time, each isolated in its own `git worktree`, merged back on PASS while dependency edges (`Depends on US-NNN`) are honored. It applies only to multi-task strategies (`cascade`, `adaptive`, `sprint`) — `direct`/`raphael` is single-shot and ignores it — and needs `git worktree` support in the repo. If you don't pass `--parallel` or `--no-parallel`, an interactive PRD run asks you on the accept screen (only when the strategy is multi-task and the PRD has 2+ stories); `--quiet`/non-interactive runs default to sequential.
 
 ### `splinter prd`
 

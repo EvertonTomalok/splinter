@@ -147,12 +147,15 @@ def run(
         ),
     ] = None,
     parallel: Annotated[
-        bool,
+        bool | None,
         typer.Option(
-            "--parallel",
-            help="Run independent tasks concurrently in git worktrees",
+            "--parallel/--no-parallel",
+            help=(
+                "Run independent tasks concurrently in git worktrees. "
+                "Omit to be asked on the PRD accept screen (interactive runs)"
+            ),
         ),
-    ] = False,
+    ] = None,
     max_concurrency: Annotated[
         int | None,
         typer.Option(
@@ -172,6 +175,9 @@ def run(
         if rc != 0:
             raise typer.Exit(rc)
 
+    # Tri-state: None = not specified (interactive PRD run asks on the accept
+    # screen), True = --parallel, False = --no-parallel. Only an explicit True
+    # is gated here against worktree support / single-shot strategies.
     _effective_parallel = parallel
     if parallel:
         from splinter.vcs.worktree import worktree_supported
@@ -218,6 +224,9 @@ def run(
 
         from splinter.pipeline import run_pipeline
 
+        # No accept screen to ask on — an unspecified flag defaults to sequential.
+        if run_kwargs["parallel"] is None:
+            run_kwargs["parallel"] = False
         logging.basicConfig(level=logging.INFO, format="%(message)s")
         raise typer.Exit(run_pipeline(**run_kwargs))  # type: ignore[arg-type]
 
