@@ -278,18 +278,23 @@ def _config_path(scope: str = "project") -> Path:
 
 
 def load_config(scope: str = "project") -> dict[str, Any]:
+    # Deep copies throughout: a shallow copy shares nested dicts, so a caller
+    # mutating e.g. config["defaults"]["timeout"] would poison the cache (and,
+    # on the fallback path, the module-level DEFAULT_CONFIG) for the whole process.
+    import copy as _copy
+
     global _config_cache
     if _config_cache is not None:
-        return dict(_config_cache)
+        return _copy.deepcopy(_config_cache)
     for s in ("project", "user"):
         p = _config_path(s)
         if p.exists():
             with open(p) as f:
                 loaded: dict[str, Any] = yaml.safe_load(f) or {}
                 _config_cache = loaded
-                return dict(loaded)
-    _config_cache = DEFAULT_CONFIG.copy()
-    return dict(_config_cache)
+                return _copy.deepcopy(loaded)
+    _config_cache = _copy.deepcopy(DEFAULT_CONFIG)
+    return _copy.deepcopy(_config_cache)
 
 
 # Per-step model knobs the configure TUI exposes: (role key, label, description).

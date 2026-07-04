@@ -15,7 +15,6 @@ from __future__ import annotations
 import json
 import logging
 import threading
-from collections import deque
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 
 from splinter.agents.runner import RunResult, Task
@@ -23,7 +22,13 @@ from splinter.memory.knowledge import KnowledgeStore
 from splinter.memory.session import Session
 from splinter.models.roster import Ladder
 from splinter.obs.trace import Trace
-from splinter.scheduling import BudgetPool, DagScheduler, TaskState, default_max_concurrency
+from splinter.scheduling import (
+    BudgetPool,
+    DagScheduler,
+    TaskState,
+    default_max_concurrency,
+    topo_order,
+)
 from splinter.strategies.direct import DirectStrategy, TaskOutcome
 from splinter.strategies.registry import register
 
@@ -117,6 +122,7 @@ class CascadeStrategy(DirectStrategy):
                 cowabunga=cowabunga,
                 skip_planner=skip_planner,
                 skip_eval=skip_eval,
+                force_replan=force_replan,
             )
 
         session.set_status("running", task_index=len(ordered), task_total=len(ordered))
@@ -140,6 +146,7 @@ class CascadeStrategy(DirectStrategy):
         cowabunga: bool,
         skip_planner: bool,
         skip_eval: bool,
+        force_replan: bool = False,
     ) -> list[RunResult]:
         results: list[RunResult] = []
         for i, task in enumerate(ordered):
@@ -159,6 +166,7 @@ class CascadeStrategy(DirectStrategy):
                 f"# Task {i + 1}/{len(ordered)}: {task.description.splitlines()[0]}\n\n",
             )
 
+            outcome = TaskOutcome()
             result = self._run_task_loop(
                 task,
                 session,
@@ -169,18 +177,22 @@ class CascadeStrategy(DirectStrategy):
                 effort=effort,
                 budget=budget,
                 max_iterations=max_iterations,
-                localization=localization,
+                localization=task.filtered_context or localization,
                 eval_skill=eval_skill,
                 cowabunga=cowabunga,
                 resume=False,
                 skip_planner=skip_planner,
                 skip_eval=skip_eval,
                 force_replan=force_replan,
+                outcome=outcome,
             )
 
             if result is not None:
                 results.append(result)
-                if task.id:
+                # Checkpoint only a genuine PASS — a budget stop or cowabunga
+                # ASK_USER also returns a result, and checkpointing it would make
+                # resume skip an unfinished task.
+                if task.id and outcome.passed:
                     done.add(task.id)
                     self._save_checkpoint(session, done)
 
@@ -487,39 +499,11 @@ class CascadeStrategy(DirectStrategy):
     @staticmethod
     def _topo_sort(tasks: list[Task]) -> list[Task]:
         """Kahn's algorithm over task.deps. Cycle → warn + fallback to original order."""
-        id_to_task: dict[str, Task] = {t.id: t for t in tasks if t.id}
-        task_ids: set[str] = set(id_to_task)
-
-        in_degree: dict[str, int] = {tid: 0 for tid in task_ids}
-        adj: dict[str, list[str]] = {tid: [] for tid in task_ids}
-
-        for task in tasks:
-            if not task.id:
-                continue
-            for dep in task.deps or []:
-                if dep in task_ids:
-                    adj[dep].append(task.id)
-                    in_degree[task.id] += 1
-
-        queue: deque[str] = deque(tid for tid in task_ids if in_degree[tid] == 0)
-        prd_order = [t.id for t in tasks if t.id]
-        queue = deque(sorted(queue, key=lambda tid: prd_order.index(tid)))
-
-        result: list[Task] = []
-        while queue:
-            tid = queue.popleft()
-            result.append(id_to_task[tid])
-            for nxt in sorted(adj[tid], key=lambda x: prd_order.index(x)):
-                in_degree[nxt] -= 1
-                if in_degree[nxt] == 0:
-                    queue.append(nxt)
-
-        if len(result) != len(task_ids):
+        ordered = topo_order(tasks)
+        if ordered is None:
             log.warning("cascade: dependency cycle detected — falling back to PRD order")
             return list(tasks)
-
-        no_id = [t for t in tasks if not t.id]
-        return result + no_id
+        return ordered
 
     @staticmethod
     def _load_checkpoint(session: Session) -> set[str]:

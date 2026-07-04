@@ -280,10 +280,12 @@ def run(
     try:
         base_flags.extend(["-o", str(last_msg_path)])
 
+        # `--` terminates option parsing so a prompt starting with '-' (e.g. a PRD
+        # whose first line is the '---' YAML fence) isn't mistaken for a CLI flag.
         if resume is not None:
-            cmd: list[str] = ["codex", "exec", "resume", *base_flags, resume, prompt]
+            cmd: list[str] = ["codex", "exec", "resume", *base_flags, "--", resume, prompt]
         else:
-            cmd = ["codex", "exec", *base_flags, prompt]
+            cmd = ["codex", "exec", *base_flags, "--", prompt]
 
         proc = run_subprocess(cmd, timeout=timeout, cwd=cwd, on_line=_stream_codex_event)
         if proc.returncode != 0:

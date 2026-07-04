@@ -175,6 +175,9 @@ class TestExecuteResume:
 
         def fake_loop(task: Task, *args: Any, **kwargs: Any) -> RunResult | None:
             call_order.append(task.id)
+            outcome = kwargs.get("outcome")
+            if outcome is not None:
+                outcome.passed = True
             return _fake_result()
 
         original_save = CascadeStrategy._save_checkpoint

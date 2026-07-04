@@ -123,8 +123,11 @@ def _run_command(
 ) -> FinalEvalResult:
     cmd = entry.cmd or ""
     try:
+        # shell=True: final-eval cmds are user-supplied shell commands (quoting,
+        # pipes, &&) — naive .split() breaks them.
         proc = subprocess.run(
-            cmd.split(),
+            cmd,
+            shell=True,
             capture_output=True,
             text=True,
             timeout=timeout or _DEFAULT_TIMEOUT,

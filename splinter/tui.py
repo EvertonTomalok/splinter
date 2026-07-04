@@ -214,8 +214,11 @@ def _iteration_md(session: Session, task_no: int, n: int) -> str:
 
     _, _, task_body = tasks[task_no - 1]
     summary = _loop_block(task_body, n)
+    task_run_file = f"runs/task-{task_no}-iter-{n}.md" if task_no > 1 else f"runs/iter-{n}.md"
     run_out = (
-        session.read(f"runs/phase-{n}.md").strip() or session.read(f"runs/iter-{n}.md").strip()
+        session.read(f"runs/phase-{n}.md").strip()
+        or session.read(task_run_file).strip()
+        or session.read(f"runs/iter-{n}.md").strip()
     )
 
     eval_segments = _eval_segments(session.read("eval.md"), len(tasks))
@@ -3114,6 +3117,8 @@ class RunApp(App[int]):
                 "phase_plan_effort",
                 "phase_run_model",
                 "phase_run_effort",
+                "parallel",
+                "max_concurrency",
             }
             kwargs = {
                 **{k: v for k, v in self.run_kwargs.items() if k in _pipeline_keys},
@@ -3443,11 +3448,19 @@ class RunApp(App[int]):
             retry_after = st.get("retry_after")
             self.call_after_refresh(self._show_gap_modal, kind, provider, retry_after)
         elif self.rc == 3:
-            self.write_log("— run PAUSED (needs your input) —", logging.WARNING)
-            self.call_after_refresh(self._show_ask_user_modal)
-        elif self.rc == 4:
-            self.write_log("— final eval complete — awaiting manual validation —", logging.INFO)
-            self.call_after_refresh(self._show_manual_validation_modal)
+            # rc=3 covers both ASK_USER pauses and the final-eval manual
+            # validation pause — route by stage, same as on_mount.
+            st = self.session.read_status()
+            if str(st.get("stage", "")) == "final_eval" or str(st.get("state", "")) == (
+                "awaiting_validation"
+            ):
+                self.write_log(
+                    "— final eval complete — awaiting manual validation —", logging.INFO
+                )
+                self.call_after_refresh(self._show_manual_validation_modal)
+            else:
+                self.write_log("— run PAUSED (needs your input) —", logging.WARNING)
+                self.call_after_refresh(self._show_ask_user_modal)
         else:
             from splinter import procreg
 

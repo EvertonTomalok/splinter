@@ -214,9 +214,17 @@ class RunStage(Stage):
             ctx.oc_session = result.opencode_session
 
         # Persist the runner's raw output so `analyze` can expand it per iteration.
+        # Task-scoped name for tasks beyond the first: every task restarts its
+        # iteration count at 1, so a shared `iter-N.md` would be overwritten by
+        # the next task's same-numbered iteration (worst in parallel mode).
         actions_md = _render_actions(ctx.task_index, ctx.iteration, ctx.session)
+        run_file = (
+            f"runs/iter-{ctx.iteration}.md"
+            if ctx.task_index == 0
+            else f"runs/task-{ctx.task_index + 1}-iter-{ctx.iteration}.md"
+        )
         ctx.session.write(
-            f"runs/iter-{ctx.iteration}.md",
+            run_file,
             f"# Run output — iteration {ctx.iteration}\n"
             f"- model: {result.model} (tier {ctx.tier})\n"
             f"- tokens: {result.tokens}\n"

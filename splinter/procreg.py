@@ -9,6 +9,7 @@ worker so the process can exit cleanly.
 
 from __future__ import annotations
 
+import contextvars
 import os
 import signal
 import subprocess
@@ -144,16 +145,24 @@ def _stream(
     assert proc.stdout is not None
     assert proc.stderr is not None
 
-    def _drain(stream: Any, sink: list[str]) -> None:
+    def _drain(stream: Any, sink: list[str], ctx: contextvars.Context) -> None:
         for line in stream:
             sink.append(line)
             try:
-                on_line(line.rstrip("\n"))
+                # Run the callback inside the caller's context: threads start with
+                # an empty Context, so agentic_scope's ContextVar (task/iteration
+                # attribution for record_action) would otherwise be unset here.
+                ctx.run(on_line, line.rstrip("\n"))
             except Exception:  # noqa: BLE001 — a logging hiccup must not kill the run
                 pass
 
-    out_thread = threading.Thread(target=_drain, args=(proc.stdout, out), daemon=True)
-    err_thread = threading.Thread(target=_drain, args=(proc.stderr, err), daemon=True)
+    # One copy per drain thread — a single Context cannot be entered concurrently.
+    out_thread = threading.Thread(
+        target=_drain, args=(proc.stdout, out, contextvars.copy_context()), daemon=True
+    )
+    err_thread = threading.Thread(
+        target=_drain, args=(proc.stderr, err, contextvars.copy_context()), daemon=True
+    )
     out_thread.start()
     err_thread.start()
 

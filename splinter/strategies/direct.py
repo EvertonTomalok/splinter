@@ -493,8 +493,11 @@ class DirectStrategy(Strategy):
             # deterministic for this task. Skip reuse when skip_planner=True (caller
             # wants corrections as the plan) or force_replan=True (caller needs a
             # fresh LLM plan, e.g. a new cascade round).
+            # knowledge/plan.md mirrors task 1's plan only — falling back to it for
+            # a later task would silently run that task against the wrong plan.
             existing_plan = "" if (skip_planner or force_replan) else (
-                session.read(task_plan_file).strip() or session.read("knowledge/plan.md").strip()
+                session.read(task_plan_file).strip()
+                or (session.read("knowledge/plan.md").strip() if task_index == 0 else "")
             )
             if existing_plan:
                 log.info("plan exists for task %d — reusing (skipping planner)", task_index + 1)
@@ -646,7 +649,13 @@ class DirectStrategy(Strategy):
                     )
                 if verdict.passed:
                     log.info("task PASSED at T%d after %d iteration(s)", tier, iteration)
-                    _mark_story_done(session, task)
+                    # prd.md tick is a read-modify-write; serialize it across
+                    # parallel workers or concurrent PASSes lose each other's ticks.
+                    if lock is not None:
+                        with lock:
+                            _mark_story_done(session, task)
+                    else:
+                        _mark_story_done(session, task)
                     if outcome is not None:
                         outcome.passed = True
                     return ctx.run_result

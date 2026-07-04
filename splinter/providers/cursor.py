@@ -19,8 +19,6 @@ from splinter.providers.base import ModelPrice, ModelProvider, ProviderResponse
 _stream_log = logging.getLogger("splinter.live")
 _log = logging.getLogger("splinter.providers")
 
-_DEFAULT_TIMEOUT = 180
-
 _MODEL_PREFIX = "cursor/"
 
 # Cursor exposes each underlying model family under many effort/thinking/fast
@@ -357,6 +355,10 @@ def run(
     Raises :class:`RuntimeError` on non-zero exit so callers can treat it as
     a transient failure without inspecting returncode themselves.
     """
+    if timeout is None:
+        from splinter.configure import configured_timeout
+
+        timeout = configured_timeout()
     bare_model = model.removeprefix(_MODEL_PREFIX) if model else None
     cmd: list[str] = ["agent", "-p", "--trust", "--output-format", "stream-json"]
     if session is not None:
@@ -366,7 +368,7 @@ def run(
     cmd += ["--", prompt]
     proc = run_subprocess(
         cmd,
-        timeout=timeout or _DEFAULT_TIMEOUT,
+        timeout=timeout,
         cwd=project_dir,
         on_line=_stream_cursor_line,
     )
@@ -411,13 +413,21 @@ class CursorProvider(ModelProvider):
         agent: str = "build",
         cwd: str | None = None,
     ) -> ProviderResponse:
-        result = run(
-            prompt,
-            model=model or None,
-            session=session,
-            timeout=timeout,
-            project_dir=cwd or ".",
-        )
+        from splinter.providers.base import detect_provider_gap
+
+        try:
+            result = run(
+                prompt,
+                model=model or None,
+                session=session,
+                timeout=timeout,
+                project_dir=cwd or ".",
+            )
+        except Exception as exc:
+            gap = detect_provider_gap(exc, self.name, model)
+            if gap:
+                raise gap from exc
+            raise
         return ProviderResponse(
             text=result.text,
             tokens=result.tokens,

@@ -22,6 +22,7 @@ from splinter.models.pricing import estimate_tier_cost
 from splinter.models.roster import Ladder
 from splinter.obs.trace import Trace
 from splinter.strategies.cascade import CascadeStrategy
+from splinter.strategies.direct import TaskOutcome
 from splinter.strategies.registry import register
 
 log = logging.getLogger("splinter.loop")
@@ -92,6 +93,7 @@ class AdaptiveStrategy(CascadeStrategy):
             trace=trace,
             skip_planner=skip_planner,
             resume=resume,
+            force_replan=force_replan,
         )
 
         if parallel and len(ordered) > 1:
@@ -124,6 +126,14 @@ class AdaptiveStrategy(CascadeStrategy):
             if task.id and task.id in done:
                 log.info("resume: skip %s (checkpointed)", task.id)
                 continue
+
+            if (
+                effective_budget is not None
+                and not effective_soft_budget
+                and trace.total_cost >= effective_budget
+            ):
+                session.append("loop.md", f"## Budget exhausted (${trace.total_cost:.4f})\n")
+                break
 
             task_effort = effort or task.effort
 
@@ -174,6 +184,7 @@ class AdaptiveStrategy(CascadeStrategy):
                 f"# Task {i + 1}/{len(ordered)}: {task.description.splitlines()[0]}\n\n",
             )
 
+            outcome = TaskOutcome()
             result = self._run_task_loop(
                 task,
                 session,
@@ -184,7 +195,7 @@ class AdaptiveStrategy(CascadeStrategy):
                 effort=effort,
                 budget=effective_budget,
                 max_iterations=max_iterations,
-                localization=localization,
+                localization=task.filtered_context or localization,
                 eval_skill=eval_skill,
                 cowabunga=cowabunga,
                 resume=False,
@@ -192,11 +203,14 @@ class AdaptiveStrategy(CascadeStrategy):
                 start_tier_override=routed_tier,
                 skip_planner=skip_planner,
                 skip_eval=skip_eval,
+                force_replan=force_replan,
+                outcome=outcome,
             )
 
             if result is not None:
                 results.append(result)
-                if task.id:
+                # Checkpoint only a genuine PASS — see CascadeStrategy._run_sequential.
+                if task.id and outcome.passed:
                     done.add(task.id)
                     self._save_checkpoint(session, done)
 

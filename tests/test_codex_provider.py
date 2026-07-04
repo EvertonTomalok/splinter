@@ -271,7 +271,9 @@ def test_run_normal_cmd_construction(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_run_read_only_sandbox_for_prd_agent(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, object] = {}
 
-    def fake_subprocess(cmd: list[str], timeout: int = 0, on_line: object = None) -> object:
+    def fake_subprocess(
+        cmd: list[str], timeout: int = 0, cwd: object = None, on_line: object = None
+    ) -> object:
         captured["cmd"] = cmd
         return _fake_proc(_SAMPLE_JSONL)
 
@@ -291,7 +293,9 @@ def test_run_falls_back_to_output_last_message(monkeypatch: pytest.MonkeyPatch) 
         '"output_tokens":1,"reasoning_output_tokens":0}}\n'
     )
 
-    def fake_subprocess(cmd: list[str], timeout: int = 0, on_line: object = None) -> object:
+    def fake_subprocess(
+        cmd: list[str], timeout: int = 0, cwd: object = None, on_line: object = None
+    ) -> object:
         out_idx = cmd.index("-o")
         Path(cmd[out_idx + 1]).write_text("from output-last-message file")
         return _fake_proc(empty_jsonl)
@@ -309,7 +313,9 @@ def test_run_resume_preserves_session_id_without_thread_started(
         '"output_tokens":1,"reasoning_output_tokens":0}}\n'
     )
 
-    def fake_subprocess(cmd: list[str], timeout: int = 0, on_line: object = None) -> object:
+    def fake_subprocess(
+        cmd: list[str], timeout: int = 0, cwd: object = None, on_line: object = None
+    ) -> object:
         return _fake_proc(jsonl)
 
     monkeypatch.setattr(codex_module, "run_subprocess", fake_subprocess)
@@ -682,6 +688,7 @@ def test_dispatch_run_provider_session_passes_role_as_agent_for_prd(
         resume: str | None = None,
         timeout: int | None = None,
         agent: str = "build",
+        cwd: str | None = None,
     ) -> CodexResult:
         captured["agent"] = agent
         return CodexResult(

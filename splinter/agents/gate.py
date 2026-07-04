@@ -157,8 +157,7 @@ def _should_run(check: dict[str, str], project_dir: str) -> bool:
     if when == "always":
         return True
     if when == "tests_exist":
-        tests_dir = Path(project_dir) / "tests"
-        return tests_dir.exists() and any(tests_dir.rglob("test_*.py"))
+        return _tests_exist(project_dir)
     if when == "proto_changed":
         proto_files = list(Path(project_dir).rglob("*.proto"))
         if not proto_files:
@@ -214,6 +213,43 @@ def _should_run(check: dict[str, str], project_dir: str) -> bool:
     return True
 
 
+#: Test-file patterns per ecosystem — ``tests_exist`` is used by non-Python
+#: presets too (ruby/java/swift/…), so detection must not be Python-only.
+_TEST_FILE_PATTERNS = (
+    "test_*.py",
+    "*_test.py",
+    "*_test.go",
+    "*.test.ts",
+    "*.test.tsx",
+    "*.test.js",
+    "*.spec.ts",
+    "*.spec.js",
+    "*_spec.rb",
+    "*_test.rb",
+    "*Test.java",
+    "*Test.kt",
+    "*Tests.swift",
+    "*Test.cs",
+    "*Tests.cs",
+    "*Test.php",
+    "*_test.rs",
+)
+
+
+def _tests_exist(project_dir: str) -> bool:
+    root = Path(project_dir)
+    for d in ("tests", "test", "spec", "src/test"):
+        p = root / d
+        if p.is_dir() and any(f.is_file() for f in p.rglob("*")):
+            return True
+    return any(
+        f
+        for pat in _TEST_FILE_PATTERNS
+        for f in root.rglob(pat)
+        if "node_modules" not in f.parts and "target" not in f.parts
+    )
+
+
 def _lang_match(check: dict[str, str], languages: set[str]) -> bool:
     if not languages:
         return True
@@ -239,8 +275,11 @@ def run_gate(
         name = check["name"]
         cmd = check["cmd"]
         try:
+            # shell=True: gate cmds are "exact shell commands" (quoting, &&,
+            # backtick substitution in the presets) — naive .split() breaks them.
             proc = subprocess.run(
-                cmd.split(),
+                cmd,
+                shell=True,
                 capture_output=True,
                 text=True,
                 timeout=120,

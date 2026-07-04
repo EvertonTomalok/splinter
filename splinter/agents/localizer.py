@@ -318,7 +318,11 @@ def _extract_candidate_files(recall_output: str) -> list[str]:
     result: list[str] = []
     # Match bare paths: word chars / dots / hyphens ending in a known extension
     for m in _CANDIDATE_FILE_RE.finditer(recall_output):
-        p = m.group(0).lstrip("./")
+        p = m.group(0)
+        # Strip only a literal "./" prefix — lstrip("./") is a character-set strip
+        # and would mangle dotfile paths (".github/x.yml" → "github/x.yml").
+        while p.startswith("./"):
+            p = p[2:]
         if p not in seen:
             seen.add(p)
             result.append(p)
