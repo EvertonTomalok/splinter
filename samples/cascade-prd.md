@@ -3,18 +3,20 @@ feature: hello-world-cascade
 strategy: cascade
 kind: feature
 created: 2026-06-10T00:00:00Z
+parallel: false
 ---
 
 # Hello World (Cascade)
 
 Two-step pipeline: a shared module, then a script that imports it.
-Demonstrates `cascade` strategy with explicit task dependencies.
+Demonstrates `cascade` strategy with explicit task dependencies and parallelizable hints.
 
 ### US-001: Greeting module
 **Description:** As a developer, I want a `greet.py` module with a `greeting()` function that returns a string so that the main script can import it.
 
 **Splinter hints:**
 - effort: trivial
+- parallelizable: true
 
 **Acceptance Criteria:**
 - [ ] `greet.py` exists with a `greeting()` function
@@ -25,7 +27,8 @@ Demonstrates `cascade` strategy with explicit task dependencies.
 
 **Splinter hints:**
 - effort: trivial
-- Depends on US-001
+- deps: [US-001]
+- parallelizable: false
 
 **Acceptance Criteria:**
 - [ ] `hello_cascade.py` exists and imports from `greet`

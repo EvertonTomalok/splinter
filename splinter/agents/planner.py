@@ -68,6 +68,11 @@ def parse_stories(prd_text: str) -> list[Task]:
 
         deps = _DEP_PATTERN.findall(block) or None
 
+        parallelizable: bool | None = None
+        _par_match = re.search(r"parallelizable:\s*(true|false)", block, re.IGNORECASE)
+        if _par_match:
+            parallelizable = _par_match.group(1).lower() == "true"
+
         tasks.append(
             Task(
                 description=f"{us_id}: {desc}",
@@ -76,6 +81,7 @@ def parse_stories(prd_text: str) -> list[Task]:
                 eval_skill=skill,
                 id=us_id,
                 deps=deps,
+                parallelizable=parallelizable,
             )
         )
 

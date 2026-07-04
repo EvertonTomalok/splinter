@@ -262,6 +262,7 @@ def run(
     resume: str | None = None,
     timeout: int | None = None,
     agent: str = "build",
+    cwd: str | None = None,
 ) -> CodexResult:
     if timeout is None:
         from splinter.configure import configured_timeout
@@ -284,7 +285,7 @@ def run(
         else:
             cmd = ["codex", "exec", *base_flags, prompt]
 
-        proc = run_subprocess(cmd, timeout=timeout, on_line=_stream_codex_event)
+        proc = run_subprocess(cmd, timeout=timeout, cwd=cwd, on_line=_stream_codex_event)
         if proc.returncode != 0:
             raise RuntimeError(f"codex exited {proc.returncode}: {proc.stderr.strip()}")
 
@@ -335,12 +336,13 @@ class CodexProvider(ModelProvider):
         session: str | None = None,
         timeout: int | None = None,
         agent: str = "build",
+        cwd: str | None = None,
     ) -> ProviderResponse:
         from splinter.providers.base import detect_provider_gap
 
         try:
             result = run(
-                prompt, model, effort=variant, resume=session, timeout=timeout, agent=agent
+                prompt, model, effort=variant, resume=session, timeout=timeout, agent=agent, cwd=cwd
             )
         except Exception as exc:
             gap = detect_provider_gap(exc, self.name, model)

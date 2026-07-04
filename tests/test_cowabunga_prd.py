@@ -49,6 +49,7 @@ def test_prompt_with_leading_dashes_is_not_parsed_as_flag(
     def fake_subprocess(
         cmd: list[str],
         timeout: int = 0,
+        cwd: object = None,
         on_line: object = None,
     ) -> object:
         captured["cmd"] = cmd
@@ -76,6 +77,7 @@ def test_claude_json_runs_use_stream_json_for_live_trace(
     def fake_subprocess(
         cmd: list[str],
         timeout: int = 0,
+        cwd: object = None,
         on_line: object = None,
     ) -> object:
         captured["cmd"] = cmd
@@ -132,6 +134,7 @@ def test_claude_run_uses_configured_timeout_when_unset(
     def fake_subprocess(
         cmd: list[str],
         timeout: int = 0,
+        cwd: object = None,
         on_line: object = None,
     ) -> object:
         seen["timeout"] = timeout

@@ -599,6 +599,8 @@ def run_pipeline(
     phase_plan_effort: str | None = None,
     phase_run_model: str | None = None,
     phase_run_effort: str | None = None,
+    parallel: bool = False,
+    max_concurrency: int | None = None,
 ) -> int:
     from splinter import procreg as _procreg
 
@@ -756,6 +758,9 @@ def run_pipeline(
         _force_replan = resume and rs.round > 0 and not rs.from_final_eval
 
         session.set_status("running", stage="run")
+        _parallel = parallel and getattr(strat, "name", "") != "direct"
+        if parallel and not _parallel:
+            log.info("parallel: ignored for direct strategy (single task)")
         results = strat.execute(
             tasks,
             session,
@@ -773,6 +778,8 @@ def run_pipeline(
             skip_planner=skip_planner,
             skip_eval=rs.skip_eval,
             force_replan=_force_replan,
+            parallel=_parallel,
+            max_concurrency=max_concurrency,
         )
 
         if not rs.skip_final_eval:

@@ -68,6 +68,7 @@ def run(
     session: str | None = None,
     timeout: int | None = None,
     agent: str = "build",
+    cwd: str | None = None,
 ) -> OpencodeResult:
     if timeout is None:
         from splinter.configure import configured_timeout
@@ -97,7 +98,7 @@ def run(
     # (yargs prints usage and exits 1 otherwise).
     cmd.extend(["--", prompt])
 
-    proc = run_subprocess(cmd, timeout=timeout, on_line=_stream_event)
+    proc = run_subprocess(cmd, timeout=timeout, cwd=cwd, on_line=_stream_event)
     if proc.returncode != 0:
         raise RuntimeError(f"opencode exited {proc.returncode}: {proc.stderr.strip()}")
 
@@ -317,6 +318,7 @@ class OpencodeProvider(ModelProvider):
         session: str | None = None,
         timeout: int | None = None,
         agent: str = "build",
+        cwd: str | None = None,
     ) -> ProviderResponse:
         from splinter.providers.base import detect_provider_gap
 
@@ -329,6 +331,7 @@ class OpencodeProvider(ModelProvider):
                 session=session,
                 timeout=timeout,
                 agent=agent,
+                cwd=cwd,
             )
         except Exception as exc:
             gap = detect_provider_gap(exc, self.name, model)

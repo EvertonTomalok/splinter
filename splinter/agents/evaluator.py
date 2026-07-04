@@ -73,6 +73,7 @@ class Evaluator:
         iteration: int = 0,
         tier: int = 0,
         task_index: int = 0,
+        cwd: str | None = None,
     ) -> EvalVerdict:
         """Judge the code generation against the task with a frontier LLM.
 
@@ -128,6 +129,7 @@ class Evaluator:
             variant=effort,
             session=session,
             timeout=timeout,
+            cwd=cwd,
             trace=trace,
             iteration=iteration,
             tier=tier,
@@ -151,6 +153,7 @@ class Evaluator:
                 variant=effort,
                 session=sid,
                 timeout=timeout,
+                cwd=cwd,
                 trace=trace,
                 iteration=iteration,
                 tier=tier,

@@ -88,4 +88,6 @@ class Strategy(ABC):
         skip_planner: bool = False,
         skip_eval: bool = False,
         force_replan: bool = False,
+        parallel: bool = False,
+        max_concurrency: int | None = None,
     ) -> list[RunResult]: ...

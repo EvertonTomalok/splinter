@@ -36,7 +36,7 @@ def _log_trace(
 ) -> None:
     if cost <= 0 and sum(tokens.values()) <= 0 and not cost_indeterminate:
         return
-    trace.entries.append(  # type: ignore[attr-defined]
+    trace.add_entry(  # type: ignore[attr-defined]
         RunEntry(
             model=model,
             tier=tier,
@@ -65,7 +65,7 @@ def _log_trace_from_exc(
     cost: float = getattr(exc, "cost", 0.0) or 0.0
     if cost <= 0 and sum(tokens.values()) <= 0:
         return
-    trace.entries.append(  # type: ignore[attr-defined]
+    trace.add_entry(  # type: ignore[attr-defined]
         RunEntry(
             model=model,
             tier=tier,
@@ -207,6 +207,7 @@ def run_provider_session(
     session: str | None = None,
     timeout: int | None = None,
     agent: str = "build",
+    cwd: str | None = None,
     trace: object = None,
     iteration: int = 0,
     tier: int = 0,
@@ -214,7 +215,11 @@ def run_provider_session(
     role: str = "run",
 ) -> tuple[ProviderResponse, str | None]:
     """Like :func:`run_text_session` but returns the full :class:`ProviderResponse`
-    (with cost and token counts) alongside the session id."""
+    (with cost and token counts) alongside the session id.
+
+    ``cwd`` is the working directory the backend runs in — passed through so a
+    parallel task edits (and is gated on) its own git worktree, not the main repo.
+    """
     provider = get_provider(provider_for(model))
     try:
         resp = provider.run(
@@ -225,6 +230,7 @@ def run_provider_session(
             session=session,
             timeout=timeout,
             agent=_provider_agent(role=role, agent=agent),
+            cwd=cwd,
         )
     except Exception as exc:
         if trace is not None:

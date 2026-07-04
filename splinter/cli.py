@@ -146,6 +146,20 @@ def run(
             help="Reasoning effort for phase runner (low, medium, high, max, auto)",
         ),
     ] = None,
+    parallel: Annotated[
+        bool,
+        typer.Option(
+            "--parallel",
+            help="Run independent tasks concurrently in git worktrees",
+        ),
+    ] = False,
+    max_concurrency: Annotated[
+        int | None,
+        typer.Option(
+            "--max-concurrency",
+            help="Max parallel tasks (default: cpu_count - 1)",
+        ),
+    ] = None,
 ) -> None:
     """Run a task or PRD through a strategy."""
     import os
@@ -157,6 +171,25 @@ def run(
         rc = _swap_config("config.claude.yaml")
         if rc != 0:
             raise typer.Exit(rc)
+
+    _effective_parallel = parallel
+    if parallel:
+        from splinter.vcs.worktree import worktree_supported
+
+        if not worktree_supported():
+            _effective_parallel = False
+            import logging as _logging
+
+            _logging.getLogger("splinter").warning(
+                "--parallel ignored: git worktree not available in this directory"
+            )
+        elif strategy == "direct" or strategy in ("raphael",):
+            _effective_parallel = False
+            import logging as _logging
+
+            _logging.getLogger("splinter").info(
+                "--parallel ignored for direct strategy (single-task)"
+            )
 
     run_kwargs = {
         "strategy": strategy,
@@ -175,6 +208,8 @@ def run(
         "phase_plan_effort": phase_plan_effort,
         "phase_run_model": phase_run_model,
         "phase_run_effort": phase_run_effort,
+        "parallel": _effective_parallel,
+        "max_concurrency": max_concurrency,
     }
 
     tty = sys.stdin.isatty() and sys.stdout.isatty()

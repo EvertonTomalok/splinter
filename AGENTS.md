@@ -9,7 +9,7 @@ uv run ruff check && uv run mypy splinter && uv run pytest
 All three must pass with zero errors.
 
 # IMPORTANT: it's forbidden create tests that call real external models or spawn real subprocesses. This is not negotiable.
-# IMPORTANT: it's forbidden call or spawn multiple agents, only sequential tasks.
+# IMPORTANT: within a single strategy execute() call, tasks may run concurrently via DAG-scheduled parallel execution (ThreadPoolExecutor). Each parallel task runs in its own git worktree. Sequential execution is the default; parallel is opt-in via --parallel flag or parallel=True in run_pipeline(). Direct/Raphael strategy is always sequential.
 
 ## Unit Tests (pytest gate)
 

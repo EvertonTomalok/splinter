@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from dataclasses import asdict, dataclass
 from typing import Any
 
@@ -58,6 +59,19 @@ MAX_TIER = 5
 MAX_TRIES_PER_MODEL = 3
 
 _CHECKPOINT_FILE = "run_checkpoint.json"
+
+
+@dataclass
+class TaskOutcome:
+    """Out-param signalling whether ``_run_task_loop`` ended on a genuine PASS.
+
+    ``_run_task_loop`` returns its last ``RunResult`` on several non-PASS stops too
+    (budget exhaustion, cowabunga ASK_USER). A non-None return therefore does not
+    mean the task passed — the parallel scheduler must not unblock dependents on
+    that alone. This flag is set ``True`` only at the real PASS return.
+    """
+
+    passed: bool = False
 
 
 @dataclass
@@ -273,6 +287,8 @@ class DirectStrategy(Strategy):
         skip_planner: bool = False,
         skip_eval: bool = False,
         force_replan: bool = False,
+        parallel: bool = False,
+        max_concurrency: int | None = None,
     ) -> list[RunResult]:
         existing_trace = session.read("trace.md")
         if resume and existing_trace.strip():
@@ -429,6 +445,9 @@ class DirectStrategy(Strategy):
         skip_planner: bool = False,
         skip_eval: bool = False,
         force_replan: bool = False,
+        lock: threading.Lock | None = None,
+        cwd: str | None = None,
+        outcome: TaskOutcome | None = None,
     ) -> RunResult | None:
         if checkpoint is not None:
             _clear_checkpoint(session)
@@ -552,6 +571,8 @@ class DirectStrategy(Strategy):
                 eval_history=eval_history,
                 task_index=task_index,
                 skip_eval=skip_eval,
+                lock=lock,
+                cwd=cwd,
             )
 
             if iteration == start_iteration and resume_stage and checkpoint is not None:
@@ -626,6 +647,8 @@ class DirectStrategy(Strategy):
                 if verdict.passed:
                     log.info("task PASSED at T%d after %d iteration(s)", tier, iteration)
                     _mark_story_done(session, task)
+                    if outcome is not None:
+                        outcome.passed = True
                     return ctx.run_result
                 reason = (
                     f"Stopped at T{tier} without PASS "

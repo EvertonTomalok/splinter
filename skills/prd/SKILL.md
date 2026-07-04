@@ -6,6 +6,8 @@ user-invocable: true
 
 Runs are sequential-only. No strategy selection. No parallel execution. One task at a time.
 
+Multi-task strategies (cascade/adaptive/sprint) support opt-in parallel execution via `--parallel` when git worktree support is detected. Each task runs in its own worktree; results squash-merged on PASS.
+
 # PRD Generator (Splinter)
 
 Create detailed Product Requirements Documents that are clear, actionable, and
@@ -151,6 +153,8 @@ session.
 **Splinter hints:**
 - effort: [trivial | normal | hard | critical]
 - eval_skill: [skill name, or omit for written-criteria eval]
+- deps: [US-NNN, US-MMM]          # optional: IDs of tasks this depends on
+- parallelizable: [true | false]   # optional: override derived default
 
 **Acceptance Criteria:**
 - [ ] Specific verifiable criterion
@@ -162,6 +166,14 @@ session.
 - [ ] {{ Discover the unit tests needed for this story }} - all must pass before
   done. Do not force any previous test to pass.
 ```
+
+**Dependency and parallelism hints:**
+- `deps: []` — list of US-IDs this task depends on. Task starts only after all deps PASS.
+  Use `Depends on US-NNN` or `Blocked until US-NNN` anywhere in the block (also parsed).
+- `parallelizable: true/false` — explicit override. When omitted, derived from deps:
+  tasks with no deps are parallelizable by default; tasks with deps are not.
+- Independent tasks (no deps) may run concurrently when `--parallel` is passed to `splinter run`.
+- Failed task aborts only its transitive dependents; independent tasks keep running.
 
 **Important:**
 - Acceptance criteria must be verifiable, not vague. "Works correctly" is bad.

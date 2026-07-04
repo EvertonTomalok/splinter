@@ -53,8 +53,13 @@ class ModelProvider(ABC):
         session: str | None = None,
         timeout: int | None = None,
         agent: str = "build",
+        cwd: str | None = None,
     ) -> ProviderResponse:
-        """Execute ``prompt`` against ``model`` and return a normalised response."""
+        """Execute ``prompt`` against ``model`` and return a normalised response.
+
+        ``cwd`` is the working directory the backend runs in — used to isolate
+        parallel tasks in their own git worktrees. ``None`` means the process cwd.
+        """
         ...
 
 

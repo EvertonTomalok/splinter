@@ -25,6 +25,7 @@ class Task:
     Core fields (planner): id, description, target_files, deps, effort, eval_skill.
     Runner extras: acceptance, reasoning_effort, suggested_tier.
     filtered_context: pre-digested code context from the harness (localize → filter).
+    parallelizable: None = derive from deps (True when deps is empty); explicit bool overrides.
     """
 
     description: str
@@ -37,6 +38,48 @@ class Task:
     id: str = ""
     deps: list[str] | None = None
     filtered_context: str = ""
+    parallelizable: bool | None = None
+
+    def is_parallelizable(self) -> bool:
+        if self.parallelizable is not None:
+            return self.parallelizable
+        return not bool(self.deps)
+
+
+def validate_deps(tasks: list[Task]) -> None:
+    """Validate dep references and detect cycles; raise ValueError on violation."""
+    from collections import deque
+
+    task_ids = {t.id for t in tasks if t.id}
+    for task in tasks:
+        if not task.id:
+            continue
+        for dep in task.deps or []:
+            if dep not in task_ids:
+                raise ValueError(f"task {task.id!r} references unknown dep {dep!r}")
+
+    in_degree: dict[str, int] = {tid: 0 for tid in task_ids}
+    adj: dict[str, list[str]] = {tid: [] for tid in task_ids}
+    for task in tasks:
+        if not task.id:
+            continue
+        for dep in task.deps or []:
+            if dep in task_ids:
+                adj[dep].append(task.id)
+                in_degree[task.id] += 1
+
+    queue: deque[str] = deque(tid for tid in task_ids if in_degree[tid] == 0)
+    visited = 0
+    while queue:
+        tid = queue.popleft()
+        visited += 1
+        for nxt in adj[tid]:
+            in_degree[nxt] -= 1
+            if in_degree[nxt] == 0:
+                queue.append(nxt)
+
+    if visited != len(task_ids):
+        raise ValueError("dependency cycle detected among tasks")
 
 
 @dataclass(frozen=True)
@@ -127,6 +170,7 @@ def run_task(
     trace: object = None,
     iteration: int = 0,
     task_index: int = 0,
+    cwd: str | None = None,
 ) -> RunResult:
     model_id, _ = resolve_model(tier_level, ladder)
     variant = resolve_variant(task, effort_override, ladder, tier_level)
@@ -147,6 +191,7 @@ def run_task(
                 variant=variant,
                 session=opencode_session,
                 timeout=timeout,
+                cwd=cwd,
                 trace=trace,
                 iteration=iteration,
                 tier=tier_level,

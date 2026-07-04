@@ -12,6 +12,7 @@ this chain.
 from __future__ import annotations
 
 import logging
+import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
@@ -53,6 +54,11 @@ class IterationContext:
     eval_history: list[str] = field(default_factory=list)
     task_index: int = 0
     skip_eval: bool = False
+    #: Optional lock for concurrent parallel tasks sharing session/trace writes.
+    lock: threading.Lock | None = None
+    #: Working directory the run/gate/eval execute in — a git worktree for parallel
+    #: tasks so each edits and is gated on its own isolated tree. None = main repo.
+    cwd: str | None = None
     # produced by the stages
     run_result: RunResult | None = None
     gate_passed: bool = True
@@ -67,12 +73,19 @@ class IterationContext:
         """Write the iteration header to ``loop.md`` (idempotent, at RUN entry)."""
         if self._structure_flushed:
             return
-        self.session.append("loop.md", f"## Iteration {self.iteration}\n")
+        self._locked_append("loop.md", f"## Iteration {self.iteration}\n")
         self._structure_flushed = True
 
     def flush_loop(self) -> None:
         """Write the accumulated iteration log to ``loop.md`` (append-only)."""
-        self.session.append("loop.md", "\n".join(self._loop_lines) + "\n\n")
+        self._locked_append("loop.md", "\n".join(self._loop_lines) + "\n\n")
+
+    def _locked_append(self, filename: str, content: str) -> None:
+        if self.lock is not None:
+            with self.lock:
+                self.session.append(filename, content)
+        else:
+            self.session.append(filename, content)
 
 
 class Stage(ABC):
@@ -187,6 +200,7 @@ class RunStage(Stage):
                 trace=ctx.trace,
                 iteration=ctx.iteration,
                 task_index=ctx.task_index,
+                cwd=ctx.cwd,
             )
         log.info(
             "iter %d · ran %s · tokens=%s · $%.4f",
@@ -236,7 +250,11 @@ class GateStage(Stage):
         with agentic_scope(ctx.session, "gate", ctx.task_index, ctx.iteration):
             try:
                 langs = task_languages(ctx.task)
-                result = run_gate(session_dir=ctx.session.dir, languages=langs)
+                result = run_gate(
+                    project_dir=ctx.cwd or ".",
+                    session_dir=ctx.session.dir,
+                    languages=langs,
+                )
             except Exception:
                 # Gate unavailable in this project — nothing to record, eval decides.
                 return True
@@ -281,7 +299,7 @@ class GateStage(Stage):
                 )
                 ctx._loop_lines.append("- verdict: RETRY (gate failed — eval skipped)")
                 ctx.flush_loop()
-                ctx.session.append(
+                ctx._locked_append(
                     "eval.md",
                     f"### Iter {ctx.iteration}: RETRY (gate short-circuit)\n"
                     f"**Reason:** Gate failed ({ctx.gate_detail}); eval skipped.\n"
@@ -326,7 +344,7 @@ class EvalStage(Stage):
             )
             ctx._loop_lines.append("- verdict: PASS (eval skipped)")
             ctx.flush_loop()
-            ctx.session.append(
+            ctx._locked_append(
                 "eval.md",
                 f"### Iter {ctx.iteration}: PASS (skipped)\n**Reason:** eval skipped by user\n\n",
             )
@@ -360,6 +378,7 @@ class EvalStage(Stage):
                 iteration=ctx.iteration,
                 tier=ctx.tier,
                 task_index=ctx.task_index,
+                cwd=ctx.cwd,
             )
         ctx.verdict = verdict
         ctx.eval_session = verdict.eval_session
@@ -380,7 +399,7 @@ class EvalStage(Stage):
             ctx._loop_lines.append(f"- corrections: {verdict.corrections}")
         ctx.flush_loop()
 
-        ctx.session.append(
+        ctx._locked_append(
             "eval.md",
             f"### Iter {ctx.iteration}: {verdict.decision}\n"
             f"**Reason:** {verdict.reason}\n"

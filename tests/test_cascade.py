@@ -327,6 +327,130 @@ class TestResumeBudgetContinuity:
 
 
 # ---------------------------------------------------------------------------
+# execute — parallel DAG
+# ---------------------------------------------------------------------------
+
+
+class TestParallelDag:
+    def _make_session(self, tmp_path: Path) -> Session:
+        (tmp_path / "knowledge").mkdir()
+        session = Session.__new__(Session)
+        session.id = "test"
+        session.dir = tmp_path
+        return session
+
+    def _run(
+        self,
+        tmp_path: Path,
+        tasks: list[Task],
+        fake_loop: Any,
+        *,
+        use_worktrees: bool = False,
+        extra_patches: list[Any] | None = None,
+    ) -> None:
+        session = self._make_session(tmp_path)
+        strategy = CascadeStrategy()
+        fake_ladder = MagicMock()
+        fake_ladder.effort_mapping.return_value = None
+        with patch(
+            "splinter.vcs.worktree.worktree_supported", return_value=use_worktrees
+        ):
+            with patch.object(strategy, "_run_plan_phase", return_value=None):
+                with patch.object(strategy, "_run_task_loop", side_effect=fake_loop):
+                    with patch.object(strategy, "_start_tier", return_value=0):
+                        for p in extra_patches or []:
+                            p.start()
+                        try:
+                            strategy.execute(
+                                tasks,
+                                session,
+                                fake_ladder,
+                                parallel=True,
+                                cowabunga=True,
+                            )
+                        finally:
+                            for p in extra_patches or []:
+                                p.stop()
+
+    def test_passing_task_unblocks_dependent(self, tmp_path: Path) -> None:
+        ran: list[str] = []
+
+        def fake_loop(task: Task, *a: Any, **kw: Any) -> RunResult | None:
+            ran.append(task.id)
+            outcome = kw.get("outcome")
+            if outcome is not None:
+                outcome.passed = True
+            return _fake_result()
+
+        self._run(tmp_path, [_task("US-001"), _task("US-002", deps=["US-001"])], fake_loop)
+        assert set(ran) == {"US-001", "US-002"}
+
+    def test_non_pass_blocks_dependent(self, tmp_path: Path) -> None:
+        ran: list[str] = []
+
+        def fake_loop(task: Task, *a: Any, **kw: Any) -> RunResult | None:
+            ran.append(task.id)
+            # never set outcome.passed → not a genuine PASS
+            return _fake_result()
+
+        self._run(tmp_path, [_task("US-001"), _task("US-002", deps=["US-001"])], fake_loop)
+        assert ran == ["US-001"]  # dependent blocked, never dispatched
+
+    def test_idless_task_runs_in_parallel_mode(self, tmp_path: Path) -> None:
+        ran: list[str] = []
+        anon = Task(description="anon: task", acceptance="done")
+
+        def fake_loop(task: Task, *a: Any, **kw: Any) -> RunResult | None:
+            ran.append(task.id or "ANON")
+            outcome = kw.get("outcome")
+            if outcome is not None:
+                outcome.passed = True
+            return _fake_result()
+
+        self._run(tmp_path, [_task("US-001"), anon], fake_loop)
+        assert "US-001" in ran
+        assert "ANON" in ran  # id-less task not silently dropped
+
+    def test_worktree_path_threaded_as_cwd(self, tmp_path: Path) -> None:
+        from splinter.vcs.worktree import WorktreeHandle
+
+        def make_handle(task_id: str, base_dir: Path | None = None) -> WorktreeHandle:
+            return WorktreeHandle(
+                path=tmp_path / f"wt-{task_id}",
+                branch=f"splinter/{task_id}",
+                task_id=task_id,
+            )
+
+        seen_cwd: dict[str, str | None] = {}
+
+        def fake_loop(task: Task, *a: Any, **kw: Any) -> RunResult | None:
+            seen_cwd[task.id] = kw.get("cwd")
+            outcome = kw.get("outcome")
+            if outcome is not None:
+                outcome.passed = True
+            return _fake_result()
+
+        extra = [
+            patch("splinter.vcs.worktree.create_worktree", side_effect=make_handle),
+            patch("splinter.vcs.worktree.commit_worktree", return_value=True),
+            patch("splinter.vcs.worktree.squash_merge"),
+            patch("splinter.vcs.worktree.teardown_worktree"),
+            patch.object(Session, "set_worktree", lambda *a, **k: None),
+            patch.object(Session, "read_worktrees", lambda *a, **k: {}),
+        ]
+        # Two independent tasks → parallel path; each coder runs in its own worktree.
+        self._run(
+            tmp_path,
+            [_task("US-001"), _task("US-002")],
+            fake_loop,
+            use_worktrees=True,
+            extra_patches=extra,
+        )
+        assert seen_cwd["US-001"] == str(tmp_path / "wt-US-001")
+        assert seen_cwd["US-002"] == str(tmp_path / "wt-US-002")
+
+
+# ---------------------------------------------------------------------------
 # planner → cascade integration: PRD deps flow through pipeline to topo_sort
 # ---------------------------------------------------------------------------
 

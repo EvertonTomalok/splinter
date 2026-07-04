@@ -409,8 +409,15 @@ class CursorProvider(ModelProvider):
         session: str | None = None,
         timeout: int | None = None,
         agent: str = "build",
+        cwd: str | None = None,
     ) -> ProviderResponse:
-        result = run(prompt, model=model or None, session=session, timeout=timeout)
+        result = run(
+            prompt,
+            model=model or None,
+            session=session,
+            timeout=timeout,
+            project_dir=cwd or ".",
+        )
         return ProviderResponse(
             text=result.text,
             tokens=result.tokens,

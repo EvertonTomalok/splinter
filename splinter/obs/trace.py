@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import threading
 import time
 from dataclasses import dataclass
 
@@ -26,10 +27,21 @@ class Trace:
     def __init__(self) -> None:
         self.entries: list[RunEntry] = []
         self._start = time.monotonic()
+        #: Guards ``entries`` so parallel worker threads can append while the
+        #: dispatch loop reads ``total_cost`` for the budget gate — without it a
+        #: read could sum a half-updated list and mis-gate the budget.
+        self._lock = threading.Lock()
+
+    def add_entry(self, entry: RunEntry) -> None:
+        """Append a run entry under the lock (thread-safe for parallel tasks)."""
+        with self._lock:
+            self.entries.append(entry)
 
     @property
     def total_cost(self) -> float:
-        return sum(e.cost for e in self.entries)
+        with self._lock:
+            entries = list(self.entries)
+        return sum(e.cost for e in entries)
 
     @property
     def total_tokens(self) -> dict[str, int]:

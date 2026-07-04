@@ -89,6 +89,8 @@ def _run_prd(
         f"{strategy_hint}\n"
         "Generate 3-10 clarifying questions with lettered options (A/B/C/D). "
         "Include a strategy question unless a strategy was pre-selected. "
+        "For multi-task PRDs, include a question asking whether independent tasks "
+        "should run in parallel (requires git worktree support). "
         "Output ONLY the questions, no preamble."
     )
 
@@ -121,6 +123,9 @@ def _run_prd(
         f"User answers:\n{answers}\n\n"
         "Now generate the full PRD following the skill template. "
         "Include YAML frontmatter with feature, strategy, kind, created. "
+        "For multi-task PRDs: add `parallel: true` to frontmatter if user indicated "
+        "independent tasks can run in parallel; otherwise omit or set `parallel: false`. "
+        "For each user story, add Splinter hints block with deps and parallelizable fields. "
         "Output the complete PRD in markdown."
     )
 

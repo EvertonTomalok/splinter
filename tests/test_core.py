@@ -3355,6 +3355,7 @@ def _make_fake_provider(name: str, resp_text: str = "ok", session_id: str | None
             session=None,
             timeout=None,
             agent="build",
+            cwd=None,
         ):
             calls.append(
                 dict(
@@ -3365,6 +3366,7 @@ def _make_fake_provider(name: str, resp_text: str = "ok", session_id: str | None
                     session=session,
                     timeout=timeout,
                     agent=agent,
+                    cwd=cwd,
                 )
             )
             return ProviderResponse(

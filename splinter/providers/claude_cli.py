@@ -225,6 +225,7 @@ def run(
     resume: str | None = None,
     session_id: str | None = None,
     timeout: int | None = None,
+    cwd: str | None = None,
 ) -> ClaudeResult:
     if timeout is None:
         from splinter.configure import configured_timeout
@@ -257,6 +258,7 @@ def run(
     proc = run_subprocess(
         cmd,
         timeout=timeout,
+        cwd=cwd,
         on_line=_stream_claude_event if stream_json else None,
     )
     if proc.returncode != 0:
@@ -315,6 +317,7 @@ class ClaudeProvider(ModelProvider):
         session: str | None = None,
         timeout: int | None = None,
         agent: str = "build",
+        cwd: str | None = None,
     ) -> ProviderResponse:
         from splinter.providers.base import detect_provider_gap
 
@@ -326,6 +329,7 @@ class ClaudeProvider(ModelProvider):
                 output_format=output_format,
                 resume=session,
                 timeout=timeout,
+                cwd=cwd,
             )
         except Exception as exc:
             gap = detect_provider_gap(exc, self.name, model)

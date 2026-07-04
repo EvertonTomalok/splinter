@@ -3,9 +3,15 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+#: Serialises the read-modify-write of ``worktrees.json`` across parallel worker
+#: threads. Module-level so it holds even for sessions built via ``__new__``
+#: (which bypasses ``__init__``), and shared by every Session in-process.
+_WORKTREE_LOCK = threading.Lock()
 
 
 def _base_dir() -> Path:
@@ -315,6 +321,34 @@ class Session:
             return content
         except Exception:
             return ""
+
+    def set_worktree(self, task_id: str, path: str, branch: str) -> None:
+        """Persist worktree path+branch for task_id so resume can reattach.
+
+        Locked read-modify-write: parallel tasks register their worktrees
+        concurrently and an unguarded write would lose entries (last-write-wins),
+        orphaning the dropped task's worktree + branch on resume.
+        """
+        self._ensure_dir()
+        p = self.dir / "worktrees.json"
+        with _WORKTREE_LOCK:
+            try:
+                data: dict[str, Any] = json.loads(p.read_text()) if p.exists() else {}
+            except json.JSONDecodeError:
+                data = {}
+            data[task_id] = {"path": path, "branch": branch}
+            p.write_text(json.dumps(data, indent=2))
+
+    def read_worktrees(self) -> dict[str, dict[str, str]]:
+        """Return {task_id: {path, branch}} map persisted by set_worktree."""
+        p = self.dir / "worktrees.json"
+        if not p.exists():
+            return {}
+        try:
+            loaded: dict[str, Any] = json.loads(p.read_text())
+            return {k: dict(v) for k, v in loaded.items() if isinstance(v, dict)}
+        except json.JSONDecodeError:
+            return {}
 
     def is_empty(self) -> bool:
         """No real work captured — only a status stamp / blank scaffolding.

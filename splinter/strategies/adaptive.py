@@ -64,6 +64,8 @@ class AdaptiveStrategy(CascadeStrategy):
         skip_planner: bool = False,
         skip_eval: bool = False,
         force_replan: bool = False,
+        parallel: bool = False,
+        max_concurrency: int | None = None,
     ) -> list[RunResult]:
         effective_budget = budget if budget is not None else configured_budget()
         effective_soft_budget = configured_soft_budget()
@@ -91,6 +93,32 @@ class AdaptiveStrategy(CascadeStrategy):
             skip_planner=skip_planner,
             resume=resume,
         )
+
+        if parallel and len(ordered) > 1:
+            tier_overrides = self._compute_tier_overrides(
+                ordered, done, effort, effective_budget, ladder, trace
+            )
+            results = self._run_parallel_dag(
+                ordered,
+                session,
+                ladder,
+                trace,
+                knowledge,
+                done=done,
+                effort=effort,
+                budget=effective_budget,
+                max_iterations=max_iterations,
+                localization=localization,
+                eval_skill=eval_skill,
+                cowabunga=cowabunga,
+                skip_planner=skip_planner,
+                skip_eval=skip_eval,
+                max_concurrency=max_concurrency,
+                start_tier_overrides=tier_overrides,
+            )
+            session.set_status("running", task_index=len(ordered), task_total=len(ordered))
+            session.write("trace.md", trace.summary())
+            return results
 
         for i, task in enumerate(ordered):
             if task.id and task.id in done:
@@ -175,6 +203,28 @@ class AdaptiveStrategy(CascadeStrategy):
         session.set_status("running", task_index=len(ordered), task_total=len(ordered))
         session.write("trace.md", trace.summary())
         return results
+
+    def _compute_tier_overrides(
+        self,
+        ordered: list[Task],
+        done: set[str],
+        effort: str | None,
+        effective_budget: float | None,
+        ladder: Ladder,
+        trace: Trace,
+    ) -> dict[str, int]:
+        overrides: dict[str, int] = {}
+        remaining_budget = (
+            None if effective_budget is None else max(0.0, effective_budget - trace.total_cost)
+        )
+        remaining = [t for t in ordered if not (t.id and t.id in done)]
+        remaining_efforts = [effort or t.effort for t in remaining]
+        for i, task in enumerate(remaining):
+            task_effort = effort or task.effort
+            routed = self._route_tier(task_effort, ladder, remaining_budget, remaining_efforts[i:])
+            if task.id:
+                overrides[task.id] = routed
+        return overrides
 
     @staticmethod
     def _route_tier(
