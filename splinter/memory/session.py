@@ -24,6 +24,19 @@ _WORKTREE_LOCK = threading.Lock()
 #: calls (e.g. ``state="completed"``) and clobber/revert fields.
 _STATUS_LOCK = threading.Lock()
 
+#: Per-session-id locks guarding ``Session.append``'s critical section (rotate +
+#: fan-out write). Keyed by session id rather than a single module-global lock so
+#: independent worktree sessions don't serialise against each other; keyed by id
+#: rather than instance because ``Session(sid)`` objects are recreated freely
+#: (each worker thread builds its own) and must still share one lock per session.
+_APPEND_LOCKS: dict[str, threading.Lock] = {}
+_APPEND_LOCKS_GUARD = threading.Lock()
+
+
+def _append_lock(session_id: str) -> threading.Lock:
+    with _APPEND_LOCKS_GUARD:
+        return _APPEND_LOCKS.setdefault(session_id, threading.Lock())
+
 
 def _base_dir() -> Path:
     """Where session memory lives.
@@ -142,20 +155,22 @@ class Session:
         return p
 
     def append(self, filename: str, content: str) -> Path:
-        self._ensure_dir()
-        p = self.dir / filename
-        p.parent.mkdir(parents=True, exist_ok=True)
-        payload = content if content.endswith("\n") else f"{content}\n"
-        if filename == "events.md":
-            self._rotate_events_if_needed()
-        with open(p, "a") as f:
-            f.write(payload)
-        if filename == "events.md":
-            self._append_events_tail(payload)
-            self._append_events_compact(payload)
+        with _append_lock(self.id):
+            self._ensure_dir()
+            p = self.dir / filename
+            p.parent.mkdir(parents=True, exist_ok=True)
+            payload = content if content.endswith("\n") else f"{content}\n"
+            if filename == "events.md":
+                self._rotate_events_if_needed()
+            with open(p, "a") as f:
+                f.write(payload)
+            if filename == "events.md":
+                self._append_events_tail(payload)
+                self._append_events_compact(payload)
         return p
 
     def _rotate_events_if_needed(self) -> None:
+        """Caller (``append``) must already hold ``_append_lock(self.id)``."""
         p = self.dir / "events.md"
         if not p.exists():
             return
@@ -188,6 +203,7 @@ class Session:
             f.write(trimmed)
 
     def _append_events_tail(self, payload: str) -> None:
+        """Caller (``append``) must already hold ``_append_lock(self.id)``."""
         tail = self.dir / "events.tail.md"
         with open(tail, "a") as f:
             f.write(payload)
@@ -195,6 +211,7 @@ class Session:
         self._trim_file_tail(tail, max_bytes)
 
     def _append_events_compact(self, payload: str) -> None:
+        """Caller (``append``) must already hold ``_append_lock(self.id)``."""
         lines = [line.strip() for line in payload.splitlines() if line.strip()]
         if not lines:
             return

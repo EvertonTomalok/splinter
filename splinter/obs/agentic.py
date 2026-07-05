@@ -10,7 +10,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-from splinter.memory.session import Session
+from splinter.memory.session import Session, _append_lock
 
 
 @dataclass(frozen=True)
@@ -35,13 +35,14 @@ def append_jsonl(session: Session, event: AgenticEvent) -> None:
     Failures are swallowed — never raises into caller.
     """
     try:
-        session._ensure_dir()
-        trace_dir = session.dir / "trace"
-        trace_dir.mkdir(parents=True, exist_ok=True)
+        with _append_lock(session.id):
+            session._ensure_dir()
+            trace_dir = session.dir / "trace"
+            trace_dir.mkdir(parents=True, exist_ok=True)
 
-        file_path = trace_dir / f"agentic-{event.task_index}.jsonl"
-        with open(file_path, "a") as f:
-            f.write(json.dumps(asdict(event)) + "\n")
+            file_path = trace_dir / f"agentic-{event.task_index}.jsonl"
+            with open(file_path, "a") as f:
+                f.write(json.dumps(asdict(event)) + "\n")
     except Exception:
         pass
 
