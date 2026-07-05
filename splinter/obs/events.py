@@ -9,12 +9,14 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 from splinter.memory.session import Session
+from splinter.obs.errors import report_obs_error
 
 if TYPE_CHECKING:
     from splinter.obs.trace import RunEntry
@@ -23,9 +25,21 @@ log = logging.getLogger("splinter.events")
 
 EVENTS_FILENAME = "events.jsonl"
 
+#: Baseline schema stamped onto every migrated legacy record (US-008).
+SCHEMA_VERSION = 1
+
 #: Guards the append so parallel cascade workers (and the log handler) never
 #: interleave partial JSON lines in the same session file.
 _LOCK = threading.Lock()
+
+#: Legacy ``events.md`` line prefix: ``[HH:MM:SS] message`` or ``[STAGE] message``.
+_EVENTS_TAG_RE = re.compile(r"^\[([^\]]+)\]\s*(.*)$")
+
+#: Legacy ``trace.md`` run line (the retired ``Trace.from_markdown`` format).
+_LEGACY_RUN_RE = re.compile(
+    r"- (?:task (\d+) )?iter (\d+): (.+?) \((?:T(\d+)|eval)\) "
+    r"tokens=\{([^}]*)\} cost=\$([\d.]+)( \[!cost\])? ([\d.]+)s(?: @ (\S+))?"
+)
 
 
 @dataclass(frozen=True)
@@ -57,6 +71,7 @@ def append_event(session: Session, event: Event) -> None:
 
 
 def _read_records(session: Session) -> list[dict[str, Any]]:
+    migrate_legacy(session)  # one-shot: build events.jsonl from legacy files if missing
     path = events_path(session)
     if not path.exists():
         return []
@@ -123,3 +138,146 @@ def load_log_events(session: Session) -> list[Event]:
             Event(type="log", ts=str(rec.get("ts", "")), payload=dict(rec.get("payload") or {}))
         )
     return out
+
+
+# --- US-008: one-shot legacy migration ------------------------------------
+
+
+def _legacy_run_records(session: Session) -> list[dict[str, Any]]:
+    """Parse legacy ``trace.md`` run lines into canonical ``run`` records so cost
+    and per-model views survive migration. Malformed lines route to errors.jsonl."""
+    trace_md = session.dir / "trace.md"
+    if not trace_md.exists():
+        return []
+    records: list[dict[str, Any]] = []
+    try:
+        text = trace_md.read_text()
+    except OSError as exc:
+        report_obs_error(session, "events.migrate_legacy", "read", exc, detail="trace.md")
+        return []
+    for m in _LEGACY_RUN_RE.finditer(text):
+        try:
+            tokens: dict[str, int] = {
+                tm.group(1): int(tm.group(2))
+                for tm in re.finditer(r"'(\w+)':\s*(\d+)", m.group(5))
+            }
+            is_eval = m.group(4) is None
+            records.append(
+                {
+                    "type": "run",
+                    "ts": m.group(9) or "",
+                    "payload": {
+                        "model": m.group(3),
+                        "tier": 0 if is_eval else int(m.group(4)),
+                        "iteration": int(m.group(2)),
+                        "tokens": tokens,
+                        "cost": float(m.group(6)),
+                        "latency_s": float(m.group(8)),
+                        "task": int(m.group(1)) if m.group(1) else 0,
+                        "role": "eval" if is_eval else "run",
+                        "cost_indeterminate": m.group(7) is not None,
+                        "schema_version": SCHEMA_VERSION,
+                    },
+                }
+            )
+        except (ValueError, TypeError) as exc:
+            report_obs_error(
+                session, "events.migrate_legacy", "decode", exc, detail="trace.md run line"
+            )
+    return records
+
+
+def _legacy_log_records(session: Session) -> list[dict[str, Any]]:
+    """Rebuild ``log`` records from legacy ``events.md`` (preferred: preserves the
+    verbatim ``raw`` line, so the rendered log is byte-identical) falling back to
+    ``events.compact.jsonl``. Malformed compact lines route to errors.jsonl."""
+    events_md = session.dir / "events.md"
+    if events_md.exists():
+        records: list[dict[str, Any]] = []
+        try:
+            lines = events_md.read_text().splitlines()
+        except OSError as exc:
+            report_obs_error(session, "events.migrate_legacy", "read", exc, detail="events.md")
+            return []
+        for raw in lines:
+            line = raw.strip()
+            if not line:
+                continue
+            tag = _EVENTS_TAG_RE.match(line)
+            stage = tag.group(1).strip().lower().replace(" ", "_") if tag else "event"
+            message = (tag.group(2).strip() or line) if tag else line
+            records.append(
+                {
+                    "type": "log",
+                    "ts": "",
+                    "payload": {
+                        "stage": stage,
+                        "message": message,
+                        "raw": line,
+                        "task": 0,
+                        "schema_version": SCHEMA_VERSION,
+                    },
+                }
+            )
+        return records
+
+    compact = session.dir / "events.compact.jsonl"
+    if not compact.exists():
+        return []
+    records = []
+    for raw in compact.read_text().splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        try:
+            data = json.loads(line)
+        except json.JSONDecodeError as exc:
+            report_obs_error(
+                session, "events.migrate_legacy", "decode", exc, detail="events.compact.jsonl"
+            )
+            continue
+        message = str(data.get("message", ""))
+        records.append(
+            {
+                "type": "log",
+                "ts": str(data.get("ts", "")),
+                "payload": {
+                    "stage": str(data.get("stage", "event")),
+                    "message": message,
+                    "raw": message,
+                    "task": 0,
+                    "schema_version": SCHEMA_VERSION,
+                },
+            }
+        )
+    return records
+
+
+def migrate_legacy(session: Session) -> bool:
+    """One-shot: if ``events.jsonl`` is absent, rebuild it from the legacy
+    ``trace.md`` (run entries) + ``events.md``/``events.compact.jsonl`` (log).
+
+    Idempotent: once ``events.jsonl`` exists this is a no-op, so it is safe to
+    call on every load. Malformed legacy input never aborts — bad lines are
+    routed to ``errors.jsonl`` and skipped. Returns ``True`` iff it migrated.
+    """
+    path = events_path(session)
+    if path.exists():
+        return False
+    if not session.dir.exists():
+        return False
+
+    records = _legacy_run_records(session) + _legacy_log_records(session)
+    if not records:
+        return False
+
+    try:
+        session._ensure_dir()
+        with _LOCK, open(path, "w") as f:
+            for rec in records:
+                f.write(json.dumps(rec) + "\n")
+    except OSError as exc:
+        report_obs_error(session, "events.migrate_legacy", "write", exc)
+        return False
+    log.info("events: migrated %d legacy record(s) into %s", len(records), path)
+    return True
