@@ -116,8 +116,7 @@ def run_phase(
 ) -> PhaseResult:
     """Plan and execute a single phase (one-shot: plan → run → gate, no eval loop)."""
     if trace is None:
-        existing = session.read("trace.md")
-        trace = Trace.from_markdown(existing) if existing.strip() else Trace()
+        trace = Trace.from_jsonl(session)
 
     n = _next_phase_number(session)
     log.info("phase %d · planning with %s (effort=%s)", n, cfg.plan_model, cfg.plan_effort)
@@ -169,7 +168,7 @@ def run_phase(
         ts=_ts,
     )
 
-    trace.entries.append(
+    trace.add_entry(
         RunEntry(
             model=result.model,
             tier=0,
@@ -182,7 +181,6 @@ def run_phase(
             ts=result.ts,
         )
     )
-    session.write("trace.md", trace.summary())
 
     session.append(
         "phase_loop.md",

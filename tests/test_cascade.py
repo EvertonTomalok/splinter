@@ -272,21 +272,24 @@ class TestBudgetShortCircuit:
 
 class TestResumeBudgetContinuity:
     def test_resume_restores_cost(self, tmp_path: Path) -> None:
-        """Trace.from_markdown must restore total_cost so budget short-circuit
+        """Trace.from_jsonl must restore total_cost so budget short-circuit
         counts prior-run spend on resume, not just the current run's spend."""
         from splinter.obs.trace import RunEntry, Trace
 
-        prior = Trace()
-        prior.entries.append(
+        session = Session.__new__(Session)
+        session.id = "test"
+        session.dir = tmp_path
+
+        prior = Trace(session=session)
+        prior.add_entry(
             RunEntry(model="m", tier=0, iteration=1, tokens={}, cost=3.50, latency_s=1.0, task=0)
         )
-        md = prior.summary()
 
-        restored = Trace.from_markdown(md)
+        restored = Trace.from_jsonl(session)
         assert abs(restored.total_cost - 3.50) < 1e-6
 
     def test_cascade_resume_continues_from_prior_cost(self, tmp_path: Path) -> None:
-        """On resume, cascade reloads trace.md; budget check uses accumulated cost."""
+        """On resume, cascade reloads events.jsonl; budget check uses accumulated cost."""
         from splinter.obs.trace import RunEntry, Trace
 
         (tmp_path / "knowledge").mkdir()
@@ -294,12 +297,11 @@ class TestResumeBudgetContinuity:
         session.id = "test"
         session.dir = tmp_path
 
-        # Seed trace.md with $4 already spent.
-        prior = Trace()
-        prior.entries.append(
+        # Seed events.jsonl with $4 already spent.
+        prior = Trace(session=session)
+        prior.add_entry(
             RunEntry(model="m", tier=0, iteration=1, tokens={}, cost=4.0, latency_s=1.0, task=0)
         )
-        (tmp_path / "trace.md").write_text(prior.summary())
 
         t1 = _task("US-001")
         t2 = _task("US-002")

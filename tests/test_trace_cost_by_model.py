@@ -2,6 +2,7 @@
 
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import pytest
 
@@ -120,13 +121,16 @@ class TestSummaryPerModel:
         assert "'input': 30" in s
         assert "'output': 15" in s
 
-    def test_from_markdown_roundtrip_unaffected(self) -> None:
-        t = _trace(
-            _entry("modelA", 0.10, inp=100, out=50, task=1),
-            _entry("modelB", 0.20, inp=200, out=100, task=2),
-        )
-        md = t.summary()
-        t2 = Trace.from_markdown(md)
+    def test_from_jsonl_roundtrip(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        from splinter.memory.session import Session
+
+        monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
+        session = Session("ses_roundtrip")
+        t = Trace(session=session)
+        t.add_entry(_entry("modelA", 0.10, inp=100, out=50, task=1))
+        t.add_entry(_entry("modelB", 0.20, inp=200, out=100, task=2))
+
+        t2 = Trace.from_jsonl(session)
         assert len(t2.entries) == 2
         assert sum(t2.cost_by_model.values()) == pytest.approx(t2.total_cost)
 

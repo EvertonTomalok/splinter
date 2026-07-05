@@ -293,11 +293,7 @@ class DirectStrategy(Strategy):
         parallel: bool = False,
         max_concurrency: int | None = None,
     ) -> list[RunResult]:
-        existing_trace = session.read("trace.md")
-        if resume and existing_trace.strip():
-            trace = Trace.from_markdown(existing_trace)
-        else:
-            trace = Trace()
+        trace = Trace.from_jsonl(session) if resume else Trace(session=session)
         knowledge = KnowledgeStore(session)
 
         if not tasks:
@@ -349,7 +345,6 @@ class DirectStrategy(Strategy):
 
         # Done — record it so a stray resume is a no-op, not a re-run.
         session.set_status("running", task_index=1, task_total=1)
-        session.write("trace.md", trace.summary())
         return results
 
     def _plan_all_tasks(
@@ -598,10 +593,7 @@ class DirectStrategy(Strategy):
                 # session ids carried into this iteration are reused, so the same
                 # conversation continues — just one process, now steered.
                 log.info("run interrupted by live directive — restarting iteration")
-                session.write("trace.md", trace.summary())
                 continue
-
-            session.write("trace.md", trace.summary())
 
             last_result = ctx.run_result
             oc_session = ctx.oc_session

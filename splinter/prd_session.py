@@ -508,7 +508,8 @@ def prd_session_is_resumable(session: "Session") -> bool:
     the planner nothing to run, so it is junk — ``is_empty`` misses it because
     the stub text is technically non-empty.
     """
-    if session.read("trace.md").strip():
+    events_path = session.dir / "events.jsonl"
+    if events_path.exists() and events_path.stat().st_size > 0:
         return True
     return bool(user_story_titles(session.read("prd.md")))
 

@@ -65,11 +65,7 @@ class CascadeStrategy(DirectStrategy):
     ) -> list[RunResult]:
         ordered = self._topo_sort(tasks)
 
-        existing_trace = session.read("trace.md")
-        if resume and existing_trace.strip():
-            trace = Trace.from_markdown(existing_trace)
-        else:
-            trace = Trace()
+        trace = Trace.from_jsonl(session) if resume else Trace(session=session)
 
         knowledge = KnowledgeStore(session)
         results: list[RunResult] = []
@@ -127,7 +123,6 @@ class CascadeStrategy(DirectStrategy):
             )
 
         session.set_status("running", task_index=len(ordered), task_total=len(ordered))
-        session.write("trace.md", trace.summary())
         return results
 
     def _run_sequential(

@@ -44,7 +44,6 @@ _EXPAND_FILES = {
     "eval": "eval.md",
     "final_eval": "final_eval.md",
     "localization": "knowledge/localization.md",
-    "trace": "trace.md",
 }
 
 _CLEAR = "\033[2J\033[H"
@@ -84,8 +83,8 @@ def _run_state(session: Session) -> str:
         return "AWAITING_VALIDATION"
     if state:
         return state.upper()
-    trace_path = session.dir / "trace.md"
-    if trace_path.exists() and trace_path.stat().st_size > 0:
+    events_path = session.dir / "events.jsonl"
+    if events_path.exists() and events_path.stat().st_size > 0:
         return "DONE"
     return "UNKNOWN"
 
@@ -349,18 +348,20 @@ def _eval_block(eval_md: str, n: int) -> str:
     return ""
 
 
-def _trace_metrics(trace_md: str) -> dict[str, str]:
-    metrics: dict[str, str] = {}
-    for key, pattern in (
-        ("cost", r"total cost: \$([\d.]+)"),
-        ("runs", r"total runs: (\d+)"),
-        ("tokens", r"total tokens: (\{.*?\})"),
-        ("elapsed", r"elapsed: ([\d.]+s)"),
-    ):
-        m = re.search(pattern, trace_md)
-        if m:
-            metrics[key] = m.group(1)
-    return metrics
+def _trace_metrics(session: Session) -> dict[str, str]:
+    """Cost/runs/tokens/elapsed computed on demand from the session's ``events.jsonl``
+    — no markdown parsing."""
+    from splinter.obs.trace import Trace
+
+    trace = Trace.from_jsonl(session)
+    if not trace.entries:
+        return {}
+    return {
+        "cost": f"{trace.total_cost:.4f}",
+        "runs": str(len(trace.entries)),
+        "tokens": str(trace.total_tokens),
+        "elapsed": f"{trace.elapsed:.1f}s",
+    }
 
 
 def _plan_files(session: Session) -> list[tuple[str, str]]:
@@ -701,7 +702,7 @@ def _phase_entries(phase_md: str) -> list[tuple[int, str, str, str]]:
 def format_run_completion(session: Session) -> str:
     """One-line summary for a finished run (tasks, cost, runs)."""
     status = session.read_status()
-    metrics = _trace_metrics(session.read("trace.md"))
+    metrics = _trace_metrics(session)
     parts: list[str] = []
     task_total = status.get("task_total") or status.get("tasks")
     task_index = status.get("task_index")
@@ -730,7 +731,6 @@ def render_overview(session: Session, state: str) -> str:
     localization = session.read("knowledge/localization.md")
     plan = session.read("knowledge/plan.md")
     loop = session.read("loop.md")
-    trace = session.read("trace.md")
     prd = session.read("prd.md")
     phases_md = session.read("prd_phases.md")
     phase_md = session.read("phases.md")
@@ -769,7 +769,7 @@ def render_overview(session: Session, state: str) -> str:
         lines.append(f"[bold green]✅ All tasks complete[/] — {format_run_completion(session)}")
     lines.append("")
 
-    metrics = _trace_metrics(trace)
+    metrics = _trace_metrics(session)
     pre_run = session.read_pre_run_usage()
     if metrics or pre_run:
         run_cost = float(metrics.get("cost", 0) or 0)
@@ -1059,6 +1059,11 @@ def render_expand(session: Session, what: str) -> str:
 
         return render_agentic(session)
 
+    if what == "trace":
+        from splinter.obs.trace import Trace
+
+        return f"===== trace =====\n{Trace.from_jsonl(session).summary().strip()}"
+
     if what == "plan":
         plans = _plan_files(session)
         if plans:
@@ -1085,6 +1090,9 @@ def render_expand(session: Session, what: str) -> str:
                     continue
             content = session.read(_EXPAND_FILES[name])
             out.append(f"===== {name} =====\n{content.strip() if content else '(empty)'}")
+        from splinter.obs.trace import Trace
+
+        out.append(f"===== trace =====\n{Trace.from_jsonl(session).summary().strip()}")
         notes = _knowledge_notes(session)
         extra = [n for n in notes if n[1] not in ("plan", "localization")]
         if extra:

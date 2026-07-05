@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import subprocess
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -82,8 +83,10 @@ class _SessionTraceHandler(logging.Handler):
         try:
             ts = datetime.now(timezone.utc).astimezone().strftime("%H:%M:%S")
             self.session.append("events.md", f"[{ts}] {record.getMessage()}")
-        except Exception:  # noqa: BLE001 — tracing must never break the run
-            pass
+        except OSError as exc:
+            # Tracing must never break the run, but a dropped event shouldn't
+            # vanish without a trace either.
+            print(f"events log write failed: {exc}", file=sys.stderr)
 
 
 def _resolve_gate(session: Session, ladder: object, tasks: list[Task]) -> None:
@@ -797,8 +800,7 @@ def run_pipeline(
             _execute_final_eval(session, ladder, tasks, rs.round)
 
         session.set_status("completed", stage="done")
-        trace_md = session.read("trace.md")
-        trace = Trace.from_markdown(trace_md)
+        trace = Trace.from_jsonl(session)
         total, runs = _compute_summary_cost(trace, results)
         log.info("pipeline complete · %d run(s) · $%.4f", runs, total)
         print(f"pipeline complete. session: {session.id}")

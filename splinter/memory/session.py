@@ -116,19 +116,6 @@ NEXT_CONFIG_KEYS: frozenset[str] = frozenset(
 _EVENTS_TAG_RE = re.compile(r"^\[([^\]]+)\]\s*(.*)$")
 
 
-def _env_int(name: str, default: int, minimum: int = 0) -> int:
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    try:
-        value = int(raw)
-    except ValueError:
-        return default
-    if value < minimum:
-        return default
-    return value
-
-
 class Session:
     def __init__(self, session_id: str | None = None) -> None:
         self.id = resolve_session(session_id)
@@ -155,69 +142,36 @@ class Session:
         return p
 
     def append(self, filename: str, content: str) -> Path:
+        # US-001 thread-safety: the whole append is serialised per session so
+        # concurrent cascade workers never interleave. US-004: an ``events.md``
+        # append is routed into the canonical ``events.jsonl`` — the eager 4-file
+        # fan-out (rotate/tail/compact) is gone; those views render on demand.
         with _append_lock(self.id):
             self._ensure_dir()
             p = self.dir / filename
             p.parent.mkdir(parents=True, exist_ok=True)
             payload = content if content.endswith("\n") else f"{content}\n"
             if filename == "events.md":
-                self._rotate_events_if_needed()
+                self._append_events_jsonl(payload)
+                return p
             with open(p, "a") as f:
                 f.write(payload)
-            if filename == "events.md":
-                self._append_events_tail(payload)
-                self._append_events_compact(payload)
         return p
 
-    def _rotate_events_if_needed(self) -> None:
-        """Caller (``append``) must already hold ``_append_lock(self.id)``."""
-        p = self.dir / "events.md"
-        if not p.exists():
-            return
-        max_bytes = _env_int("SPLINTER_EVENTS_MAX_BYTES", 10 * 1024 * 1024, minimum=1)
-        if p.stat().st_size < max_bytes:
-            return
-        keep = _env_int("SPLINTER_EVENTS_ROTATIONS", 5, minimum=1)
-        oldest = self.dir / f"events.{keep}.md"
-        if oldest.exists():
-            oldest.unlink()
-        for i in range(keep - 1, 0, -1):
-            src = self.dir / f"events.{i}.md"
-            dst = self.dir / f"events.{i + 1}.md"
-            if src.exists():
-                src.rename(dst)
-        p.rename(self.dir / "events.1.md")
+    def _append_events_jsonl(self, payload: str) -> None:
+        """Route an ``events.md`` append into the canonical ``events.jsonl`` as one
+        ``log``-typed record per non-empty line — the sole write path for the
+        chronological log (see :mod:`splinter.obs.events`). ``events.md`` itself is
+        never written; :meth:`render_events_md` renders it back on demand.
 
-    def _trim_file_tail(self, path: Path, max_bytes: int) -> None:
-        if not path.exists():
-            return
-        size = path.stat().st_size
-        if size <= max_bytes:
-            return
-        with path.open("rb") as f:
-            f.seek(size - max_bytes)
-            data = f.read()
-        nl = data.find(b"\n")
-        trimmed = data[nl + 1 :] if nl >= 0 else data
-        with path.open("wb") as f:
-            f.write(trimmed)
+        Caller runs under ``_append_lock(self.id)`` (held by :meth:`append`)."""
+        from splinter.obs import events
 
-    def _append_events_tail(self, payload: str) -> None:
-        """Caller (``append``) must already hold ``_append_lock(self.id)``."""
-        tail = self.dir / "events.tail.md"
-        with open(tail, "a") as f:
-            f.write(payload)
-        max_bytes = _env_int("SPLINTER_EVENTS_TAIL_MAX_BYTES", 256 * 1024, minimum=1)
-        self._trim_file_tail(tail, max_bytes)
-
-    def _append_events_compact(self, payload: str) -> None:
-        """Caller (``append``) must already hold ``_append_lock(self.id)``."""
-        lines = [line.strip() for line in payload.splitlines() if line.strip()]
-        if not lines:
-            return
         ts = datetime.now(timezone.utc).isoformat()
-        json_lines: list[str] = []
-        for line in lines:
+        for raw_line in payload.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
             m = _EVENTS_TAG_RE.match(line)
             if m:
                 stage = m.group(1).strip().lower().replace(" ", "_")
@@ -225,21 +179,34 @@ class Session:
             else:
                 stage = "event"
                 message = line
-            json_lines.append(
-                json.dumps(
-                    {"ts": ts, "stage": stage, "message": message},
-                    ensure_ascii=True,
-                )
+            events.append_event(
+                self,
+                events.Event(
+                    type="log",
+                    ts=ts,
+                    payload={"stage": stage, "message": message, "raw": line},
+                ),
             )
-        block = "\n".join(json_lines) + "\n"
-        full = self.dir / "events.compact.jsonl"
-        tail = self.dir / "events.compact.tail.jsonl"
-        with open(full, "a") as f:
-            f.write(block)
-        with open(tail, "a") as f:
-            f.write(block)
-        max_bytes = _env_int("SPLINTER_EVENTS_COMPACT_TAIL_MAX_BYTES", 256 * 1024, minimum=1)
-        self._trim_file_tail(tail, max_bytes)
+
+    def render_events_md(self) -> str:
+        """Full chronological events log, rendered on demand from ``events.jsonl``."""
+        from splinter.obs import events
+
+        lines = [
+            str(ev.payload.get("raw") or ev.payload.get("message", ""))
+            for ev in events.load_log_events(self)
+        ]
+        return "\n".join(lines) + ("\n" if lines else "")
+
+    def render_events_tail(self, max_bytes: int) -> str:
+        """Tail slice of :meth:`render_events_md`, trimmed to a whole-line boundary."""
+        data = self.render_events_md().encode("utf-8")
+        if len(data) <= max_bytes:
+            return data.decode("utf-8")
+        tail = data[-max_bytes:]
+        nl = tail.find(b"\n")
+        trimmed = tail[nl + 1 :] if nl >= 0 else tail
+        return trimmed.decode("utf-8", errors="replace")
 
     def update_index(self, summary: str) -> None:
         self.write("index.md", summary)
@@ -440,9 +407,12 @@ class Session:
         """
         if not self.dir.exists():
             return True
-        for name in ("prd.md", "loop.md", "trace.md", "eval.md"):
+        for name in ("prd.md", "loop.md", "eval.md"):
             if self.read(name).strip():
                 return False
+        events_path = self.dir / "events.jsonl"
+        if events_path.exists() and events_path.stat().st_size > 0:
+            return False
         kdir = self.dir / "knowledge"
         if kdir.exists() and any(p.stat().st_size > 0 for p in kdir.glob("*.md")):
             return False

@@ -941,15 +941,34 @@ def test_iterations_parse_trajectory() -> None:
     assert iters == [(1, "T0", "RETRY"), (2, "T1", "PASS")]
 
 
-def test_trace_metrics_parse() -> None:
-    trace = (
-        "# Trace\n- total runs: 3\n- total cost: $0.0123\n"
-        "- total tokens: {'input': 900, 'output': 400}\n- elapsed: 4.2s\n"
+def test_trace_metrics_parse(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
+    from splinter.obs.trace import RunEntry, Trace
+
+    monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
+    session = Session("ses_metrics_parse")
+    trace = Trace(session=session)
+    trace.add_entry(
+        RunEntry(
+            model="m",
+            tier=0,
+            iteration=1,
+            tokens={"input": 900, "output": 400},
+            cost=0.0123,
+            latency_s=0.0,
+        )
     )
-    m = _trace_metrics(trace)
+    trace.add_entry(
+        RunEntry(model="m", tier=0, iteration=2, tokens={}, cost=0.0, latency_s=0.0, role="eval")
+    )
+    trace.add_entry(
+        RunEntry(model="m", tier=0, iteration=3, tokens={}, cost=0.0, latency_s=0.0, role="eval")
+    )
+
+    m = _trace_metrics(session)
     assert m["cost"] == "0.0123"
     assert m["runs"] == "3"
-    assert m["elapsed"] == "4.2s"
+    assert m["tokens"] == "{'input': 900, 'output': 400}"
+    assert m["elapsed"].endswith("s")
 
 
 def test_render_trajectory_lists_iterations(
@@ -4128,12 +4147,16 @@ def test_codex_calc_cost_known_model_returns_correct_cost(
     assert cost == pytest.approx(10.00)
 
 
-def test_trace_indeterminate_flag_survives_markdown_roundtrip() -> None:
-    """cost_indeterminate=True entry is serialized with [!cost] and re-parsed correctly."""
+def test_trace_indeterminate_flag_survives_jsonl_roundtrip(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
+) -> None:
+    """cost_indeterminate=True entry renders with [!cost] and survives a jsonl round-trip."""
     from splinter.obs.trace import RunEntry, Trace
 
-    trace = Trace()
-    trace.entries.append(
+    monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
+    session = Session("ses_indeterminate")
+    trace = Trace(session=session)
+    trace.add_entry(
         RunEntry(
             model="no-such-model",
             tier=0,
@@ -4144,7 +4167,7 @@ def test_trace_indeterminate_flag_survives_markdown_roundtrip() -> None:
             cost_indeterminate=True,
         )
     )
-    trace.entries.append(
+    trace.add_entry(
         RunEntry(
             model="sonnet",
             tier=0,
@@ -4156,10 +4179,9 @@ def test_trace_indeterminate_flag_survives_markdown_roundtrip() -> None:
         )
     )
 
-    md = trace.summary()
-    assert "[!cost]" in md
+    assert "[!cost]" in trace.summary()
 
-    restored = Trace.from_markdown(md)
+    restored = Trace.from_jsonl(session)
     assert len(restored.entries) == 2
     indet = restored.entries[0]
     normal = restored.entries[1]

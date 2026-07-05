@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from splinter.analyze import _eval_segments, _iterations, _tasks
@@ -173,61 +175,70 @@ verdict: FAIL
 
 
 class TestCostReconciliation:
-    def test_trace_metrics_cost_matches_trace_total_cost(self) -> None:
+    """_trace_metrics computes on demand from events.jsonl (no markdown parse)."""
+
+    def test_trace_metrics_cost_matches_trace_total_cost(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
         from splinter.analyze import _trace_metrics
+        from splinter.memory.session import Session
         from splinter.obs.trace import RunEntry, Trace
 
-        trace = Trace()
-        trace.entries.extend(
-            [
-                RunEntry(
-                    model="m1",
-                    tier=1,
-                    iteration=1,
-                    tokens={"input": 100, "output": 50},
-                    cost=0.0100,
-                    latency_s=0.0,
-                    task=0,
-                ),
-                RunEntry(
-                    model="m1",
-                    tier=0,
-                    iteration=2,
-                    tokens={"input": 80, "output": 40},
-                    cost=0.0200,
-                    latency_s=0.0,
-                    task=0,
-                    role="eval",
-                ),
-                RunEntry(
-                    model="m1",
-                    tier=2,
-                    iteration=3,
-                    tokens={"input": 120, "output": 60},
-                    cost=0.0300,
-                    latency_s=0.0,
-                    task=0,
-                ),
-            ]
-        )
+        session = Session("ses_cost_reconcile")
+        trace = Trace(session=session)
+        for entry in (
+            RunEntry(
+                model="m1",
+                tier=1,
+                iteration=1,
+                tokens={"input": 100, "output": 50},
+                cost=0.0100,
+                latency_s=0.0,
+                task=0,
+            ),
+            RunEntry(
+                model="m1",
+                tier=0,
+                iteration=2,
+                tokens={"input": 80, "output": 40},
+                cost=0.0200,
+                latency_s=0.0,
+                task=0,
+                role="eval",
+            ),
+            RunEntry(
+                model="m1",
+                tier=2,
+                iteration=3,
+                tokens={"input": 120, "output": 60},
+                cost=0.0300,
+                latency_s=0.0,
+                task=0,
+            ),
+        ):
+            trace.add_entry(entry)
 
-        md = trace.summary()
-        metrics = _trace_metrics(md)
+        metrics = _trace_metrics(session)
 
         assert float(metrics["cost"]) == pytest.approx(trace.total_cost, abs=1e-6)
         assert trace.total_cost == pytest.approx(0.0600)
 
-    def test_trace_metrics_excludes_pre_run_cost(self) -> None:
+    def test_trace_metrics_excludes_pre_run_cost(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
         from splinter.analyze import _trace_metrics
+        from splinter.memory.session import Session
         from splinter.obs.trace import RunEntry, Trace
 
-        trace = Trace()
-        trace.entries.append(
+        session = Session("ses_cost_pre_run")
+        trace = Trace(session=session)
+        trace.add_entry(
             RunEntry(model="m", tier=1, iteration=1, tokens={}, cost=0.0500, latency_s=0.0, task=0)
         )
 
-        md = trace.summary()
-        metrics = _trace_metrics(md)
+        metrics = _trace_metrics(session)
         run_cost = float(metrics["cost"])
 
         assert run_cost == pytest.approx(0.0500, abs=1e-6)

@@ -9,13 +9,8 @@ from splinter.tui import TRACE_PAGE_BYTES, _trace_md, _trace_render
 def test_trace_md_tails_large_events_file(tmp_path: Path, monkeypatch: "object") -> None:
     monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
     session = Session("ses_trace_tail")
-    session.write(
-        "trace.md",
-        "# Trace\n- total runs: 3\n- total cost: $0.0123\n"
-        "- total tokens: {'input': 900, 'output': 400}\n",
-    )
     lines = [f"line-{i:04d}" for i in range(5000)]
-    session.write("events.md", "\n".join(lines))
+    session.append("events.md", "\n".join(lines))
 
     out = _trace_md(session)
 
@@ -28,8 +23,7 @@ def test_trace_md_tails_large_events_file(tmp_path: Path, monkeypatch: "object")
 def test_trace_md_keeps_full_small_events_file(tmp_path: Path, monkeypatch: "object") -> None:
     monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
     session = Session("ses_trace_small")
-    session.write("trace.md", "# Trace\n- total runs: 1\n- total cost: $0.0001\n")
-    session.write("events.md", "step-1\nstep-2\nstep-3\n")
+    session.append("events.md", "step-1\nstep-2\nstep-3\n")
 
     out = _trace_md(session)
 

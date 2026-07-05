@@ -1,13 +1,20 @@
-"""Per-run observability: token/cost/latency accounting and a markdown summary."""
+"""Per-run observability: token/cost/latency accounting and a markdown summary.
+
+``Trace`` is the in-memory view; when constructed with a ``session`` every entry
+is also persisted to that session's canonical ``events.jsonl`` (see
+:mod:`splinter.obs.events`) — the single write path for run entries.
+"""
 
 from __future__ import annotations
 
-import re
 import threading
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from splinter.agents.runner import RunResult
+from splinter.memory.session import Session
+from splinter.obs import events
 
 
 @dataclass(frozen=True)
@@ -26,8 +33,9 @@ class RunEntry:
 
 
 class Trace:
-    def __init__(self) -> None:
+    def __init__(self, session: Session | None = None) -> None:
         self.entries: list[RunEntry] = []
+        self._session = session
         self._start = time.monotonic()
         #: Guards ``entries`` so parallel worker threads can append while the
         #: dispatch loop reads ``total_cost`` for the budget gate — without it a
@@ -35,9 +43,31 @@ class Trace:
         self._lock = threading.Lock()
 
     def add_entry(self, entry: RunEntry) -> None:
-        """Append a run entry under the lock (thread-safe for parallel tasks)."""
+        """Append a run entry under the lock (thread-safe for parallel tasks) and,
+        when a session is attached, persist it to ``events.jsonl`` — the only path
+        that writes a run entry to disk."""
         with self._lock:
             self.entries.append(entry)
+        if self._session is not None:
+            ts = entry.ts or datetime.now(timezone.utc).isoformat()
+            events.append_event(
+                self._session,
+                events.Event(
+                    type="run",
+                    ts=ts,
+                    payload={
+                        "model": entry.model,
+                        "tier": entry.tier,
+                        "iteration": entry.iteration,
+                        "tokens": entry.tokens,
+                        "cost": entry.cost,
+                        "latency_s": entry.latency_s,
+                        "task": entry.task,
+                        "role": entry.role,
+                        "cost_indeterminate": entry.cost_indeterminate,
+                    },
+                ),
+            )
 
     @property
     def total_cost(self) -> float:
@@ -57,6 +87,16 @@ class Trace:
 
     @property
     def elapsed(self) -> float:
+        """Wall-clock span across persisted entries when they carry real timestamps
+        (e.g. after :meth:`from_jsonl`); otherwise time since this Trace was built —
+        accurate for a live, non-resumed, single-process run."""
+        timestamps = [e.ts for e in self.entries if e.ts]
+        if len(timestamps) >= 2:
+            try:
+                parsed = sorted(datetime.fromisoformat(t) for t in timestamps)
+                return (parsed[-1] - parsed[0]).total_seconds()
+            except ValueError:
+                pass
         return time.monotonic() - self._start
 
     @property
@@ -148,43 +188,11 @@ class Trace:
         return "\n".join(lines) + "\n"
 
     @classmethod
-    def from_markdown(cls, md: str) -> Trace:
-        trace = cls()
-        run_pattern = re.compile(
-            r"- (?:task (\d+) )?iter (\d+): (.+?) \((?:T(\d+)|eval)\) "
-            r"tokens=\{([^}]*)\} cost=\$([\d.]+)( \[!cost\])? ([\d.]+)s(?: @ (\S+))?"
-        )
-        for m in run_pattern.finditer(md):
-            task = int(m.group(1)) if m.group(1) else 0
-            iteration = int(m.group(2))
-            model = m.group(3)
-            if m.group(4) is not None:
-                tier = int(m.group(4))
-                role = "run"
-            else:
-                tier = 0
-                role = "eval"
-            tokens: dict[str, int] = {}
-            for tm in re.finditer(r"'(\w+)':\s*(\d+)", m.group(5)):
-                tokens[tm.group(1)] = int(tm.group(2))
-            cost = float(m.group(6))
-            cost_indeterminate = m.group(7) is not None
-            latency = float(m.group(8))
-            ts = m.group(9) or ""
-            trace.entries.append(
-                RunEntry(
-                    model=model,
-                    tier=tier,
-                    iteration=iteration,
-                    tokens=tokens,
-                    cost=cost,
-                    latency_s=latency,
-                    task=task,
-                    role=role,
-                    cost_indeterminate=cost_indeterminate,
-                    ts=ts,
-                )
-            )
+    def from_jsonl(cls, session: Session) -> Trace:
+        """Rebuild a ``Trace`` from the session's ``events.jsonl`` and attach the
+        session so subsequent ``add_entry`` calls keep persisting to it."""
+        trace = cls(session=session)
+        trace.entries = events.load_run_entries(session)
         return trace
 
 
@@ -199,6 +207,6 @@ def log_run(trace: Trace, result: RunResult, iteration: int, task: int = 0) -> N
             latency_s=result.latency_s,
             task=task,
             cost_indeterminate=result.cost_indeterminate,
-            ts=result.ts,
+            ts=result.ts or datetime.now(timezone.utc).isoformat(),
         )
     )

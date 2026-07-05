@@ -79,6 +79,7 @@ from splinter.analyze import (
 )
 from splinter.enums import DEFAULT_RUNNER_MODE, RunnerMode
 from splinter.memory.session import Session, delete_session, list_sessions
+from splinter.obs.events import events_path
 
 REFRESH_SECONDS = 2.0
 AUTO_REFRESH_SECONDS = 2.0
@@ -120,7 +121,7 @@ _SPLINTER = """\
 
 def _overview_md(session: Session, state: str) -> str:
     status = session.read_status()
-    metrics = _trace_metrics(session.read("trace.md"))
+    metrics = _trace_metrics(session)
     loop = session.read("loop.md")
     iters = _iterations(loop)
     from splinter.agents.localizer import _count_anchors, _parse_anchors
@@ -255,14 +256,6 @@ def _iteration_md(session: Session, task_no: int, n: int) -> str:
 def _file_md(session: Session, label: str, filename: str) -> str:
     content = session.read(filename).strip()
     if not content:
-        if filename == "trace.md":
-            loop = session.read("loop.md").strip()
-            if loop:
-                return (
-                    f"# {label}\n\n_no trace summary yet — run in progress_\n\n"
-                    f"## Loop so far\n\n{_cap_payload(loop)}"
-                )
-            return f"# {label}\n\n_run in progress — no iterations finished yet._"
         return f"# {label}\n\n_empty_"
     return f"# {label}\n\n{_cap_payload(content)}"
 
@@ -328,9 +321,6 @@ class _TraceRender:
     normalized_offset: int
 
 
-_TRACE_TAG_RE = re.compile(r"^\[([^\]]+)\]\s*(.*)$")
-
-
 def _trace_tail_lines(visible_rows: int | None) -> int:
     if visible_rows is None or visible_rows <= 0:
         return TRACE_TAIL_MAX_LINES
@@ -338,45 +328,32 @@ def _trace_tail_lines(visible_rows: int | None) -> int:
     return min(target, TRACE_SUMMARY_MAX_LINES)
 
 
-def _trace_source(session: Session, offset_from_end: int) -> tuple[Path, bool, bool]:
-    compact_tail = session.dir / "events.compact.tail.jsonl"
-    compact_full = session.dir / "events.compact.jsonl"
-    if offset_from_end == 0 and compact_tail.exists() and compact_tail.stat().st_size > 0:
-        full_size = (
-            compact_full.stat().st_size if compact_full.exists() else compact_tail.stat().st_size
-        )
-        has_older = full_size > compact_tail.stat().st_size
-        return (compact_tail, True, has_older)
-    if compact_full.exists() and compact_full.stat().st_size > 0:
-        return (compact_full, True, False)
-    return (session.dir / "events.md", False, False)
+def _trace_source(session: Session) -> Path:
+    """The single physical file backing the Trace pane's byte-offset paging."""
+    return events_path(session)
 
 
-def _trace_rows_from_text(text: str, compact: bool) -> list[_TraceRow]:
+def _trace_rows_from_text(text: str) -> list[_TraceRow]:
+    """Parse ``log``-typed records out of a raw ``events.jsonl`` slice. ``run``-typed
+    records (model cost entries) are skipped — this pane shows the chronological
+    narrative, not the cost ledger."""
     rows: list[_TraceRow] = []
     for raw in text.splitlines():
         line = raw.strip()
         if not line:
             continue
-        if compact:
-            try:
-                data = json.loads(line)
-            except json.JSONDecodeError:
-                rows.append(_TraceRow(ts="", stage="event", message=line, count=1))
-                continue
-            stage = str(data.get("stage", "event")) or "event"
-            msg = str(data.get("message", "")).strip() or line
-            ts = str(data.get("ts", ""))
-            rows.append(_TraceRow(ts=ts, stage=stage, message=msg, count=1))
+        try:
+            data = json.loads(line)
+        except json.JSONDecodeError:
+            rows.append(_TraceRow(ts="", stage="event", message=line, count=1))
             continue
-        m = _TRACE_TAG_RE.match(line)
-        if m:
-            stage = m.group(1).strip().lower().replace(" ", "_")
-            msg = m.group(2).strip() or line
-        else:
-            stage = "event"
-            msg = line
-        rows.append(_TraceRow(ts="", stage=stage, message=msg, count=1))
+        if not isinstance(data, dict) or data.get("type") != "log":
+            continue
+        payload = data.get("payload") or {}
+        stage = str(payload.get("stage", "event")) or "event"
+        msg = str(payload.get("message", "")).strip() or line
+        ts = str(data.get("ts", ""))
+        rows.append(_TraceRow(ts=ts, stage=stage, message=msg, count=1))
     return rows
 
 
@@ -449,8 +426,8 @@ def _trace_render(
     selected_row: int | None = None,
     expanded_row: int | None = None,
 ) -> _TraceRender:
-    metrics = _trace_metrics(session.read("trace.md"))
-    path, is_compact, tail_has_older = _trace_source(session, offset_from_end)
+    metrics = _trace_metrics(session)
+    path = _trace_source(session)
     target_rows = _trace_tail_lines(visible_rows)
     text, truncated_before, has_newer, source_size, normalized_offset = _tail_file_text(
         path,
@@ -458,7 +435,7 @@ def _trace_render(
         max_lines=max(target_rows * 3, target_rows),
         offset_from_end=offset_from_end,
     )
-    rows = _collapse_trace_rows(_trace_rows_from_text(text, compact=is_compact))
+    rows = _collapse_trace_rows(_trace_rows_from_text(text))
     if len(rows) > target_rows:
         rows = rows[-target_rows:]
         truncated_before = True
@@ -477,7 +454,7 @@ def _trace_render(
             f"tokens `{metrics.get('tokens', '{}')}`"
         )
 
-    has_older = truncated_before or tail_has_older
+    has_older = truncated_before
     parts.append(
         f"_offset {normalized_offset} bytes · "
         f"{'older yes' if has_older else 'older no'} · "
@@ -625,7 +602,7 @@ def _prd_phase_md(session: Session, phase: str, detail: str, occurrence: int = 0
     head = f"# {phase}" + (f" — {detail}" if detail else "")
 
     if phase_l == "run":
-        metrics = _trace_metrics(session.read("trace.md"))
+        metrics = _trace_metrics(session)
         iters = _iterations(session.read("loop.md"))
         parts = [head]
         if metrics:
@@ -639,17 +616,8 @@ def _prd_phase_md(session: Session, phase: str, detail: str, occurrence: int = 0
             )
         # Live tail of the event log so an in-flight run shows the model working
         # (it logs tool calls / text before any iteration is finalized in loop.md).
-        live_path = (
-            session.dir / "events.tail.md"
-            if (session.dir / "events.tail.md").exists()
-            else session.dir / "events.md"
-        )
-        tail_text, _, _, _, _ = _tail_file_text(
-            live_path,
-            max_bytes=64 * 1024,
-            max_lines=25,
-        )
-        tail = tail_text.splitlines() if tail_text else []
+        tail_text = session.render_events_tail(64 * 1024)
+        tail = tail_text.splitlines()[-25:] if tail_text.strip() else []
         if tail:
             parts.append("## Live\n\n```\n" + "\n".join(tail) + "\n```")
         elif not iters:
@@ -822,7 +790,6 @@ class AnalyzeApp(App[None]):
         # rendered so a refresh appends only new events instead of re-rendering.
         self._trace_append_path: Path | None = None
         self._trace_append_bytes: int = 0
-        self._trace_append_compact: bool = False
         self._trace_last_index: int = 0
 
     def compose(self) -> ComposeResult:
@@ -1134,11 +1101,7 @@ class AnalyzeApp(App[None]):
 
     def _compute_trace_sig(self, visible_rows: int | None) -> tuple[Any, ...]:
         return (
-            _path_sig(self.session.dir / "trace.md"),
-            _path_sig(self.session.dir / "events.md"),
-            _path_sig(self.session.dir / "events.tail.md"),
-            _path_sig(self.session.dir / "events.compact.jsonl"),
-            _path_sig(self.session.dir / "events.compact.tail.jsonl"),
+            _path_sig(self.session.dir / "events.jsonl"),
             self._trace_offset,
             self._trace_selected_row,
             self._trace_expanded_row,
@@ -1151,14 +1114,14 @@ class AnalyzeApp(App[None]):
         (source switched/rotated, file shrank, or the tail cap was hit)."""
         if self._trace_append_path is None:
             return False
-        path, is_compact, _ = _trace_source(self.session, 0)
-        if path != self._trace_append_path or is_compact != self._trace_append_compact:
+        path = _trace_source(self.session)
+        if path != self._trace_append_path:
             return False
         size = path.stat().st_size if path.exists() else 0
         if size <= self._trace_append_bytes:
             return False  # no growth, shrank, or rotated — let the caller decide
         text, new_end = _read_appended_text(path, self._trace_append_bytes)
-        new_rows = _collapse_trace_rows(_trace_rows_from_text(text, compact=is_compact))
+        new_rows = _collapse_trace_rows(_trace_rows_from_text(text))
         if not new_rows:
             self._trace_append_bytes = new_end
             return False
@@ -1188,9 +1151,8 @@ class AnalyzeApp(App[None]):
         if self._trace_offset != 0:
             self._trace_append_path = None
             return
-        path, is_compact, _ = _trace_source(self.session, 0)
+        path = _trace_source(self.session)
         self._trace_append_path = path
-        self._trace_append_compact = is_compact
         self._trace_append_bytes = path.stat().st_size if path.exists() else 0
 
     def _render_trace(self, force: bool) -> None:
@@ -1254,7 +1216,7 @@ class AnalyzeApp(App[None]):
 
         if event.key == "[":
             event.prevent_default()
-            path, _, _ = _trace_source(self.session, self._trace_offset)
+            path = _trace_source(self.session)
             size = path.stat().st_size if path.exists() else 0
             max_offset = max(0, size - TRACE_PAGE_BYTES)
             self._trace_offset = min(self._trace_offset + TRACE_PAGE_BYTES, max_offset)
@@ -1424,7 +1386,7 @@ class SessionPicker(App[str | None]):
         self.sub_title = f"{len(sessions)} session(s)"
         for sid in sessions:
             session = Session(sid)
-            metrics = _trace_metrics(session.read("trace.md"))
+            metrics = _trace_metrics(session)
             table.add_row(sid, _run_state(session), f"${metrics.get('cost', '0')}", key=sid)
 
     def _current_id(self) -> str | None:
@@ -5895,6 +5857,10 @@ def _resume_run(session: Session, status: dict[str, Any], *, reset: bool = False
     fail_class = str(status.get("fail_class") or "")
     stage = str(status.get("stage") or "")
     if reset:
+        # events.jsonl is append-only, so a reset (unlike a normal resume) must
+        # drop it explicitly — otherwise the discarded attempt's cost/runs would
+        # keep summing into Trace.from_jsonl alongside the fresh one.
+        (session.dir / "events.jsonl").unlink(missing_ok=True)
         print(f"resetting run {session.id} — re-running from the head.")
     elif fail_class == "critical":
         artifact = _STAGE_ARTIFACT.get(stage)
@@ -5939,10 +5905,11 @@ def resume_session(session_id: str | None, *, reset: bool = False) -> int:
     if sid is None:
 
         def _has_run_checkpoint(s: Session) -> bool:
+            events_path = s.dir / "events.jsonl"
             return bool(
                 s.read("run_checkpoint.json").strip()
                 or s.read("checkpoint.json").strip()
-                or s.read("trace.md").strip()
+                or (events_path.exists() and events_path.stat().st_size > 0)
             )
 
         # Prefer unfinished/paused runs (checkpoint continuity) over PRD refinement.

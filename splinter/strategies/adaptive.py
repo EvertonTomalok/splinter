@@ -72,11 +72,7 @@ class AdaptiveStrategy(CascadeStrategy):
         effective_soft_budget = configured_soft_budget()
         ordered = self._topo_sort(tasks)
 
-        existing_trace = session.read("trace.md")
-        if resume and existing_trace.strip():
-            trace = Trace.from_markdown(existing_trace)
-        else:
-            trace = Trace()
+        trace = Trace.from_jsonl(session) if resume else Trace(session=session)
 
         knowledge = KnowledgeStore(session)
         results: list[RunResult] = []
@@ -119,7 +115,6 @@ class AdaptiveStrategy(CascadeStrategy):
                 start_tier_overrides=tier_overrides,
             )
             session.set_status("running", task_index=len(ordered), task_total=len(ordered))
-            session.write("trace.md", trace.summary())
             return results
 
         for i, task in enumerate(ordered):
@@ -215,7 +210,6 @@ class AdaptiveStrategy(CascadeStrategy):
                     self._save_checkpoint(session, done)
 
         session.set_status("running", task_index=len(ordered), task_total=len(ordered))
-        session.write("trace.md", trace.summary())
         return results
 
     def _compute_tier_overrides(

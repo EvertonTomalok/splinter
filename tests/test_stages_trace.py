@@ -226,12 +226,12 @@ def test_eval_stage_logs_model_and_effort_before_judge(
 
 
 class TestCostReconciliation:
-    def test_trace_total_cost_matches_summary_parse(self) -> None:
+    def test_trace_total_cost_matches_summary_parse(self, tmp_session: Session) -> None:
         from splinter.analyze import _trace_metrics
         from splinter.obs.trace import RunEntry, Trace
 
-        trace = Trace()
-        trace.entries.append(
+        trace = Trace(session=tmp_session)
+        trace.add_entry(
             RunEntry(
                 model="m",
                 tier=1,
@@ -242,7 +242,7 @@ class TestCostReconciliation:
                 task=0,
             )
         )
-        trace.entries.append(
+        trace.add_entry(
             RunEntry(
                 model="m",
                 tier=0,
@@ -254,7 +254,7 @@ class TestCostReconciliation:
                 role="eval",
             )
         )
-        trace.entries.append(
+        trace.add_entry(
             RunEntry(
                 model="m",
                 tier=2,
@@ -266,18 +266,17 @@ class TestCostReconciliation:
             )
         )
 
-        md = trace.summary()
-        metrics = _trace_metrics(md)
+        metrics = _trace_metrics(tmp_session)
 
         assert float(metrics["cost"]) == pytest.approx(trace.total_cost, abs=1e-6)
         assert trace.total_cost == pytest.approx(0.0600)
 
-    def test_log_run_then_trace_parse_agrees(self) -> None:
+    def test_log_run_then_trace_parse_agrees(self, tmp_session: Session) -> None:
         from splinter.agents.runner import RunResult
         from splinter.analyze import _trace_metrics
         from splinter.obs.trace import Trace, log_run
 
-        trace = Trace()
+        trace = Trace(session=tmp_session)
         log_run(
             trace,
             RunResult(text="a", model="m", tier=1, tokens={"input": 10}, cost=0.0400, raw={}),
@@ -291,17 +290,20 @@ class TestCostReconciliation:
             task=0,
         )
 
-        md = trace.summary()
-        metrics = _trace_metrics(md)
+        metrics = _trace_metrics(tmp_session)
 
         assert float(metrics["cost"]) == pytest.approx(trace.total_cost, abs=1e-6)
         assert trace.total_cost == pytest.approx(0.0650)
 
-    def test_log_run_then_trace_parse_preserves_latency_and_ts(self) -> None:
+    def test_log_run_then_trace_parse_preserves_latency_and_ts(
+        self, tmp_session: Session
+    ) -> None:
         from splinter.agents.runner import RunResult
         from splinter.obs.trace import Trace, log_run
 
-        trace = Trace()
+        # events.jsonl is the round-trip medium now (US-004): log_run persists
+        # through the session-attached trace, from_jsonl rebuilds it.
+        trace = Trace(session=tmp_session)
         ts = "2026-07-04T12:00:00+00:00"
         log_run(
             trace,
@@ -313,8 +315,7 @@ class TestCostReconciliation:
             task=0,
         )
 
-        md = trace.summary()
-        parsed = Trace.from_markdown(md)
+        parsed = Trace.from_jsonl(tmp_session)
 
         assert parsed.entries[0].latency_s == pytest.approx(1.5)
         assert parsed.entries[0].ts == ts

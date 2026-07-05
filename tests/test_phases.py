@@ -115,7 +115,7 @@ class TestRunPhaseArtifacts:
     def test_phase_trace_entries_recorded(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Phase entries appear in trace.md."""
+        """Phase entries land in events.jsonl and render on demand via Trace.summary()."""
         monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
         session = Session("ses_phases_trace")
         _mock_phase_boundaries(monkeypatch)
@@ -125,7 +125,9 @@ class TestRunPhaseArtifacts:
 
         run_phase(cfg, session, ladder)
 
-        trace_md = session.read("trace.md")
+        from splinter.obs.trace import Trace
+
+        trace_md = Trace.from_jsonl(session).summary()
         assert "total runs: 1" in trace_md
         assert "haiku" in trace_md
 
