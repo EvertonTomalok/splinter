@@ -452,7 +452,7 @@ def filter_task_context(
         )
 
 
-_US_STORY_HEADER_RE = re.compile(r"^###\s+US-[\w-]+:.*$", re.MULTILINE)
+_US_STORY_HEADER_RE = re.compile(r"^###\s+US-\d+:.*$", re.MULTILINE)
 
 
 def _localize_items(prd_text: str) -> list[str]:
@@ -460,11 +460,15 @@ def _localize_items(prd_text: str) -> list[str]:
     if len(matches) < 2:
         return [prd_text]
 
+    preamble = prd_text[: matches[0].start()].strip()
+    context_block = f"## PRD context\n\n{preamble}\n\n" if preamble else ""
+
     items: list[str] = []
     for i, m in enumerate(matches):
         start = m.start()
         end = matches[i + 1].start() if i + 1 < len(matches) else len(prd_text)
-        items.append(prd_text[start:end].strip())
+        story_text = prd_text[start:end].strip()
+        items.append(f"{context_block}{story_text}" if context_block else story_text)
     return items
 
 
@@ -552,6 +556,7 @@ def localize(
     *,
     repo_path: str = ".",
     force: bool = False,
+    max_concurrency: int | None = None,
 ) -> list[CodeAnchor]:
     """Recall-only localization: grep → cheap LLM → candidate file list.
 
@@ -575,7 +580,8 @@ def localize(
     items = _localize_items(prd_text)
 
     results: list[list[CodeAnchor]] = [[] for _ in items]
-    cap = max(1, min(len(items), default_max_concurrency()))
+    cap = max_concurrency if max_concurrency else default_max_concurrency()
+    cap = max(1, min(len(items), cap))
     with ThreadPoolExecutor(max_workers=cap) as ex:
         futs = {
             ex.submit(
@@ -589,11 +595,12 @@ def localize(
     # Reassemble by submit index, not completion order, for determinism.
     if len(items) > 1:
         anchors = []
-        seen: set[str] = set()
+        seen: set[tuple[str, str]] = set()
         for chunk in results:
             for a in chunk:
-                if a.file not in seen:
-                    seen.add(a.file)
+                key = (a.file, a.symbol)
+                if key not in seen:
+                    seen.add(key)
                     anchors.append(a)
     else:
         # No dedup for N=1 — stays byte-identical to the pre-concurrency baseline.

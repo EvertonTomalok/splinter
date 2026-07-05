@@ -108,6 +108,10 @@ def test_localize_items_multiple_headers_split_in_order() -> None:
     assert "US-001" in items[0] and "US-002" not in items[0]
     assert "US-002" in items[1] and "US-003" not in items[1]
     assert "US-003" in items[2]
+    for item in items:
+        assert "## PRD context" in item
+        assert "# PRD" in item
+        assert "### US-" in item
 
 
 # ---------------------------------------------------------------------------
@@ -174,6 +178,49 @@ def test_localize_deterministic_order_under_jitter(
     assert [a.file for a in anchors] == ["file_001.py", "file_002.py", "file_003.py"]
 
 
+def test_dedup_by_file_symbol_not_file_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two stories share ``app.py`` but with different symbols → both anchors survive."""
+    two_story_prd = """# PRD
+
+### US-001: Auth feature
+Add login to the app.
+
+### US-002: Profile feature
+Add user profile to the app."""
+
+    def fake_recall(item_text: str, search_results: str, model: str, variant: str,
+                    timeout: int | None, *, agent: str, session: object) -> str:
+        story_id = "001" if "Auth" in item_text else "002"
+        symbol = f"login_{story_id}" if story_id == "001" else f"profile_{story_id}"
+        return json.dumps(
+            [
+                {
+                    "file": "app.py",
+                    "symbol": symbol,
+                    "reason": f"reason for story {story_id}",
+                    "confidence": 0.9,
+                    "line_start": 1,
+                    "line_end": 10,
+                }
+            ]
+        )
+
+    monkeypatch.setattr(localizer, "_recall_phase", fake_recall)
+    monkeypatch.setattr(localizer, "default_max_concurrency", lambda: 2)
+    ladder = _ladder()
+    session = _session(tmp_path, monkeypatch, "dedup-symbol")
+
+    anchors = localize(two_story_prd, session, ladder, repo_path=str(tmp_path))
+
+    assert len(anchors) == 2, f"expected 2 anchors, got {len(anchors)}: {anchors}"
+    assert anchors[0].file == "app.py"
+    assert anchors[1].file == "app.py"
+    assert anchors[0].symbol == "login_001"
+    assert anchors[1].symbol == "profile_002"
+
+
 def test_localize_n1_baseline_matches_original_format(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -232,3 +279,72 @@ def test_localize_n1_baseline_matches_original_format(
         "\n"
     )
     assert content == expected
+
+
+def test_non_numeric_us_headers_not_split(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prd = """# PRD
+
+### US-AUTH-1: Auth feature
+Do the auth thing.
+
+### US-PROFILE-2: Profile feature
+Do the profile thing.
+"""
+    items = _localize_items(prd)
+    assert len(items) == 1, f"expected 1 whole-PRD item, got {len(items)}"
+    assert items[0] == prd
+
+
+def test_localize_respects_max_concurrency(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import threading
+
+    max_concurrent: int = 0
+    current: int = 0
+    lock = threading.Lock()
+
+    def _tracking_recall(
+        item_text: str,
+        search_results: str,
+        model: str,
+        variant: str,
+        timeout: int | None,
+        *,
+        agent: str,
+        session: object,
+    ) -> str:
+        nonlocal max_concurrent, current
+        with lock:
+            current += 1
+            max_concurrent = max(max_concurrent, current)
+        time.sleep(0.03)
+        with lock:
+            current -= 1
+        m = re.search(r"US-(\d+)", item_text)
+        n = m.group(1) if m else "0"
+        return json.dumps(
+            [
+                {
+                    "file": f"file_{n}.py",
+                    "symbol": f"Symbol{n}",
+                    "reason": f"reason for story {n}",
+                    "confidence": 0.9,
+                    "line_start": 1,
+                    "line_end": 10,
+                }
+            ]
+        )
+
+    monkeypatch.setattr(localizer, "_recall_phase", _tracking_recall)
+    ladder = _ladder()
+    session = _session(tmp_path, monkeypatch, "max-conc")
+
+    anchors = localize(
+        _THREE_STORY_PRD, session, ladder, repo_path=str(tmp_path), max_concurrency=1
+    )
+
+    assert len(anchors) == 3
+    assert max_concurrent == 1, f"max_concurrent was {max_concurrent}, expected 1"

@@ -1,4 +1,4 @@
-"""Tests for concurrent planning (US-004): Planner.plan via run_bounded."""
+"""Tests for planning (US-004): Planner.plan delegates to parse_stories."""
 
 from __future__ import annotations
 
@@ -6,8 +6,8 @@ import asyncio
 
 import pytest
 
-from splinter.agents import planner
 from splinter.agents.planner import Planner, parse_stories
+from splinter.strategies.fanout import run_bounded
 
 MULTI_PRD = """\
 ### US-001: First story
@@ -59,42 +59,28 @@ def test_concurrent_plan_matches_serial_baseline(prd: str) -> None:
     assert [_task_fields(t) for t in concurrent] == [_task_fields(t) for t in serial]
 
 
-def test_dispatches_via_run_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: dict[str, object] = {}
-    real_run_bounded = planner.run_bounded
-
-    async def spy(items, concurrency=None):  # type: ignore[no-untyped-def]
-        calls["n_items"] = len(items)
-        calls["concurrency"] = concurrency
-        return await real_run_bounded(items, concurrency=concurrency)
-
-    monkeypatch.setattr(planner, "run_bounded", spy)
-
-    tasks = Planner(concurrency=2).plan(MULTI_PRD)
-
-    assert len(tasks) == 3
-    assert calls["n_items"] == 3
-    assert calls["concurrency"] == 2
+def test_plan_matches_parse_stories_behavior() -> None:
+    tasks = Planner().plan(MULTI_PRD)
+    expected = parse_stories(MULTI_PRD)
+    assert len(tasks) == len(expected)
+    for t, e in zip(tasks, expected, strict=True):
+        assert t.id == e.id
+        assert t.description == e.description
+        assert t.acceptance == e.acceptance
+        assert t.effort == e.effort
+        assert t.eval_skill == e.eval_skill
+        assert t.deps == e.deps
+        assert t.parallelizable == e.parallelizable
 
 
 def test_one_failing_story_propagates_without_deadlock() -> None:
     async def scenario() -> None:
-        p = Planner(concurrency=3)
-
         async def _boom(m):  # type: ignore[no-untyped-def]
             raise ValueError("boom")
 
-        real_parse = planner._parse_one_story
-        matches = list(planner._US_PATTERN.finditer(MULTI_PRD))
-
-        async def _item(m, idx):  # type: ignore[no-untyped-def]
-            if idx == 1:
-                raise ValueError("boom")
-            return real_parse(m)
-
-        items = [(lambda m=m, i=i: _item(m, i)) for i, m in enumerate(matches)]
+        items = [(lambda: _boom(MULTI_PRD))]
 
         with pytest.raises(ValueError, match="boom"):
-            await planner.run_bounded(items, concurrency=p._concurrency)
+            await run_bounded(items, concurrency=3)
 
     asyncio.run(scenario())

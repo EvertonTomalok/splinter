@@ -6,7 +6,6 @@ import asyncio
 import logging
 import os
 import subprocess
-from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,7 +23,6 @@ from splinter.obs.trace import Trace
 from splinter.providers.base import ProviderGapError
 from splinter.scheduling import default_max_concurrency
 from splinter.strategies.base import AskUserPause, GracefulPause, ManualValidationPause
-from splinter.strategies.fanout import run_bounded
 from splinter.strategies.registry import available_strategies, get_strategy
 
 DEFAULT_STRATEGY = "cascade"
@@ -468,7 +466,7 @@ def _localize_and_filter(
     else:
         log.info("localizing against the codebase…")
         with agentic_scope(session, "locate", 0, 0):
-            anchors = localize(prd_text, session, ladder)
+            anchors = localize(prd_text, session, ladder, max_concurrency=max_concurrency)
         localization = session.read("knowledge/localization.md")
 
     if not (anchors and tasks and not single_shot):
@@ -491,19 +489,36 @@ def _localize_and_filter(
     if pending:
         filter_limit = max_concurrency if max_concurrency else default_max_concurrency()
 
-        async def _one(t: Task) -> str:
-            return await asyncio.to_thread(filter_task_context, t, ladder, session=session)
+        async def _one(t: Task, cache_key: str) -> str:
+            result = await asyncio.to_thread(filter_task_context, t, ladder, session=session)
+            if result:
+                session.write(cache_key, result)
+            return result
 
-        def _thunk(t: Task) -> Callable[[], Awaitable[str]]:
-            return lambda: _one(t)
+        async def _run_all() -> None:
+            sem = asyncio.Semaphore(max(1, min(filter_limit, len(pending))))
 
-        items = [_thunk(task) for _idx, task, _key in pending]
-        results = asyncio.run(run_bounded(items, concurrency=filter_limit))
+            async def _guarded(task: Task, cache_key: str) -> str:
+                async with sem:
+                    return await _one(task, cache_key)
 
-        for (_idx, task, cache_key), filtered_context in zip(pending, results, strict=True):
-            task.filtered_context = filtered_context
-            if filtered_context:
-                session.write(cache_key, filtered_context)
+            raw = await asyncio.gather(
+                *(_guarded(task, cache_key) for _idx, task, cache_key in pending),
+                return_exceptions=True,
+            )
+
+            first_exc: BaseException | None = None
+            for (_idx, task, _cache_key), outcome in zip(pending, raw, strict=True):
+                if isinstance(outcome, BaseException):
+                    if first_exc is None:
+                        first_exc = outcome
+                else:
+                    task.filtered_context = outcome
+
+            if first_exc is not None:
+                raise first_exc
+
+        asyncio.run(_run_all())
 
     for i, task in enumerate(tasks):
         loc_key = f"knowledge/localization-{i + 1}.md"

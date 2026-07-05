@@ -3,37 +3,21 @@
 from __future__ import annotations
 
 import asyncio
-import os
 from collections.abc import Awaitable, Callable
 from typing import TypeVar, cast
 
 T = TypeVar("T")
 
-DEFAULT_CONCURRENCY: int = 4
-
-
-def _default_concurrency() -> int:
-    raw = os.environ.get("SPLINTER_STAGE_CONCURRENCY")
-    if raw is None:
-        return DEFAULT_CONCURRENCY
-    try:
-        value = int(raw)
-    except ValueError:
-        return DEFAULT_CONCURRENCY
-    return value if value > 0 else DEFAULT_CONCURRENCY
-
 
 async def run_bounded(
     items: list[Callable[[], Awaitable[T]]],
-    concurrency: int | None = None,
+    concurrency: int,
 ) -> list[T]:
     """Run item thunks concurrently under a semaphore, order-stable, fail-fast."""
     if not items:
         return []
 
-    default_bound = concurrency if concurrency is not None and concurrency > 0 else None
-    requested = default_bound if default_bound is not None else _default_concurrency()
-    bound = max(1, min(requested, len(items)))
+    bound = max(1, min(concurrency, len(items)))
     sem = asyncio.Semaphore(bound)
 
     async def _guarded(idx: int, thunk: Callable[[], Awaitable[T]]) -> tuple[int, T]:

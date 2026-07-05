@@ -6,7 +6,7 @@ import asyncio
 
 import pytest
 
-from splinter.strategies.fanout import DEFAULT_CONCURRENCY, _default_concurrency, run_bounded
+from splinter.strategies.fanout import run_bounded
 
 
 def test_returns_input_order() -> None:
@@ -21,7 +21,7 @@ def test_returns_input_order() -> None:
             return thunk
 
         items = [make_thunk(i) for i in range(n)]
-        results = await run_bounded(items)
+        results = await run_bounded(items, concurrency=4)
         assert results == list(range(n))
 
     asyncio.run(scenario())
@@ -87,20 +87,6 @@ def test_one_fails_cancels_others() -> None:
 
 def test_empty_items() -> None:
     async def scenario() -> None:
-        assert await run_bounded([]) == []
+        assert await run_bounded([], concurrency=4) == []
 
     asyncio.run(scenario())
-
-
-def test_default_concurrency_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("SPLINTER_STAGE_CONCURRENCY", "7")
-    assert _default_concurrency() == 7
-
-    monkeypatch.setenv("SPLINTER_STAGE_CONCURRENCY", "not-a-number")
-    assert _default_concurrency() == DEFAULT_CONCURRENCY
-
-    monkeypatch.setenv("SPLINTER_STAGE_CONCURRENCY", "-3")
-    assert _default_concurrency() == DEFAULT_CONCURRENCY
-
-    monkeypatch.delenv("SPLINTER_STAGE_CONCURRENCY", raising=False)
-    assert _default_concurrency() == DEFAULT_CONCURRENCY

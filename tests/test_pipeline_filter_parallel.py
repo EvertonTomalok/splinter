@@ -38,8 +38,9 @@ def _make_anchors(n: int) -> list[CodeAnchor]:
 
 def _stub_localize(
     anchors: list[CodeAnchor],
-) -> Callable[[str, Session, Ladder], list[CodeAnchor]]:
-    def _stub(prd_text: str, session: Session, ladder: Ladder) -> list[CodeAnchor]:
+) -> Callable[..., list[CodeAnchor]]:
+    def _stub(prd_text: str, session: Session, ladder: Ladder, *,
+              max_concurrency: int | None = None) -> list[CodeAnchor]:
         session.write("knowledge/localization.md", "loc")
         return anchors
 
@@ -109,6 +110,10 @@ def test_filter_one_fails_siblings_still_resolve(
 
     with pytest.raises(RuntimeError, match="boom"):
         _run(tmp_session, ladder, tasks, anchors)
+
+    assert tmp_session.read("knowledge/filter-1.md") == "ctx-task-0"
+    assert tmp_session.read("knowledge/filter-3.md") == "ctx-task-2"
+    assert "ctx-task-1" not in tmp_session.read("knowledge/filter-2.md")
 
 
 def test_filter_resume_skips_fanout(monkeypatch: pytest.MonkeyPatch, tmp_session: Session) -> None:

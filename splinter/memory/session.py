@@ -32,6 +32,11 @@ _STATUS_LOCK = threading.Lock()
 _APPEND_LOCKS: dict[str, threading.Lock] = {}
 _APPEND_LOCKS_GUARD = threading.Lock()
 
+#: Serialises the read-modify-write of ``pre_run_usage.json``. Localize
+#: ``ThreadPoolExecutor`` workers and filter ``asyncio.to_thread`` workers both
+#: end in ``run_text(session=session)`` → ``log_llm_usage`` concurrently.
+_PRE_RUN_USAGE_LOCK = threading.Lock()
+
 
 def _append_lock(session_id: str) -> threading.Lock:
     with _APPEND_LOCKS_GUARD:
@@ -323,23 +328,23 @@ class Session:
     def log_llm_usage(self, model: str, tokens: dict[str, int], cost: float) -> None:
         """Accumulate LLM usage outside the main run trace (PRD, planner, etc.)."""
         p = self.dir / "pre_run_usage.json"
-        try:
-            data: dict[str, Any] = json.loads(p.read_text()) if p.exists() else {}
-        except json.JSONDecodeError:
-            data = {}
-        data["input"] = int(data.get("input", 0)) + tokens.get("input", 0)
-        data["output"] = int(data.get("output", 0)) + tokens.get("output", 0)
-        data["cost"] = float(data.get("cost", 0.0)) + cost
-        # Per-model breakdown
-        models: dict[str, Any] = data.get("models", {})
-        m = models.get(model, {})
-        m["input"] = int(m.get("input", 0)) + tokens.get("input", 0)
-        m["output"] = int(m.get("output", 0)) + tokens.get("output", 0)
-        m["cost"] = float(m.get("cost", 0.0)) + cost
-        models[model] = m
-        data["models"] = models
-        self._ensure_dir()
-        p.write_text(json.dumps(data))
+        with _PRE_RUN_USAGE_LOCK:
+            try:
+                data: dict[str, Any] = json.loads(p.read_text()) if p.exists() else {}
+            except json.JSONDecodeError:
+                data = {}
+            data["input"] = int(data.get("input", 0)) + tokens.get("input", 0)
+            data["output"] = int(data.get("output", 0)) + tokens.get("output", 0)
+            data["cost"] = float(data.get("cost", 0.0)) + cost
+            models: dict[str, Any] = data.get("models", {})
+            m = models.get(model, {})
+            m["input"] = int(m.get("input", 0)) + tokens.get("input", 0)
+            m["output"] = int(m.get("output", 0)) + tokens.get("output", 0)
+            m["cost"] = float(m.get("cost", 0.0)) + cost
+            models[model] = m
+            data["models"] = models
+            self._ensure_dir()
+            p.write_text(json.dumps(data))
 
     def read_pre_run_usage(self) -> dict[str, Any]:
         p = self.dir / "pre_run_usage.json"

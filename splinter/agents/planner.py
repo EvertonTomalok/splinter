@@ -2,17 +2,13 @@
 
 from __future__ import annotations
 
-import asyncio
 import re
-from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 import yaml
 
 from splinter.agents.localizer import CodeAnchor
 from splinter.agents.runner import Task
-from splinter.scheduling import default_max_concurrency
-from splinter.strategies.fanout import run_bounded
 
 
 def _parse_frontmatter(text: str) -> tuple[dict, str]:  # type: ignore[type-arg]
@@ -113,31 +109,10 @@ def parse_stories(prd_text: str) -> list[Task]:
 
 
 class Planner:
-    """Parses PRD story blocks concurrently, one item-callable per story."""
-
-    def __init__(self, *, concurrency: int | None = None) -> None:
-        self._concurrency = concurrency or default_max_concurrency()
-
-    async def plan_items(self, prd_text: str) -> list[Task]:
-        _fm, body = _parse_frontmatter(prd_text)
-        matches = list(_US_PATTERN.finditer(body))
-
-        def _make_item(m: re.Match[str]) -> Callable[[], Awaitable[Task]]:
-            async def _item() -> Task:
-                return _parse_one_story(m)
-
-            return _item
-
-        items = [_make_item(m) for m in matches]
-        tasks = await run_bounded(items, concurrency=self._concurrency)
-
-        if not tasks:
-            tasks.append(_fallback_task(body))
-
-        return tasks
+    """Parses PRD story blocks into Task objects."""
 
     def plan(self, prd_text: str) -> list[Task]:
-        return asyncio.run(self.plan_items(prd_text))
+        return parse_stories(prd_text)
 
 
 def _tokenize(text: str) -> set[str]:
