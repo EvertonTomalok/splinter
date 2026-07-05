@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 
@@ -34,6 +35,23 @@ from splinter.strategies.direct import DirectStrategy, TaskOutcome
 from splinter.strategies.registry import register
 
 log = logging.getLogger("splinter.loop")
+
+
+def _append_task_header_once(session: Session, task_no: int, header: str) -> None:
+    """Append a ``# Task N`` header to ``loop.md`` only if that task has none yet.
+
+    A resumed run re-dispatches every un-checkpointed task (failed, blocked, or
+    mid-flight when interrupted). Without this guard each resume re-appends the
+    same header, so ``analyze``/trajectory shows the same task two, three, N times
+    — corrupting the run's observability. The header is written exactly once per
+    task number, regardless of how many times the task is dispatched.
+
+    Callers that share ``loop.md`` across threads must hold the session lock so the
+    read-check-append is atomic.
+    """
+    if re.search(rf"^# Task {task_no}(?:[ \t/\[:])", session.read("loop.md"), re.MULTILINE):
+        return
+    session.append("loop.md", header)
 
 
 @register
@@ -157,8 +175,9 @@ class CascadeStrategy(DirectStrategy):
                 task_total=len(ordered),
                 task=task.description.splitlines()[0],
             )
-            session.append(
-                "loop.md",
+            _append_task_header_once(
+                session,
+                i + 1,
                 f"# Task {i + 1}/{len(ordered)}: {task.description.splitlines()[0]}\n\n",
             )
 
@@ -341,8 +360,9 @@ class CascadeStrategy(DirectStrategy):
                 break
             task_index = ordered.index(task)
             with session_lock:
-                session.append(
-                    "loop.md",
+                _append_task_header_once(
+                    session,
+                    task_index + 1,
                     f"# Task {task_index + 1} [sequential]: "
                     f"{task.description.splitlines()[0]}\n\n",
                 )
@@ -417,8 +437,9 @@ class CascadeStrategy(DirectStrategy):
 
         handle = None
         with session_lock:
-            session.append(
-                "loop.md",
+            _append_task_header_once(
+                session,
+                task_index + 1,
                 f"# Task {task_index + 1} [parallel]: {task.description.splitlines()[0]}\n\n",
             )
 

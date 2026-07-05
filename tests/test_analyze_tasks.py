@@ -46,6 +46,25 @@ verdict: RETRY
         assert "## Iteration 1" in result[1][2]
         assert "Tier 2" in result[1][2]
 
+    def test_duplicate_headers_deduped(self) -> None:
+        """Regression: a resumed run may re-append a task header; each task number
+        must render once, not once per duplicate header."""
+        loop_md = """# Task 1 [parallel]: First
+## Iteration 1
+verdict: PASS
+
+# Task 2 [parallel]: Second
+## Iteration 1
+verdict: PASS
+
+# Task 1 [parallel]: First
+# Task 2 [parallel]: Second
+"""
+        result = _tasks(loop_md)
+        assert [t[0] for t in result] == [1, 2]
+        assert result[0][1] == "First"
+        assert result[1][1] == "Second"
+
     def test_empty_loop_md(self) -> None:
         """Empty loop.md returns single empty task."""
         result = _tasks("")

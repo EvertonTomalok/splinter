@@ -210,9 +210,17 @@ def _parse_parallel_tasks(session: Session, loop_md: str) -> list[tuple[int, str
     via ``_parallel_task_iters`` because the ``## Iteration`` blocks in loop.md
     are interleaved across concurrent workers and can't be split by position.
     """
+    # Dedup by task number, keeping the first header seen: a resumed run may have
+    # appended a task's header more than once, and rendering each occurrence would
+    # show the same task repeatedly. One entry per task number is the truth.
+    seen: set[int] = set()
     task_headers: list[tuple[int, str]] = []
     for m in _TASK_HEADER_RE.finditer(loop_md):
-        task_headers.append((int(m.group(1)), m.group(2).strip()))
+        task_no = int(m.group(1))
+        if task_no in seen:
+            continue
+        seen.add(task_no)
+        task_headers.append((task_no, m.group(2).strip()))
     if not task_headers:
         return [(1, "", loop_md)]
 
@@ -244,7 +252,17 @@ def _tasks(loop_md: str) -> list[tuple[int, str, str]]:
     if not ranges:
         return [(1, "", loop_md)]
 
-    return [(task_no, title, loop_md[start:end]) for task_no, title, start, end in ranges]
+    # One entry per task number (first header wins) — a resumed run may have
+    # re-appended a header, and each duplicate would otherwise render as its own
+    # task, breaking the trajectory view.
+    seen: set[int] = set()
+    out: list[tuple[int, str, str]] = []
+    for task_no, title, start, end in ranges:
+        if task_no in seen:
+            continue
+        seen.add(task_no)
+        out.append((task_no, title, loop_md[start:end]))
+    return out
 
 
 def _eval_segments(eval_md: str, task_count: int) -> list[str]:

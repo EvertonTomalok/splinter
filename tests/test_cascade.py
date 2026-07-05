@@ -498,3 +498,55 @@ class TestPlannerCascadeIntegration:
         prd = "---\nstrategy: cascade\n---\n### US-001: task\n**Description:** do it\n- [ ] done\n"
         fm, _body = _parse_frontmatter(prd)
         assert fm.get("strategy") == "cascade"
+
+
+class TestTaskHeaderIdempotency:
+    """`_append_task_header_once` must not duplicate `# Task N` headers on resume."""
+
+    def test_header_written_once_across_dispatches(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from splinter.strategies.cascade import _append_task_header_once
+
+        monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
+        session = Session("ses_hdr")
+
+        header = "# Task 1 [parallel]: US-001: do it\n\n"
+        # first dispatch writes it; the two resume re-dispatches must be no-ops
+        _append_task_header_once(session, 1, header)
+        _append_task_header_once(session, 1, header)
+        _append_task_header_once(session, 1, header)
+
+        assert session.read("loop.md").count("# Task 1 ") == 1
+
+    def test_distinct_tasks_each_get_one_header(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from splinter.strategies.cascade import _append_task_header_once
+
+        monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
+        session = Session("ses_hdr_multi")
+
+        _append_task_header_once(session, 1, "# Task 1 [parallel]: A\n\n")
+        _append_task_header_once(session, 2, "# Task 2 [parallel]: B\n\n")
+        _append_task_header_once(session, 1, "# Task 1 [parallel]: A\n\n")
+
+        loop = session.read("loop.md")
+        assert loop.count("# Task 1 ") == 1
+        assert loop.count("# Task 2 ") == 1
+
+    def test_task_number_prefix_not_confused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Task 1 must not suppress Task 10 (prefix collision guard)."""
+        from splinter.strategies.cascade import _append_task_header_once
+
+        monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
+        session = Session("ses_hdr_prefix")
+
+        _append_task_header_once(session, 1, "# Task 1 [parallel]: A\n\n")
+        _append_task_header_once(session, 10, "# Task 10 [parallel]: J\n\n")
+
+        loop = session.read("loop.md")
+        assert "# Task 1 " in loop
+        assert "# Task 10 " in loop
