@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import logging
 from collections.abc import Generator
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -12,6 +11,7 @@ from datetime import datetime, timezone
 from typing import Any, TypeVar
 
 from splinter.memory.session import Session, _append_lock
+from splinter.obs.errors import report_obs_error
 
 _T = TypeVar("_T")
 
@@ -59,8 +59,8 @@ def append_jsonl(session: Session, event: AgenticEvent) -> None:
             file_path = trace_dir / f"agentic-{event.task_index}.jsonl"
             with open(file_path, "a") as f:
                 f.write(json.dumps(asdict(event)) + "\n")
-    except Exception:
-        pass
+    except Exception as exc:
+        report_obs_error(session, "agentic.append_jsonl", "write", exc)
 
 
 def load_agentic_events(session: Session) -> list[AgenticEvent]:
@@ -92,11 +92,20 @@ def load_agentic_events(session: Session) -> list[AgenticEvent]:
                     except (json.JSONDecodeError, TypeError):
                         skipped += 1
                         continue
-        except Exception:
+        except Exception as exc:
+            report_obs_error(
+                session, "agentic.load_agentic_events", "read", exc, detail=file_path.name
+            )
             continue
 
     if skipped:
-        logging.getLogger(__name__).warning("skipped %d malformed agentic events", skipped)
+        report_obs_error(
+            session,
+            "agentic.load_agentic_events",
+            "decode",
+            ValueError(f"{skipped} malformed agentic events skipped"),
+            detail=f"skipped={skipped}",
+        )
 
     return events
 
@@ -221,8 +230,8 @@ def _persist_exchange(session: Session, event: ExchangeEvent) -> None:
                 )
                 + "\n"
             )
-    except Exception:
-        pass
+    except Exception as exc:
+        report_obs_error(session, "agentic._persist_exchange", "write", exc)
 
 
 def read_events(session: Session, task_index: int) -> list[ExchangeEvent]:
@@ -243,7 +252,13 @@ def read_events(session: Session, task_index: int) -> list[ExchangeEvent]:
             skipped += 1
             continue
     if skipped:
-        logging.getLogger(__name__).warning("skipped %d malformed exchange events", skipped)
+        report_obs_error(
+            session,
+            "agentic.read_events",
+            "decode",
+            ValueError(f"{skipped} malformed exchange events skipped"),
+            detail=f"task={task_index} skipped={skipped}",
+        )
     return events
 
 
@@ -279,11 +294,20 @@ def _read_all_exchanges(session: Session) -> list[ExchangeEvent]:
                 except (json.JSONDecodeError, TypeError):
                     skipped += 1
                     continue
-        except Exception:
+        except Exception as exc:
+            report_obs_error(
+                session, "agentic._read_all_exchanges", "read", exc, detail=file_path.name
+            )
             continue
 
     if skipped:
-        logging.getLogger(__name__).warning("skipped %d malformed exchange events", skipped)
+        report_obs_error(
+            session,
+            "agentic._read_all_exchanges",
+            "decode",
+            ValueError(f"{skipped} malformed exchange events skipped"),
+            detail=f"skipped={skipped}",
+        )
 
     return exchanges
 

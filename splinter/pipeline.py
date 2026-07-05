@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import os
 import subprocess
-import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,6 +17,7 @@ from splinter.agents.runner import RunResult, Task
 from splinter.memory.session import Session, new_session_id
 from splinter.models.roster import Ladder, load_ladder
 from splinter.obs.agentic import agentic_scope
+from splinter.obs.errors import report_obs_error
 from splinter.obs.trace import Trace
 from splinter.providers.base import ProviderGapError
 from splinter.strategies.base import AskUserPause, GracefulPause, ManualValidationPause
@@ -83,10 +83,8 @@ class _SessionTraceHandler(logging.Handler):
         try:
             ts = datetime.now(timezone.utc).astimezone().strftime("%H:%M:%S")
             self.session.append("events.md", f"[{ts}] {record.getMessage()}")
-        except OSError as exc:
-            # Tracing must never break the run, but a dropped event shouldn't
-            # vanish without a trace either.
-            print(f"events log write failed: {exc}", file=sys.stderr)
+        except Exception as exc:  # tracing must never break the run — but be visible
+            report_obs_error(self.session, "pipeline._SessionTraceHandler.emit", "write", exc)
 
 
 def _resolve_gate(session: Session, ladder: object, tasks: list[Task]) -> None:
