@@ -488,6 +488,12 @@ class CascadeStrategy(DirectStrategy):
             # Merge only a genuine PASS — never fold half-finished work back into the
             # main tree. All git ops are serialised so two tasks never touch the
             # shared index concurrently.
+            #
+            # A worktree is torn down ONLY after its work is safely merged into the
+            # main tree. Anything else — task didn't PASS, or the merge hit an
+            # unresolved conflict — keeps the worktree on disk so the user can
+            # inspect and resolve it by hand. Never destroy unmerged work.
+            merged = False
             if outcome.passed:
                 with git_lock:
                     try:
@@ -500,15 +506,29 @@ class CascadeStrategy(DirectStrategy):
                             log.info("parallel: squash-merged %s", task.id)
                         else:
                             log.info("parallel: %s produced no changes — nothing to merge", task.id)
+                        merged = True
                     except WorktreeMergeConflict as exc:
-                        log.error("parallel: merge conflict for %s: %s", task.id, exc)
+                        log.error(
+                            "parallel: merge conflict for %s — worktree KEPT at %s for "
+                            "manual resolution, not deleted: %s",
+                            task.id,
+                            handle.path,
+                            exc,
+                        )
                         raise
-            with git_lock:
-                try:
-                    teardown_worktree(handle)
-                    log.info("parallel: cleaned up worktree for %s", task.id)
-                except Exception as exc:
-                    log.warning("parallel: worktree teardown failed for %s: %s", task.id, exc)
+            else:
+                log.warning(
+                    "parallel: %s did not PASS — worktree KEPT at %s, not deleted",
+                    task.id,
+                    handle.path,
+                )
+            if merged:
+                with git_lock:
+                    try:
+                        teardown_worktree(handle)
+                        log.info("parallel: cleaned up worktree for %s", task.id)
+                    except Exception as exc:
+                        log.warning("parallel: worktree teardown failed for %s: %s", task.id, exc)
 
         return result, outcome.passed
 
