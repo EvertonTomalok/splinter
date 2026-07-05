@@ -358,15 +358,16 @@ class DirectStrategy(Strategy):
         localization: str,
         trace: object = None,
         skip_planner: bool = False,
-        resume: bool = False,
         force_replan: bool = False,
         max_concurrency: int | None = None,
         done_ids: set[str] | None = None,
     ) -> None:
         """Pre-generate plans for all tasks concurrently; reuses existing files on resume.
 
-        Tasks already completed (``done_ids`` checkpoint) are never planned — a plan
-        for a finished task is pure waste, even under ``force_replan``.
+        Every missing plan is produced HERE, before the run phase — parallel workers
+        (and their worktrees) must never plan. Tasks already completed (``done_ids``
+        checkpoint) are never planned — a plan for a finished task is pure waste,
+        even under ``force_replan``.
         """
         pending: list[tuple[int, Task]] = []
         for i, task in enumerate(tasks):
@@ -376,9 +377,6 @@ class DirectStrategy(Strategy):
             task_plan_file = f"knowledge/plan-{i + 1}.md"
             if not skip_planner and not force_replan and session.read(task_plan_file).strip():
                 log.info("plan exists for task %d — reusing", i + 1)
-                continue
-            if resume and not force_replan:
-                log.info("plan missing for task %d on resume — deferring", i + 1)
                 continue
             if skip_planner:
                 log.info("plan skipped for task %d (skip_planner)", i + 1)
@@ -390,26 +388,7 @@ class DirectStrategy(Strategy):
 
         def _plan_one(i: int, task: Task) -> None:
             try:
-                log.info("planning task %d with %s", i + 1, ladder.planner_model)
-                task_loc = session.read(f"knowledge/localization-{i + 1}.md")
-                prev_rounds = session.read("knowledge/previous_rounds.md")
-                code_ctx = "\n\n".join(
-                    filter(None, [prev_rounds, task_loc, task.filtered_context or localization])
-                )
-                with agentic_scope(session, "plan", i, 0):
-                    plan = _make_plan(
-                        task,
-                        ladder,
-                        code_ctx,
-                        session=session,
-                        trace=trace,
-                        iteration=0,
-                        tier=0,
-                        task_index=i,
-                    )
-                session.write(f"knowledge/plan-{i + 1}.md", f"# Plan\n\n{plan}\n")
-                if i == 0:
-                    session.write("knowledge/plan.md", f"# Plan\n\n{plan}\n")
+                _plan_task(task, session, ladder, localization, task_index=i, trace=trace)
             except Exception as e:
                 # swallow: planner unavailable; _run_task_loop plans per-task as fallback
                 log.warning("bulk planning skipped for task %d: %s", i + 1, e)
@@ -434,7 +413,6 @@ class DirectStrategy(Strategy):
         localization: str,
         trace: object = None,
         skip_planner: bool = False,
-        resume: bool = False,
         force_replan: bool = False,
         max_concurrency: int | None = None,
         done_ids: set[str] | None = None,
@@ -447,7 +425,6 @@ class DirectStrategy(Strategy):
             localization,
             trace=trace,
             skip_planner=skip_planner,
-            resume=resume,
             force_replan=force_replan,
             max_concurrency=max_concurrency,
             done_ids=done_ids,
@@ -549,24 +526,15 @@ class DirectStrategy(Strategy):
                 log.info("planner skipped by user — using corrections/guidance as plan")
                 plan = corrections or user_guidance or ""
             else:
-                log.info("planning with %s (once)", ladder.planner_model)
-                prev_rounds = session.read("knowledge/previous_rounds.md")
-                code_ctx = "\n\n".join(
-                    filter(None, [prev_rounds, task.filtered_context or localization])
+                plan = _plan_task(
+                    task,
+                    session,
+                    ladder,
+                    localization,
+                    task_index=task_index,
+                    trace=trace,
+                    tier=tier,
                 )
-                with agentic_scope(session, "plan", task_index, 0):
-                    plan = _make_plan(
-                        task,
-                        ladder,
-                        code_ctx,
-                        session=session,
-                        trace=trace,
-                        iteration=0,
-                        tier=tier,
-                        task_index=task_index,
-                    )
-                session.write("knowledge/plan.md", f"# Plan\n\n{plan}\n")
-                session.write(task_plan_file, f"# Plan\n\n{plan}\n")
 
         resolved = resolve_eval_skill(eval_skill or task.eval_skill)
         evaluator = Evaluator(ladder)
@@ -935,6 +903,45 @@ def _correction_context(knowledge: KnowledgeStore, latest: str) -> str:
         parts.append("## Session Knowledge\n" + "\n\n".join(notes))
 
     return "\n\n".join(parts)
+
+
+def _plan_task(
+    task: Task,
+    session: Session,
+    ladder: Ladder,
+    localization: str,
+    *,
+    task_index: int,
+    trace: object = None,
+    tier: int = 0,
+) -> str:
+    """Plan ONE task with its own context: per-task localization + prior rounds.
+
+    Writes ``knowledge/plan-{n}.md``; ``knowledge/plan.md`` mirrors task 1's plan
+    only — later tasks must never clobber it. Pure LLM call + session file writes;
+    no git, no worktree.
+    """
+    log.info("planning task %d with %s", task_index + 1, ladder.planner_model)
+    task_loc = session.read(f"knowledge/localization-{task_index + 1}.md")
+    prev_rounds = session.read("knowledge/previous_rounds.md")
+    code_ctx = "\n\n".join(
+        filter(None, [prev_rounds, task_loc, task.filtered_context or localization])
+    )
+    with agentic_scope(session, "plan", task_index, 0):
+        plan = _make_plan(
+            task,
+            ladder,
+            code_ctx,
+            session=session,
+            trace=trace,
+            iteration=0,
+            tier=tier,
+            task_index=task_index,
+        )
+    session.write(f"knowledge/plan-{task_index + 1}.md", f"# Plan\n\n{plan}\n")
+    if task_index == 0:
+        session.write("knowledge/plan.md", f"# Plan\n\n{plan}\n")
+    return plan
 
 
 def _make_plan(

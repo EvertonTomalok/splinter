@@ -200,7 +200,7 @@ class TestExecuteResume:
         assert "US-001" in checkpoints_after[0]
         assert {"US-001", "US-002"} == checkpoints_after[1]
 
-    def test_resume_plan_phase_reuses_only_and_defers_missing(self, tmp_path: Path) -> None:
+    def test_resume_plan_phase_skips_done_and_plans_missing_in_bulk(self, tmp_path: Path) -> None:
         session = self._make_session(tmp_path)
         session.write("knowledge/plan-1.md", "# Plan\n\nexisting\n")
         # Task 1 is checkpointed/done; task 2 has no precomputed plan.
@@ -212,13 +212,16 @@ class TestExecuteResume:
         strategy = CascadeStrategy()
         fake_ladder = MagicMock()
 
-        with patch("splinter.strategies.direct._make_plan") as make_plan:
+        with patch("splinter.strategies.direct._make_plan", return_value="bulk plan") as make_plan:
             with patch.object(strategy, "_run_task_loop", return_value=_fake_result()):
                 with patch.object(strategy, "_start_tier", return_value=0):
                     strategy.execute([t1, t2], session, fake_ladder, resume=True, cowabunga=True)
 
-        # Resume bulk-plan must not proactively generate missing plans.
-        make_plan.assert_not_called()
+        # Resume bulk-plan generates every missing plan up front (task 2 only —
+        # task 1 is done), so run-phase workers/worktrees never plan.
+        assert make_plan.call_count == 1
+        assert make_plan.call_args[0][0] is t2
+        assert "bulk plan" in session.read("knowledge/plan-2.md")
 
 
 # ---------------------------------------------------------------------------
@@ -357,9 +360,7 @@ class TestParallelDag:
         strategy = CascadeStrategy()
         fake_ladder = MagicMock()
         fake_ladder.effort_mapping.return_value = None
-        with patch(
-            "splinter.vcs.worktree.worktree_supported", return_value=use_worktrees
-        ):
+        with patch("splinter.vcs.worktree.worktree_supported", return_value=use_worktrees):
             with patch.object(strategy, "_run_plan_phase", return_value=None):
                 with patch.object(strategy, "_run_task_loop", side_effect=fake_loop):
                     with patch.object(strategy, "_start_tier", return_value=0):

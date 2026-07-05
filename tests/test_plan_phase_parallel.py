@@ -73,30 +73,68 @@ def test_plan_phase_reuses_existing_plans(
     assert "old plan 2" in tmp_session.read("knowledge/plan-2.md")
 
 
-def test_plan_phase_resume_ignores_existing_and_defers_missing(
+def test_plan_phase_resume_reuses_existing_and_plans_missing_concurrently(
     monkeypatch: pytest.MonkeyPatch, tmp_session: Session
 ) -> None:
-    """On resume the bulk plan phase never plans: existing reused, missing deferred."""
+    """Resume: existing plans reused untouched; missing ones planned in bulk,
+    concurrently, BEFORE the run phase — never inside per-task workers."""
     tmp_session.write("knowledge/plan-1.md", "# Plan\n\nold plan\n")
+    barrier = threading.Barrier(2, timeout=10)
+    planned: list[str] = []
+    lock = threading.Lock()
 
-    def fake_make_plan(*args: object, **kwargs: object) -> str:
-        raise AssertionError("planner must not run in bulk phase on resume")
+    def fake_make_plan(task: Task, ladder: object, code_ctx: str, **kwargs: object) -> str:
+        with lock:
+            planned.append(task.description)
+        barrier.wait()
+        return f"plan for {task.description}"
 
     monkeypatch.setattr(direct_mod, "_make_plan", fake_make_plan)
 
-    tasks = [Task(description=f"task-{i}", acceptance="ok") for i in range(2)]
+    tasks = [Task(description=f"task-{i}", acceptance="ok") for i in range(3)]
 
     DirectStrategy()._plan_all_tasks(
         tasks,
         tmp_session,
         load_ladder(),
         localization="",
-        resume=True,
         max_concurrency=2,
     )
 
     assert "old plan" in tmp_session.read("knowledge/plan-1.md")
-    assert not tmp_session.read("knowledge/plan-2.md").strip()
+    assert sorted(planned) == ["task-1", "task-2"]
+    assert "plan for task-1" in tmp_session.read("knowledge/plan-2.md")
+    assert "plan for task-2" in tmp_session.read("knowledge/plan-3.md")
+
+
+def test_plan_task_uses_per_task_localization_and_keeps_shared_plan(
+    monkeypatch: pytest.MonkeyPatch, tmp_session: Session
+) -> None:
+    """Per-task planning (cascade): task N>0 must read localization-N.md and must
+    NOT clobber knowledge/plan.md (mirror of task 1's plan only)."""
+    tmp_session.write("knowledge/plan.md", "# Plan\n\ntask-0 plan\n")
+    tmp_session.write("knowledge/localization-2.md", "loc-for-task-2")
+    seen_ctx: list[str] = []
+
+    def fake_make_plan(task: Task, ladder: object, code_ctx: str, **kwargs: object) -> str:
+        seen_ctx.append(code_ctx)
+        return "plan-2-body"
+
+    monkeypatch.setattr(direct_mod, "_make_plan", fake_make_plan)
+
+    task = Task(description="second", acceptance="ok", id="US-002")
+    plan = direct_mod._plan_task(
+        task,
+        tmp_session,
+        load_ladder(),
+        localization="global-loc",
+        task_index=1,
+    )
+
+    assert plan == "plan-2-body"
+    assert "loc-for-task-2" in seen_ctx[0]
+    assert "plan-2-body" in tmp_session.read("knowledge/plan-2.md")
+    assert "task-0 plan" in tmp_session.read("knowledge/plan.md")
 
 
 def test_plan_phase_skips_completed_tasks(
