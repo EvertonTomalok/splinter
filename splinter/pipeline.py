@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import subprocess
@@ -20,6 +21,7 @@ from splinter.obs.agentic import agentic_scope
 from splinter.obs.errors import report_obs_error
 from splinter.obs.trace import Trace
 from splinter.providers.base import ProviderGapError
+from splinter.scheduling import default_max_concurrency
 from splinter.strategies.base import AskUserPause, GracefulPause, ManualValidationPause
 from splinter.strategies.registry import available_strategies, get_strategy
 
@@ -191,7 +193,7 @@ def _load_tasks_from_prd(prd_path: str) -> tuple[list[Task], str | None]:
     text = Path(prd_path).read_text()
     fm, _body = planner._parse_frontmatter(text)
     strategy = fm.get("strategy")
-    tasks = planner.parse_stories(text)
+    tasks = planner.Planner().plan(text)
     return tasks, strategy
 
 
@@ -442,6 +444,7 @@ def _localize_and_filter(
     single_shot: bool,
     resume: bool,
     resume_round: int,
+    max_concurrency: int | None = None,
 ) -> tuple[str, list[CodeAnchor]]:
     """Run localization then per-task context filtering. Mutates task.filtered_context."""
     localization = ""
@@ -463,7 +466,7 @@ def _localize_and_filter(
     else:
         log.info("localizing against the codebase…")
         with agentic_scope(session, "locate", 0, 0):
-            anchors = localize(prd_text, session, ladder)
+            anchors = localize(prd_text, session, ladder, max_concurrency=max_concurrency)
         localization = session.read("knowledge/localization.md")
 
     if not (anchors and tasks and not single_shot):
@@ -472,6 +475,8 @@ def _localize_and_filter(
     planner.assign_target_files(tasks, anchors)
     session.set_status("running", stage="filter")
     log.info("filtering code context per task…")
+
+    pending: list[tuple[int, Task, str]] = []
     for i, task in enumerate(tasks):
         cache_key = f"knowledge/filter-{i + 1}.md"
         cached = session.read(cache_key)
@@ -479,9 +484,41 @@ def _localize_and_filter(
             task.filtered_context = cached
             log.info("resume: reusing filtered context for task %d", i + 1)
         else:
-            task.filtered_context = filter_task_context(task, ladder, session=session)
-            if task.filtered_context:
-                session.write(cache_key, task.filtered_context)
+            pending.append((i, task, cache_key))
+
+    if pending:
+        filter_limit = max_concurrency if max_concurrency else default_max_concurrency()
+
+        async def _one(t: Task, cache_key: str) -> str:
+            result = await asyncio.to_thread(filter_task_context, t, ladder, session=session)
+            if result:
+                session.write(cache_key, result)
+            return result
+
+        async def _run_all() -> None:
+            sem = asyncio.Semaphore(max(1, min(filter_limit, len(pending))))
+
+            async def _guarded(task: Task, cache_key: str) -> str:
+                async with sem:
+                    return await _one(task, cache_key)
+
+            raw = await asyncio.gather(
+                *(_guarded(task, cache_key) for _idx, task, cache_key in pending),
+                return_exceptions=True,
+            )
+
+            first_exc: BaseException | None = None
+            for (_idx, task, _cache_key), outcome in zip(pending, raw, strict=True):
+                if isinstance(outcome, BaseException):
+                    if first_exc is None:
+                        first_exc = outcome
+                else:
+                    task.filtered_context = outcome
+
+            if first_exc is not None:
+                raise first_exc
+
+        asyncio.run(_run_all())
 
     for i, task in enumerate(tasks):
         loc_key = f"knowledge/localization-{i + 1}.md"
@@ -745,7 +782,7 @@ def run_pipeline(
         localization, anchors = ("", [])
         if not rs.from_final_eval:
             localization, anchors = _localize_and_filter(
-                session, ladder, prd_text, tasks, single_shot, resume, rs.round
+                session, ladder, prd_text, tasks, single_shot, resume, rs.round, max_concurrency
             )
 
         _resolve_gate(session, ladder, tasks)

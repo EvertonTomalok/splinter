@@ -6,14 +6,16 @@ import json
 import logging
 import re
 import shutil
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 from splinter.memory.knowledge import KnowledgeStore
 from splinter.memory.session import Session
 from splinter.models.roster import Ladder
-from splinter.obs.agentic import record_exchange
+from splinter.obs.agentic import agentic_scope, record_exchange
 from splinter.providers.base import ProviderGapError
 from splinter.providers.dispatch import run_text
+from splinter.scheduling import default_max_concurrency
 from splinter.tools import search as search_tools
 
 log = logging.getLogger("splinter.localizer")
@@ -450,6 +452,103 @@ def filter_task_context(
         )
 
 
+_US_STORY_HEADER_RE = re.compile(r"^###\s+US-\d+:.*$", re.MULTILINE)
+
+
+def _localize_items(prd_text: str) -> list[str]:
+    matches = list(_US_STORY_HEADER_RE.finditer(prd_text))
+    if len(matches) < 2:
+        return [prd_text]
+
+    preamble = prd_text[: matches[0].start()].strip()
+    context_block = f"## PRD context\n\n{preamble}\n\n" if preamble else ""
+
+    items: list[str] = []
+    for i, m in enumerate(matches):
+        start = m.start()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(prd_text)
+        story_text = prd_text[start:end].strip()
+        items.append(f"{context_block}{story_text}" if context_block else story_text)
+    return items
+
+
+def _localize_item(
+    index: int,
+    item_text: str,
+    ladder: Ladder,
+    *,
+    repo_path: str = ".",
+    session: Session,
+) -> list[CodeAnchor]:
+    """Opens its own agentic_scope — ContextVars don't cross thread boundaries."""
+    with agentic_scope(session, "locate", index, 0):
+        log.info("localize[%d]: running search tools", index)
+        search_results = _run_search_tools(item_text, repo_path)
+
+        # Big repos blow past a small context — switch to the large-context model.
+        recall_model = ladder.localizer_recall_model
+        recall_variant = ladder.localizer_recall_variant
+        recall_timeout = ladder.localizer_recall_timeout
+        if len(search_results) > LARGE_CONTEXT_CHARS and ladder.localizer_recall_large_model:
+            recall_model = ladder.localizer_recall_large_model
+            recall_variant = ladder.localizer_recall_large_variant
+            recall_timeout = ladder.localizer_recall_large_timeout
+            log.info("localize[%d]: large search context → %s", index, recall_model)
+
+        log.info("localize[%d]: recall via %s", index, recall_model)
+        try:
+            recall_output = _recall_phase(
+                item_text,
+                search_results,
+                recall_model,
+                recall_variant,
+                recall_timeout,
+                agent=ladder.localizer_agent,
+                session=session,
+            )
+        except (ProviderGapError, RuntimeError) as e:
+            log.warning(
+                "localize[%d]: recall model failed (%s), retrying with fallback model",
+                index,
+                type(e).__name__,
+            )
+            recall_output = _recall_phase(
+                item_text,
+                search_results,
+                ladder.localizer_recall_fallback_model,
+                recall_variant,
+                recall_timeout,
+                agent=ladder.localizer_agent,
+                session=session,
+            )
+
+        # Prefer structured anchors (file + symbol + reason) so per-task targeting in
+        # assign_target_files can actually match; fall back to bare file paths if the
+        # cheap model didn't emit parseable JSON.
+        anchors = _parse_anchors(
+            recall_output,
+            hot=ladder.localizer_relevance_hot,
+            medium=ladder.localizer_relevance_medium,
+        ) or _anchors_from_recall(recall_output)
+
+        # Log a warning whenever the recall model omitted the reason field — _norm_reason
+        # fills it with a generated fallback, but the model SHOULD be returning it.
+        generated_reasons = [
+            a.file for a in anchors
+            if a.reason.startswith("contains ") or a.reason.startswith("relevant to ")
+        ]
+        if generated_reasons:
+            log.warning(
+                "localize[%d]: recall model omitted 'reason' for %d anchor(s): %s — "
+                "using generated fallback reasons",
+                index,
+                len(generated_reasons),
+                generated_reasons[:5],
+            )
+
+    return anchors
+
+
 def localize(
     prd_text: str,
     session: Session,
@@ -457,8 +556,13 @@ def localize(
     *,
     repo_path: str = ".",
     force: bool = False,
+    max_concurrency: int | None = None,
 ) -> list[CodeAnchor]:
     """Recall-only localization: grep → cheap LLM → candidate file list.
+
+    Runs each localize item concurrently (US-001 primitive), then reassembles
+    results in input order on the calling thread — the sole writer — so
+    ``localization.md`` is written exactly once, deterministically.
 
     Returns CodeAnchors (file paths). The per-task filter (``filter_task_context``)
     runs in the pipeline immediately after this, before planning.
@@ -473,65 +577,34 @@ def localize(
         if anchors:
             return anchors
 
-    # Run deterministic search tools FIRST, then feed results to LLM
-    log.info("localize: running search tools")
-    search_results = _run_search_tools(prd_text, repo_path)
+    items = _localize_items(prd_text)
 
-    # Big repos blow past a small context — switch to the large-context model.
-    recall_model = ladder.localizer_recall_model
-    recall_variant = ladder.localizer_recall_variant
-    recall_timeout = ladder.localizer_recall_timeout
-    if len(search_results) > LARGE_CONTEXT_CHARS and ladder.localizer_recall_large_model:
-        recall_model = ladder.localizer_recall_large_model
-        recall_variant = ladder.localizer_recall_large_variant
-        recall_timeout = ladder.localizer_recall_large_timeout
-        log.info("localize: large search context → %s", recall_model)
+    results: list[list[CodeAnchor]] = [[] for _ in items]
+    cap = max_concurrency if max_concurrency else default_max_concurrency()
+    cap = max(1, min(len(items), cap))
+    with ThreadPoolExecutor(max_workers=cap) as ex:
+        futs = {
+            ex.submit(
+                _localize_item, i, item, ladder, repo_path=repo_path, session=session
+            ): i
+            for i, item in enumerate(items)
+        }
+        for fut in futs:
+            results[futs[fut]] = fut.result()
 
-    log.info("localize: recall via %s", recall_model)
-    try:
-        recall_output = _recall_phase(
-            prd_text,
-            search_results,
-            recall_model,
-            recall_variant,
-            recall_timeout,
-            agent=ladder.localizer_agent,
-            session=session,
-        )
-    except (ProviderGapError, RuntimeError) as e:
-        log.warning("recall model failed (%s), retrying with fallback model", type(e).__name__)
-        recall_output = _recall_phase(
-            prd_text,
-            search_results,
-            ladder.localizer_recall_fallback_model,
-            recall_variant,
-            recall_timeout,
-            agent=ladder.localizer_agent,
-            session=session,
-        )
-
-    # Prefer structured anchors (file + symbol + reason) so per-task targeting in
-    # assign_target_files can actually match; fall back to bare file paths if the
-    # cheap model didn't emit parseable JSON.
-    anchors = _parse_anchors(
-        recall_output,
-        hot=ladder.localizer_relevance_hot,
-        medium=ladder.localizer_relevance_medium,
-    ) or _anchors_from_recall(recall_output)
-
-    # Log a warning whenever the recall model omitted the reason field — _norm_reason
-    # fills it with a generated fallback, but the model SHOULD be returning it.
-    generated_reasons = [
-        a.file for a in anchors
-        if a.reason.startswith("contains ") or a.reason.startswith("relevant to ")
-    ]
-    if generated_reasons:
-        log.warning(
-            "localize: recall model omitted 'reason' for %d anchor(s): %s — "
-            "using generated fallback reasons",
-            len(generated_reasons),
-            generated_reasons[:5],
-        )
+    # Reassemble by submit index, not completion order, for determinism.
+    if len(items) > 1:
+        anchors = []
+        seen: set[tuple[str, str]] = set()
+        for chunk in results:
+            for a in chunk:
+                key = (a.file, a.symbol)
+                if key not in seen:
+                    seen.add(key)
+                    anchors.append(a)
+    else:
+        # No dedup for N=1 — stays byte-identical to the pre-concurrency baseline.
+        anchors = results[0]
 
     # Deterministically inject AGENTS.md / CLAUDE.md / skill files the LLM missed.
     existing_files = {a.file for a in anchors}
@@ -548,8 +621,6 @@ def localize(
         log.warning("localize: no anchors found — skipping write to preserve existing")
         return anchors
 
-    # Write in the key:value block format _parse_anchors reads,
-    # including line_start/line_end when the LLM provided them.
     lines: list[str] = ["# Localization\n"]
     for a in anchors:
         block = f"file: {a.file}\nsymbol: {a.symbol}\n"
@@ -562,8 +633,7 @@ def localize(
             block += f"relevance: {a.relevance}\n"
         lines.append(block)
 
-    # Localization lives in the run's knowledge store (knowledge/localization.md) —
-    # the single home for run-valuable memory — not loose at the session root.
+    # knowledge/ is the single home for run-valuable memory, not the session root.
     ks = KnowledgeStore(session)
     ks.write_note("localization", "\n".join(lines) + "\n")
 
