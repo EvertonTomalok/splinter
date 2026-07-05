@@ -3,8 +3,17 @@
 from __future__ import annotations
 
 import subprocess
+import threading
 from dataclasses import dataclass
 from pathlib import Path
+
+#: Process-wide guard so only ONE squash-merge (plus its conflict resolution) runs
+#: at a time. Parallel workers each merge their task branch into the shared main
+#: tree; a merge that stops to resolve conflicts leaves the index half-staged, so
+#: a second merge starting concurrently would build on a poisoned index. Holding
+#: this for the whole merge+resolve+commit keeps every merge atomic against the
+#: others regardless of which caller invokes it.
+_MERGE_SEMAPHORE = threading.Semaphore(1)
 
 
 class WorktreeMergeConflict(Exception):
@@ -87,12 +96,51 @@ def commit_worktree(handle: WorktreeHandle, message: str = "") -> bool:
     return result.returncode == 0
 
 
+def _unmerged_paths(cwd: Path) -> list[str]:
+    """Paths left in a conflicted (unmerged) state in the index."""
+    r = subprocess.run(
+        ["git", "diff", "--name-only", "--diff-filter=U"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    return [p for p in r.stdout.splitlines() if p.strip()]
+
+
+def branch_has_unmerged_commits(
+    handle: WorktreeHandle, base_branch: str = "", base_dir: Path | None = None
+) -> bool:
+    """True if ``handle.branch`` has commits not on ``base_branch``.
+
+    The merge decision must key on "does the branch carry work" — not on whether
+    *this* invocation of ``commit_worktree`` created a fresh commit. On resume a
+    task's work is already committed on its branch from the prior run: without
+    this check the merge is skipped and the branch discarded on teardown,
+    silently losing a PASSed task's output.
+    """
+    cwd = base_dir or Path.cwd()
+    base = base_branch or "HEAD"
+    r = subprocess.run(
+        ["git", "rev-list", "--count", f"{base}..{handle.branch}"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    if r.returncode != 0:
+        return False
+    return r.stdout.strip() not in ("", "0")
+
+
 def squash_merge(
     handle: WorktreeHandle, base_branch: str = "", base_dir: Path | None = None
 ) -> None:
     """Squash-merge handle.branch into base_branch (default: current HEAD branch).
 
-    Raises WorktreeMergeConflict on merge conflict. No auto-resolve.
+    Serialised process-wide by ``_MERGE_SEMAPHORE`` so no two merges interleave.
+    On conflict the merge is **resolved, never abandoned**: the task branch was
+    validated by eval in isolation, so its version wins on conflicting paths.
+    Only a non-content failure (index locked, unconcluded merge) is rolled back
+    and re-raised as ``WorktreeMergeConflict``.
     """
     cwd = base_dir or Path.cwd()
     if not base_branch:
@@ -105,24 +153,66 @@ def squash_merge(
         )
         base_branch = r.stdout.strip()
 
-    result = subprocess.run(
-        ["git", "merge", "--squash", handle.branch],
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        raise WorktreeMergeConflict(
-            f"squash merge of {handle.branch!r} into {base_branch!r} failed:\n"
-            f"{result.stderr.strip()}"
+    with _MERGE_SEMAPHORE:
+        result = subprocess.run(
+            ["git", "merge", "--squash", handle.branch],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
         )
-    subprocess.run(
-        ["git", "commit", "-m", f"squash: {handle.task_id} results"],
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-        check=True,
-    )
+        if result.returncode != 0:
+            conflicted = _unmerged_paths(cwd)
+            if not conflicted:
+                # Not a content conflict (dirty/locked index, unconcluded merge):
+                # restore the tree and surface it — nothing to auto-resolve.
+                subprocess.run(
+                    ["git", "reset", "--hard", "HEAD"], cwd=cwd, capture_output=True, text=True
+                )
+                raise WorktreeMergeConflict(
+                    f"squash merge of {handle.branch!r} into {base_branch!r} failed:\n"
+                    f"{result.stderr.strip()}"
+                )
+            # Resolve toward the task branch ("theirs" in a squash merge): each
+            # task PASSed against its own tree, so that tree is the validated one.
+            for path in conflicted:
+                co = subprocess.run(
+                    ["git", "checkout", "--theirs", "--", path],
+                    cwd=cwd,
+                    capture_output=True,
+                    text=True,
+                )
+                if co.returncode == 0:
+                    subprocess.run(
+                        ["git", "add", "--", path], cwd=cwd, capture_output=True, text=True
+                    )
+                else:
+                    # modify/delete conflict: the task removed the file — honour that.
+                    subprocess.run(
+                        ["git", "rm", "--force", "--", path],
+                        cwd=cwd,
+                        capture_output=True,
+                        text=True,
+                    )
+            still = _unmerged_paths(cwd)
+            if still:
+                subprocess.run(
+                    ["git", "reset", "--hard", "HEAD"], cwd=cwd, capture_output=True, text=True
+                )
+                raise WorktreeMergeConflict(
+                    f"squash merge of {handle.branch!r} into {base_branch!r} left "
+                    f"unresolved paths: {', '.join(still)}"
+                )
+
+        # Commit only if the merge actually staged something — an ahead branch whose
+        # diff is already in base squashes to an empty index (no-op, not an error).
+        if subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=cwd).returncode != 0:
+            subprocess.run(
+                ["git", "commit", "-m", f"squash: {handle.task_id} results"],
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
 
 
 def teardown_worktree(handle: WorktreeHandle, base_dir: Path | None = None) -> None:

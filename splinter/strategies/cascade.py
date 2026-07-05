@@ -413,6 +413,7 @@ class CascadeStrategy(DirectStrategy):
     ) -> tuple[RunResult | None, bool]:
         from splinter.vcs.worktree import (
             WorktreeMergeConflict,
+            branch_has_unmerged_commits,
             commit_worktree,
             create_worktree,
             squash_merge,
@@ -490,8 +491,11 @@ class CascadeStrategy(DirectStrategy):
             if outcome.passed:
                 with git_lock:
                     try:
-                        committed = commit_worktree(handle)
-                        if committed:
+                        commit_worktree(handle)
+                        # Merge on "branch carries work", not "this run committed" —
+                        # on resume the work is already committed from a prior run;
+                        # keying on a fresh commit would drop it on teardown.
+                        if branch_has_unmerged_commits(handle):
                             squash_merge(handle)
                             log.info("parallel: squash-merged %s", task.id)
                         else:

@@ -86,12 +86,18 @@ class TestWorktreeLifecycle:
             branch="splinter/US-001",
             task_id="US-001",
         )
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=0, stdout="main\n", stderr="")
+
+        def fake_run(cmd: list[str], **kw: object) -> MagicMock:
+            # `git diff --cached --quiet` exits non-zero when something is staged,
+            # which is what gates the commit — model a clean merge with changes.
+            rc = 1 if ("diff" in cmd and "--quiet" in cmd) else 0
+            return MagicMock(returncode=rc, stdout="main\n", stderr="")
+
+        with patch("subprocess.run", side_effect=fake_run) as mock_run:
             squash_merge(handle, base_branch="main", base_dir=tmp_path)
-        assert mock_run.call_count == 2
-        merge_call = mock_run.call_args_list[0][0][0]
-        assert "--squash" in merge_call
+        cmds = [c[0][0] for c in mock_run.call_args_list]
+        assert ["--squash" in c for c in cmds].count(True) == 1
+        assert any("commit" in c for c in cmds)  # staged merge is committed
 
     def test_commit_worktree_stages_and_commits_returns_true(self, tmp_path: Path) -> None:
         handle = WorktreeHandle(path=tmp_path / "wt", branch="splinter/US-001", task_id="US-001")
