@@ -9,6 +9,7 @@ trajectory is updated. The loop repeats as many times as the user wants.
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -16,7 +17,7 @@ from splinter.agents.gate import run_gate, task_languages
 from splinter.agents.runner import RunResult, Task, _build_prompt
 from splinter.memory.session import Session
 from splinter.models.roster import Ladder, provider_for
-from splinter.obs.agentic import record_exchange
+from splinter.obs.agentic import _now_iso, record_exchange
 from splinter.obs.trace import RunEntry, Trace
 from splinter.providers.dispatch import run_text
 from splinter.providers.registry import get_provider
@@ -145,12 +146,15 @@ def run_phase(
 
     run_prompt = _build_prompt(task, plan, localization="", corrections="", is_continuation=False)
     provider = get_provider(provider_for(cfg.run_model))
+    _t0 = time.monotonic()
+    _ts = _now_iso()
     response = provider.run(
         run_prompt,
         cfg.run_model,
         variant=cfg.run_effort if cfg.run_effort != "auto" else None,
         timeout=None,
     )
+    latency = time.monotonic() - _t0
     record_exchange(run_prompt, response.text, model=cfg.run_model)
 
     result = RunResult(
@@ -161,6 +165,8 @@ def run_phase(
         cost=response.cost,
         raw=response.raw,
         opencode_session=response.session_id,
+        latency_s=latency,
+        ts=_ts,
     )
 
     trace.entries.append(
@@ -170,9 +176,10 @@ def run_phase(
             iteration=n,
             tokens=result.tokens,
             cost=result.cost,
-            latency_s=0.0,
+            latency_s=result.latency_s,
             task=0,
             role="phase",
+            ts=result.ts,
         )
     )
     session.write("trace.md", trace.summary())

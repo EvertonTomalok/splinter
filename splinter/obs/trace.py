@@ -116,10 +116,11 @@ class Trace:
             task_prefix = f"task {e.task} " if e.task else ""
             role_label = "eval" if e.role == "eval" else f"T{e.tier}"
             indet_marker = " [!cost]" if e.cost_indeterminate else ""
+            ts_suffix = f" @ {e.ts}" if e.ts else ""
             lines.append(
                 f"- {task_prefix}iter {e.iteration}: {e.model} "
                 f"({role_label}) tokens={e.tokens} "
-                f"cost=${e.cost:.4f}{indet_marker} {e.latency_s:.1f}s"
+                f"cost=${e.cost:.4f}{indet_marker} {e.latency_s:.1f}s{ts_suffix}"
             )
         return "\n".join(lines) + "\n"
 
@@ -128,7 +129,7 @@ class Trace:
         trace = cls()
         run_pattern = re.compile(
             r"- (?:task (\d+) )?iter (\d+): (.+?) \((?:T(\d+)|eval)\) "
-            r"tokens=\{([^}]*)\} cost=\$([\d.]+)( \[!cost\])? ([\d.]+)s"
+            r"tokens=\{([^}]*)\} cost=\$([\d.]+)( \[!cost\])? ([\d.]+)s(?: @ (\S+))?"
         )
         for m in run_pattern.finditer(md):
             task = int(m.group(1)) if m.group(1) else 0
@@ -146,6 +147,7 @@ class Trace:
             cost = float(m.group(6))
             cost_indeterminate = m.group(7) is not None
             latency = float(m.group(8))
+            ts = m.group(9) or ""
             trace.entries.append(
                 RunEntry(
                     model=model,
@@ -157,6 +159,7 @@ class Trace:
                     task=task,
                     role=role,
                     cost_indeterminate=cost_indeterminate,
+                    ts=ts,
                 )
             )
         return trace
@@ -170,8 +173,9 @@ def log_run(trace: Trace, result: RunResult, iteration: int, task: int = 0) -> N
             iteration=iteration,
             tokens=result.tokens,
             cost=result.cost,
-            latency_s=0.0,
+            latency_s=result.latency_s,
             task=task,
             cost_indeterminate=result.cost_indeterminate,
+            ts=result.ts,
         )
     )

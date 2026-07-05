@@ -135,6 +135,22 @@ def _task_ranges(loop_md: str) -> list[tuple[int, str, int, int]]:
     return out
 
 
+def _is_parallel_mode(loop_md: str) -> bool:
+    return bool(re.search(r"^# Task \d+ \[parallel\]:", loop_md, re.MULTILINE))
+
+
+def _running_tasks(session: Session) -> list[int]:
+    runs_dir = session.dir / "runs"
+    if not runs_dir.exists():
+        return []
+    tasks: set[int] = set()
+    for path in runs_dir.glob("task-*-iter-*.md"):
+        m = re.match(r"task-(\d+)-iter-\d+\.md$", path.name)
+        if m:
+            tasks.add(int(m.group(1)))
+    return sorted(tasks)
+
+
 def _tasks(loop_md: str) -> list[tuple[int, str, str]]:
     r"""Parse loop.md into (task_no, title, body) tuples per task header.
 
@@ -645,10 +661,14 @@ def render_overview(session: Session, state: str) -> str:
     # Single-shot (raphael): one task, many stories — surface the story count.
     if str(n_tasks) == "1" and n_stories > 1:
         task_label += f"  [dim]·[/]  [b]{n_stories}[/] [dim]stories[/]"
+    
+    parallel_mode = _is_parallel_mode(loop)
+    parallel_label = " [dim]·[/] [cyan]parallel[/]" if parallel_mode else ""
+    
     lines = [
         f"[bold]splinter[/] · [cyan]{session.id}[/]",
         f"{emoji} [bold {state_color}]{state}[/]  [dim]·[/]  "
-        f"[b]{status.get('strategy', '?')}[/]  [dim]·[/]  "
+        f"[b]{status.get('strategy', '?')}[/]{parallel_label}  [dim]·[/]  "
         f"{task_label}",
     ]
     if completed:

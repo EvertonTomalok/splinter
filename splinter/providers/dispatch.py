@@ -14,9 +14,11 @@ call, with no separate stage-level logging.
 
 from __future__ import annotations
 
+import time
 from dataclasses import replace
 
 from splinter.models.roster import provider_for
+from splinter.obs.agentic import _now_iso
 from splinter.obs.trace import RunEntry
 from splinter.providers.base import ProviderResponse
 from splinter.providers.registry import get_provider
@@ -33,6 +35,8 @@ def _log_trace(
     task_index: int,
     role: str,
     cost_indeterminate: bool = False,
+    latency_s: float = 0.0,
+    ts: str = "",
 ) -> None:
     if cost <= 0 and sum(tokens.values()) <= 0 and not cost_indeterminate:
         return
@@ -43,10 +47,11 @@ def _log_trace(
             iteration=iteration,
             tokens=tokens,
             cost=cost,
-            latency_s=0.0,
+            latency_s=latency_s,
             task=task_index,
             role=role,
             cost_indeterminate=cost_indeterminate,
+            ts=ts,
         )
     )
 
@@ -60,6 +65,8 @@ def _log_trace_from_exc(
     iteration: int,
     task_index: int,
     role: str,
+    latency_s: float = 0.0,
+    ts: str = "",
 ) -> None:
     tokens: dict[str, int] = getattr(exc, "tokens", {}) or {}
     cost: float = getattr(exc, "cost", 0.0) or 0.0
@@ -72,9 +79,10 @@ def _log_trace_from_exc(
             iteration=iteration,
             tokens=tokens,
             cost=cost,
-            latency_s=0.0,
+            latency_s=latency_s,
             task=task_index,
             role=role,
+            ts=ts,
         )
     )
 
@@ -115,6 +123,8 @@ def run_text(
 
     warn_missing_model_pricing(model)
     provider = get_provider(provider_for(model))
+    _t0 = time.monotonic()
+    _ts = _now_iso()
     try:
         resp = provider.run(
             prompt,
@@ -127,7 +137,15 @@ def run_text(
     except Exception as exc:
         if trace is not None:
             _log_trace_from_exc(
-                trace, model, exc, tier=tier, iteration=iteration, task_index=task_index, role=role
+                trace,
+                model,
+                exc,
+                tier=tier,
+                iteration=iteration,
+                task_index=task_index,
+                role=role,
+                latency_s=time.monotonic() - _t0,
+                ts=_ts,
             )
         raise
     if trace is not None:
@@ -141,6 +159,8 @@ def run_text(
             task_index=task_index,
             role=role,
             cost_indeterminate=resp.cost_indeterminate,
+            latency_s=time.monotonic() - _t0,
+            ts=_ts,
         )
     if session is not None:
         _log_session(session, model, resp.tokens, resp.cost)
@@ -166,6 +186,8 @@ def run_text_session(
     session id). Used by the evaluator to keep one conversation across retries of
     the same runner — pass the returned id back in to continue it."""
     provider = get_provider(provider_for(model))
+    _t0 = time.monotonic()
+    _ts = _now_iso()
     try:
         resp = provider.run(
             prompt,
@@ -179,7 +201,15 @@ def run_text_session(
     except Exception as exc:
         if trace is not None:
             _log_trace_from_exc(
-                trace, model, exc, tier=tier, iteration=iteration, task_index=task_index, role=role
+                trace,
+                model,
+                exc,
+                tier=tier,
+                iteration=iteration,
+                task_index=task_index,
+                role=role,
+                latency_s=time.monotonic() - _t0,
+                ts=_ts,
             )
         raise
     if trace is not None:
@@ -193,6 +223,8 @@ def run_text_session(
             task_index=task_index,
             role=role,
             cost_indeterminate=resp.cost_indeterminate,
+            latency_s=time.monotonic() - _t0,
+            ts=_ts,
         )
     sid = resp.session_id or session
     return resp.text, sid
@@ -221,6 +253,8 @@ def run_provider_session(
     parallel task edits (and is gated on) its own git worktree, not the main repo.
     """
     provider = get_provider(provider_for(model))
+    _t0 = time.monotonic()
+    _ts = _now_iso()
     try:
         resp = provider.run(
             prompt,
@@ -235,7 +269,15 @@ def run_provider_session(
     except Exception as exc:
         if trace is not None:
             _log_trace_from_exc(
-                trace, model, exc, tier=tier, iteration=iteration, task_index=task_index, role=role
+                trace,
+                model,
+                exc,
+                tier=tier,
+                iteration=iteration,
+                task_index=task_index,
+                role=role,
+                latency_s=time.monotonic() - _t0,
+                ts=_ts,
             )
         raise
     if trace is not None:
@@ -249,6 +291,8 @@ def run_provider_session(
             task_index=task_index,
             role=role,
             cost_indeterminate=resp.cost_indeterminate,
+            latency_s=time.monotonic() - _t0,
+            ts=_ts,
         )
     sid = resp.session_id or session or None
     if resp.session_id != sid:

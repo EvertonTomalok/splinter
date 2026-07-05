@@ -181,6 +181,9 @@ def _deserialize_run_result(data: dict[str, Any]) -> RunResult:
         cost=float(data.get("cost", 0.0)),
         raw=data.get("raw") or {},
         opencode_session=data.get("opencode_session") or None,
+        cost_indeterminate=bool(data.get("cost_indeterminate", False)),
+        latency_s=float(data.get("latency_s", 0.0)),
+        ts=str(data.get("ts", "")),
     )
 
 

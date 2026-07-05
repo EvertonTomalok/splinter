@@ -9,7 +9,7 @@ from typing import Any
 
 from splinter.enums import Effort, Variant
 from splinter.models.roster import Ladder
-from splinter.obs.agentic import record_exchange
+from splinter.obs.agentic import _now_iso, record_exchange
 from splinter.templating import render, section
 
 log = logging.getLogger("splinter.runner")
@@ -92,6 +92,8 @@ class RunResult:
     raw: dict[str, Any]
     opencode_session: str | None = None
     cost_indeterminate: bool = False
+    latency_s: float = 0.0
+    ts: str = ""
 
 
 def resolve_variant(
@@ -183,6 +185,8 @@ def run_task(
     from splinter.providers.dispatch import run_provider_session
 
     response = None
+    _t0 = time.monotonic()
+    _ts = _now_iso()
     for attempt in range(_MAX_GAP_RETRIES + 1):
         try:
             response, _sid = run_provider_session(
@@ -216,6 +220,7 @@ def run_task(
             )
             time.sleep(wait)
     assert response is not None
+    latency = time.monotonic() - _t0
     record_exchange(prompt, response.text, model=model_id)
 
     return RunResult(
@@ -227,4 +232,6 @@ def run_task(
         raw=response.raw,
         opencode_session=response.session_id or opencode_session,
         cost_indeterminate=response.cost_indeterminate,
+        latency_s=latency,
+        ts=_ts,
     )

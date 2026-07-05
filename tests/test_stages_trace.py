@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -295,3 +296,79 @@ class TestCostReconciliation:
 
         assert float(metrics["cost"]) == pytest.approx(trace.total_cost, abs=1e-6)
         assert trace.total_cost == pytest.approx(0.0650)
+
+    def test_log_run_then_trace_parse_preserves_latency_and_ts(self) -> None:
+        from splinter.agents.runner import RunResult
+        from splinter.obs.trace import Trace, log_run
+
+        trace = Trace()
+        ts = "2026-07-04T12:00:00+00:00"
+        log_run(
+            trace,
+            RunResult(
+                text="a", model="m", tier=1, tokens={"input": 10}, cost=0.04, raw={},
+                latency_s=1.5, ts=ts,
+            ),
+            iteration=1,
+            task=0,
+        )
+
+        md = trace.summary()
+        parsed = Trace.from_markdown(md)
+
+        assert parsed.entries[0].latency_s == pytest.approx(1.5)
+        assert parsed.entries[0].ts == ts
+
+
+class TestLatencyAndTimestamps:
+    @pytest.mark.parametrize("sleep_s", [0.02, 0.05])
+    def test_dispatch_measures_real_latency(
+        self, monkeypatch: pytest.MonkeyPatch, sleep_s: float
+    ) -> None:
+        import time as time_mod
+
+        from splinter.obs.trace import Trace
+        from splinter.providers import dispatch
+        from splinter.providers.base import ProviderResponse
+
+        class _FakeProvider:
+            def run(self, *args: object, **kwargs: object) -> ProviderResponse:
+                time_mod.sleep(sleep_s)
+                return ProviderResponse(
+                    text="ok", tokens={"input": 1, "output": 1}, cost=0.01, raw={}
+                )
+
+        monkeypatch.setattr(dispatch, "get_provider", lambda _name: _FakeProvider())
+        monkeypatch.setattr(dispatch, "provider_for", lambda _model: "fake")
+
+        trace = Trace()
+        dispatch.run_text("prompt", "m", trace=trace, iteration=1, tier=1, task_index=0)
+
+        entry = trace.entries[0]
+        assert entry.latency_s > 0
+        assert entry.latency_s >= sleep_s * 0.5
+        assert entry.ts != ""
+        datetime.fromisoformat(entry.ts)
+
+    def test_sequential_runs_have_monotonic_timestamps(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from splinter.obs.trace import Trace
+        from splinter.providers import dispatch
+        from splinter.providers.base import ProviderResponse
+
+        class _FakeProvider:
+            def run(self, *args: object, **kwargs: object) -> ProviderResponse:
+                return ProviderResponse(
+                    text="ok", tokens={"input": 1, "output": 1}, cost=0.01, raw={}
+                )
+
+        monkeypatch.setattr(dispatch, "get_provider", lambda _name: _FakeProvider())
+        monkeypatch.setattr(dispatch, "provider_for", lambda _model: "fake")
+
+        trace = Trace()
+        dispatch.run_text("prompt", "m", trace=trace, iteration=1, tier=1, task_index=0)
+        dispatch.run_text("prompt", "m", trace=trace, iteration=2, tier=1, task_index=0)
+
+        assert len(trace.entries) == 2
+        assert trace.entries[0].ts <= trace.entries[1].ts
