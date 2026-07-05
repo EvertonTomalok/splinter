@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 import yaml
 
 from splinter.agents.localizer import CodeAnchor
 from splinter.agents.runner import Task
+from splinter.scheduling import default_max_concurrency
+from splinter.strategies.fanout import run_bounded
 
 
 def _parse_frontmatter(text: str) -> tuple[dict, str]:  # type: ignore[type-arg]
@@ -33,6 +37,65 @@ _DEP_PATTERN = re.compile(
 )
 
 
+def _parse_one_story(match: re.Match[str]) -> Task:
+    """Pure transform: one ``### US-NNN`` regex match to one Task."""
+    us_id = match.group(1)
+    title = match.group(2).strip()
+    block = match.group(3)
+
+    desc_match = re.search(r"\*\*Description:\*\*\s*(.+)", block)
+    desc = desc_match.group(1).strip() if desc_match else title
+
+    effort_match = re.search(r"effort:\s*(\w+)", block)
+    effort = effort_match.group(1) if effort_match else "normal"
+
+    skill_match = re.search(r"eval_skill:\s*(\S+)", block)
+    _raw_skill = skill_match.group(1) if skill_match else None
+    skill = (
+        None
+        if _raw_skill is None
+        or _raw_skill.lower() in ("omit", "none", "null")
+        or _raw_skill.startswith("(")
+        else _raw_skill
+    )
+
+    ac_lines = re.findall(r"- \[[ x]\]\s*(.+)", block)
+    acceptance = "\n".join(ac_lines) if ac_lines else desc
+
+    # Two documented forms, both honoured: the `deps: [US-001, US-002]` list
+    # field and the prose `Depends on US-001` / `Blocked until US-001`. The
+    # list form is what the SKILL template tells the model to emit, so it MUST
+    # be parsed — dropping it makes every task look dependency-free and the DAG
+    # runs them all in parallel, colliding on shared files.
+    deps_list: list[str] = []
+    _deps_field = re.search(r"deps:\s*\[([^\]]*)\]", block, re.IGNORECASE)
+    if _deps_field:
+        deps_list = re.findall(r"US-\d+", _deps_field.group(1))
+    deps = list(dict.fromkeys(deps_list + _DEP_PATTERN.findall(block))) or None
+
+    parallelizable: bool | None = None
+    _par_match = re.search(r"parallelizable:\s*(true|false)", block, re.IGNORECASE)
+    if _par_match:
+        parallelizable = _par_match.group(1).lower() == "true"
+
+    return Task(
+        description=f"{us_id}: {desc}",
+        acceptance=acceptance,
+        effort=effort,
+        eval_skill=skill,
+        id=us_id,
+        deps=deps,
+        parallelizable=parallelizable,
+    )
+
+
+def _fallback_task(body: str) -> Task:
+    return Task(
+        description=body[:200].strip(),
+        acceptance="implementation matches the PRD description",
+    )
+
+
 def parse_stories(prd_text: str) -> list[Task]:
     """Parse PRD user-story blocks into Task objects.
 
@@ -41,68 +104,40 @@ def parse_stories(prd_text: str) -> list[Task]:
     """
     _fm, body = _parse_frontmatter(prd_text)
 
-    tasks: list[Task] = []
-    for m in _US_PATTERN.finditer(body):
-        us_id = m.group(1)
-        title = m.group(2).strip()
-        block = m.group(3)
-
-        desc_match = re.search(r"\*\*Description:\*\*\s*(.+)", block)
-        desc = desc_match.group(1).strip() if desc_match else title
-
-        effort_match = re.search(r"effort:\s*(\w+)", block)
-        effort = effort_match.group(1) if effort_match else "normal"
-
-        skill_match = re.search(r"eval_skill:\s*(\S+)", block)
-        _raw_skill = skill_match.group(1) if skill_match else None
-        skill = (
-            None
-            if _raw_skill is None
-            or _raw_skill.lower() in ("omit", "none", "null")
-            or _raw_skill.startswith("(")
-            else _raw_skill
-        )
-
-        ac_lines = re.findall(r"- \[[ x]\]\s*(.+)", block)
-        acceptance = "\n".join(ac_lines) if ac_lines else desc
-
-        # Two documented forms, both honoured: the `deps: [US-001, US-002]` list
-        # field and the prose `Depends on US-001` / `Blocked until US-001`. The
-        # list form is what the SKILL template tells the model to emit, so it MUST
-        # be parsed — dropping it makes every task look dependency-free and the DAG
-        # runs them all in parallel, colliding on shared files.
-        deps_list: list[str] = []
-        _deps_field = re.search(r"deps:\s*\[([^\]]*)\]", block, re.IGNORECASE)
-        if _deps_field:
-            deps_list = re.findall(r"US-\d+", _deps_field.group(1))
-        deps = list(dict.fromkeys(deps_list + _DEP_PATTERN.findall(block))) or None
-
-        parallelizable: bool | None = None
-        _par_match = re.search(r"parallelizable:\s*(true|false)", block, re.IGNORECASE)
-        if _par_match:
-            parallelizable = _par_match.group(1).lower() == "true"
-
-        tasks.append(
-            Task(
-                description=f"{us_id}: {desc}",
-                acceptance=acceptance,
-                effort=effort,
-                eval_skill=skill,
-                id=us_id,
-                deps=deps,
-                parallelizable=parallelizable,
-            )
-        )
+    tasks = [_parse_one_story(m) for m in _US_PATTERN.finditer(body)]
 
     if not tasks:
-        tasks.append(
-            Task(
-                description=body[:200].strip(),
-                acceptance="implementation matches the PRD description",
-            )
-        )
+        tasks.append(_fallback_task(body))
 
     return tasks
+
+
+class Planner:
+    """Parses PRD story blocks concurrently, one item-callable per story."""
+
+    def __init__(self, *, concurrency: int | None = None) -> None:
+        self._concurrency = concurrency or default_max_concurrency()
+
+    async def plan_items(self, prd_text: str) -> list[Task]:
+        _fm, body = _parse_frontmatter(prd_text)
+        matches = list(_US_PATTERN.finditer(body))
+
+        def _make_item(m: re.Match[str]) -> Callable[[], Awaitable[Task]]:
+            async def _item() -> Task:
+                return _parse_one_story(m)
+
+            return _item
+
+        items = [_make_item(m) for m in matches]
+        tasks = await run_bounded(items, concurrency=self._concurrency)
+
+        if not tasks:
+            tasks.append(_fallback_task(body))
+
+        return tasks
+
+    def plan(self, prd_text: str) -> list[Task]:
+        return asyncio.run(self.plan_items(prd_text))
 
 
 def _tokenize(text: str) -> set[str]:

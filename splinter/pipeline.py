@@ -191,7 +191,7 @@ def _load_tasks_from_prd(prd_path: str) -> tuple[list[Task], str | None]:
     text = Path(prd_path).read_text()
     fm, _body = planner._parse_frontmatter(text)
     strategy = fm.get("strategy")
-    tasks = planner.parse_stories(text)
+    tasks = planner.Planner().plan(text)
     return tasks, strategy
 
 
