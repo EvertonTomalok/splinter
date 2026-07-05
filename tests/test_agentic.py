@@ -36,8 +36,6 @@ def test_round_trip_single_event(tmp_session: Session) -> None:
         provider="opencode",
         model="opencode-go/gpt-4",
         kind="localize",
-        tokens={"input": 100, "output": 50},
-        cost=0.01,
         ts="2026-06-10T12:00:00Z",
         extra={},
     )
@@ -58,8 +56,6 @@ def test_separate_files_per_task_index(
         provider="opencode",
         model="opencode-go/gpt-4",
         kind="plan",
-        tokens={"input": 200, "output": 100},
-        cost=0.02,
         ts="2026-06-10T12:00:00Z",
         extra={},
     )
@@ -69,8 +65,6 @@ def test_separate_files_per_task_index(
         provider="claude",
         model="opus",
         kind="run",
-        tokens={"input": 300, "output": 150},
-        cost=0.03,
         ts="2026-06-10T12:00:01Z",
         extra={},
     )
@@ -140,8 +134,6 @@ def test_write_error_swallowed(tmp_session: Session, monkeypatch: pytest.MonkeyP
         provider="opencode",
         model="opencode-go/gpt-4",
         kind="localize",
-        tokens={"input": 100, "output": 50},
-        cost=0.01,
         ts="2026-06-10T12:00:00Z",
         extra={},
     )
@@ -164,8 +156,6 @@ def test_session_with_only_agentic_is_empty(
         provider="opencode",
         model="opencode-go/gpt-4",
         kind="localize",
-        tokens={"input": 100, "output": 50},
-        cost=0.01,
         ts="2026-06-10T12:00:00Z",
         extra={},
     )
@@ -388,8 +378,7 @@ def test_record_action_inside_scope(tmp_session: Session) -> None:
     assert tool_event.extra.get("summary") == "🔧 Edit /path/to/file"
     assert tool_event.provider == "claude"
     assert tool_event.model == ""
-    assert tool_event.tokens == {}
-    assert tool_event.cost == 0.0
+    assert tool_event.schema_version == 1
 
     text_event = loaded[1]
     assert text_event.kind == "text"
@@ -424,3 +413,91 @@ def test_record_action_timestamp_iso_format(tmp_session: Session) -> None:
     ts = loaded[0].ts
     assert "T" in ts
     assert ts.endswith("Z") or "+" in ts
+
+
+# ---------------------------------------------------------------------------
+# Forward/backward-compat decoding — schema_version (US-006)
+# ---------------------------------------------------------------------------
+
+_AGENTIC_BASE = {
+    "task_index": 0,
+    "iteration": 1,
+    "provider": "claude",
+    "model": "opus",
+    "kind": "run",
+    "ts": "2026-06-10T12:00:00Z",
+    "extra": {},
+}
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected_version"),
+    [
+        pytest.param({**_AGENTIC_BASE, "schema_version": 1}, 1, id="current"),
+        pytest.param(
+            {
+                **_AGENTIC_BASE,
+                "schema_version": 2,
+                "future_field": 123,
+                "tokens": {"input": 1, "output": 1},
+                "cost": 9.9,
+            },
+            2,
+            id="future-with-extra",
+        ),
+        pytest.param(
+            {**_AGENTIC_BASE, "tokens": {"input": 1, "output": 1}, "cost": 9.9},
+            0,
+            id="legacy-versionless",
+        ),
+    ],
+)
+def test_decode_forward_compat(
+    tmp_session: Session, raw: dict[str, object], expected_version: int
+) -> None:
+    """AgenticEvent decode ignores unknown fields; missing version defaults to 0."""
+    tmp_session._ensure_dir()
+    trace_dir = tmp_session.dir / "trace"
+    trace_dir.mkdir(parents=True, exist_ok=True)
+    (trace_dir / "agentic-0.jsonl").write_text(json.dumps(raw) + "\n")
+
+    loaded = load_agentic_events(tmp_session)
+    assert len(loaded) == 1
+    assert loaded[0].schema_version == expected_version
+
+
+_EXCHANGE_BASE = {
+    "stage": "run",
+    "task_index": 0,
+    "iteration": 1,
+    "prompt": "p",
+    "response": "r",
+    "model": "m",
+    "variant": "",
+}
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected_version"),
+    [
+        pytest.param({**_EXCHANGE_BASE, "schema_version": 1}, 1, id="current"),
+        pytest.param(
+            {**_EXCHANGE_BASE, "schema_version": 2, "future_field": 123},
+            2,
+            id="future-with-extra",
+        ),
+        pytest.param(_EXCHANGE_BASE, 0, id="legacy-versionless"),
+    ],
+)
+def test_decode_exchange_forward_compat(
+    tmp_session: Session, raw: dict[str, object], expected_version: int
+) -> None:
+    """ExchangeEvent decode ignores unknown fields; missing version defaults to 0."""
+    tmp_session._ensure_dir()
+    agentic_dir = tmp_session.dir / "agentic"
+    agentic_dir.mkdir(parents=True, exist_ok=True)
+    (agentic_dir / "task-0.jsonl").write_text(json.dumps(raw) + "\n")
+
+    loaded = read_events(tmp_session, 0)
+    assert len(loaded) == 1
+    assert loaded[0].schema_version == expected_version

@@ -3,28 +3,44 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Generator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, TypeVar
 
 from splinter.memory.session import Session, _append_lock
+
+_T = TypeVar("_T")
+
+
+def _decode(cls: type[_T], data: dict[str, Any]) -> _T:
+    """Build a dataclass from JSON, ignoring unknown keys.
+
+    Legacy records without a ``schema_version`` key decode as version 0.
+    Missing required fields still raise ``TypeError`` — callers treat that
+    as a genuinely malformed record, not a version mismatch.
+    """
+    field_names = {f.name for f in fields(cls)}  # type: ignore[arg-type]
+    kwargs = {k: v for k, v in data.items() if k in field_names}
+    if "schema_version" in field_names and "schema_version" not in kwargs:
+        kwargs["schema_version"] = 0
+    return cls(**kwargs)
 
 
 @dataclass(frozen=True)
 class AgenticEvent:
-    """Token/cost record of a single LLM exchange."""
+    """Record of a single provider action within an agentic run."""
 
     task_index: int
     iteration: int
     provider: str
     model: str
     kind: str
-    tokens: dict[str, int]
-    cost: float
     ts: str
+    schema_version: int = 1
     extra: dict[str, Any] = field(default_factory=dict)
 
 
@@ -61,6 +77,7 @@ def load_agentic_events(session: Session) -> list[AgenticEvent]:
     if not trace_dir.exists():
         return events
 
+    skipped = 0
     for file_path in sorted(trace_dir.glob("agentic-*.jsonl")):
         try:
             with open(file_path) as f:
@@ -70,12 +87,16 @@ def load_agentic_events(session: Session) -> list[AgenticEvent]:
                         continue
                     try:
                         data = json.loads(line)
-                        event = AgenticEvent(**data)
+                        event = _decode(AgenticEvent, data)
                         events.append(event)
                     except (json.JSONDecodeError, TypeError):
+                        skipped += 1
                         continue
         except Exception:
             continue
+
+    if skipped:
+        logging.getLogger(__name__).warning("skipped %d malformed agentic events", skipped)
 
     return events
 
@@ -91,6 +112,7 @@ class ExchangeEvent:
     response: str
     model: str = ""
     variant: str = ""
+    schema_version: int = 1
 
 
 @dataclass(frozen=True)
@@ -170,8 +192,6 @@ def record_action(kind: str, summary: str, *, provider: str = "claude") -> None:
         provider=provider,
         model="",
         kind=kind,
-        tokens={},
-        cost=0.0,
         ts=_now_iso(),
         extra={"summary": summary},
     )
@@ -196,6 +216,7 @@ def _persist_exchange(session: Session, event: ExchangeEvent) -> None:
                         "response": event.response,
                         "model": event.model,
                         "variant": event.variant,
+                        "schema_version": event.schema_version,
                     }
                 )
                 + "\n"
@@ -210,15 +231,19 @@ def read_events(session: Session, task_index: int) -> list[ExchangeEvent]:
     if not file_path.exists():
         return []
     events: list[ExchangeEvent] = []
+    skipped = 0
     for line in file_path.read_text().splitlines():
         line = line.strip()
         if not line:
             continue
         try:
             data = json.loads(line)
-            events.append(ExchangeEvent(**data))
+            events.append(_decode(ExchangeEvent, data))
         except (json.JSONDecodeError, TypeError):
+            skipped += 1
             continue
+    if skipped:
+        logging.getLogger(__name__).warning("skipped %d malformed exchange events", skipped)
     return events
 
 
@@ -240,6 +265,7 @@ def _read_all_exchanges(session: Session) -> list[ExchangeEvent]:
         return []
 
     exchanges: list[ExchangeEvent] = []
+    skipped = 0
     for file_path in sorted(agentic_dir.glob("task-*.jsonl")):
         try:
             for line in file_path.read_text().splitlines():
@@ -248,12 +274,16 @@ def _read_all_exchanges(session: Session) -> list[ExchangeEvent]:
                     continue
                 try:
                     data = json.loads(line)
-                    exchange = ExchangeEvent(**data)
+                    exchange = _decode(ExchangeEvent, data)
                     exchanges.append(exchange)
-                except json.JSONDecodeError:
+                except (json.JSONDecodeError, TypeError):
+                    skipped += 1
                     continue
         except Exception:
             continue
+
+    if skipped:
+        logging.getLogger(__name__).warning("skipped %d malformed exchange events", skipped)
 
     return exchanges
 

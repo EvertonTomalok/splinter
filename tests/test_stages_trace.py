@@ -34,8 +34,6 @@ def test_render_actions_filters_by_task_iteration(tmp_session: Session) -> None:
         provider="claude",
         model="",
         kind="tool_use",
-        tokens={},
-        cost=0.0,
         ts="2026-06-11T00:00:00Z",
         extra={"summary": "🔧 Edit task0-iter1"},
     )
@@ -45,8 +43,6 @@ def test_render_actions_filters_by_task_iteration(tmp_session: Session) -> None:
         provider="claude",
         model="",
         kind="tool_use",
-        tokens={},
-        cost=0.0,
         ts="2026-06-11T00:00:01Z",
         extra={"summary": "🔧 Edit task0-iter2"},
     )
@@ -56,8 +52,6 @@ def test_render_actions_filters_by_task_iteration(tmp_session: Session) -> None:
         provider="claude",
         model="",
         kind="tool_use",
-        tokens={},
-        cost=0.0,
         ts="2026-06-11T00:00:02Z",
         extra={"summary": "🔧 Edit task1-iter1"},
     )
@@ -80,8 +74,6 @@ def test_render_actions_includes_tool_use_and_text(tmp_session: Session) -> None
         provider="claude",
         model="",
         kind="tool_use",
-        tokens={},
-        cost=0.0,
         ts="2026-06-11T00:00:00Z",
         extra={"summary": "🔧 Edit /file.py"},
     )
@@ -91,8 +83,6 @@ def test_render_actions_includes_tool_use_and_text(tmp_session: Session) -> None
         provider="claude",
         model="",
         kind="text",
-        tokens={},
-        cost=0.0,
         ts="2026-06-11T00:00:01Z",
         extra={"summary": "💬 Solution is ready"},
     )
@@ -113,8 +103,6 @@ def test_render_actions_markdown_format(tmp_session: Session) -> None:
         provider="claude",
         model="",
         kind="tool_use",
-        tokens={},
-        cost=0.0,
         ts="2026-06-11T00:00:00Z",
         extra={"summary": "🔧 Write /new/file.ts"},
     )
@@ -134,8 +122,6 @@ def test_render_actions_skips_non_action_kinds(tmp_session: Session) -> None:
         provider="claude",
         model="opus",
         kind="run",  # Not tool_use or text
-        tokens={"input": 100, "output": 50},
-        cost=0.01,
         ts="2026-06-11T00:00:00Z",
         extra={"summary": "🔧 Edit /file.py"},
     )
@@ -154,8 +140,6 @@ def test_render_actions_multiple_events_ordering(tmp_session: Session) -> None:
             provider="claude",
             model="",
             kind="tool_use",
-            tokens={},
-            cost=0.0,
             ts=f"2026-06-11T00:00:{i:02d}Z",
             extra={"summary": f"🔧 Action {i}"},
         )

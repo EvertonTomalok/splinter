@@ -21,6 +21,7 @@ class RunEntry:
     task: int = 0
     role: str = "run"
     cost_indeterminate: bool = False
+    schema_version: int = 1
 
 
 class Trace:
