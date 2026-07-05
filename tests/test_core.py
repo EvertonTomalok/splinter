@@ -1669,6 +1669,63 @@ def test_planner_parse_stories_deps() -> None:
     assert tasks[2].deps == ["US-001", "US-002"]
 
 
+def test_planner_parse_stories_deps_list_form() -> None:
+    """Regression: the documented ``deps: [US-NNN, US-MMM]`` list must be parsed.
+
+    Before the fix only prose ``Depends on US-NNN`` was honoured, so declared
+    list-form deps were dropped and every task ran in parallel — colliding on
+    shared files. Both forms must produce dependency edges.
+    """
+    from splinter.agents.planner import parse_stories
+
+    prd = """\
+# Feature
+
+### US-001: Base
+**Description:** Base model.
+**Splinter hints:**
+- deps: []
+
+### US-002: Dependent
+**Description:** Builds on base.
+**Splinter hints:**
+- deps: [US-001]
+
+### US-003: Multi-dep
+**Description:** Needs both.
+**Splinter hints:**
+- deps: [US-001, US-002]
+"""
+    tasks = parse_stories(prd)
+    assert tasks[0].deps is None
+    assert tasks[1].deps == ["US-001"]
+    assert tasks[2].deps == ["US-001", "US-002"]
+
+
+def test_planner_parse_stories_deps_list_and_prose_merge() -> None:
+    """List form and prose form combine (deduped, order-preserving)."""
+    from splinter.agents.planner import parse_stories
+
+    prd = """\
+# Feature
+
+### US-001: A
+**Description:** a.
+
+### US-002: B
+**Description:** b.
+
+### US-003: C
+**Description:** c.
+**Splinter hints:**
+- deps: [US-001]
+
+Blocked until US-002
+"""
+    tasks = parse_stories(prd)
+    assert tasks[2].deps == ["US-001", "US-002"]
+
+
 def test_planner_parse_stories_back_compat() -> None:
     from splinter.agents.planner import parse_stories
 

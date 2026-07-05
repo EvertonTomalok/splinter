@@ -174,6 +174,12 @@ session.
   tasks with no deps are parallelizable by default; tasks with deps are not.
 - Independent tasks (no deps) may run concurrently when `--parallel` is passed to `splinter run`.
 - Failed task aborts only its transitive dependents; independent tasks keep running.
+- **File-disjointness invariant (required for parallel):** two stories that modify
+  the same file/module MUST NOT be parallel — give one a `deps` edge on the other
+  so the DAG serialises them. Parallel tasks run in isolated git worktrees and are
+  squash-merged independently; if they touch the same file their merges conflict.
+  Only stories with **disjoint file sets** may be left dependency-free. When in
+  doubt, chain them with `deps` — a serial edge is cheap, a lost merge is not.
 
 **Important:**
 - Acceptance criteria must be verifiable, not vague. "Works correctly" is bad.

@@ -126,6 +126,10 @@ def _run_prd(
         "For multi-task PRDs: add `parallel: true` to frontmatter if user indicated "
         "independent tasks can run in parallel; otherwise omit or set `parallel: false`. "
         "For each user story, add Splinter hints block with deps and parallelizable fields. "
+        "CRITICAL for parallel runs: any two stories that modify the same file or module "
+        "MUST be serialised with a `deps` edge (one depends on the other) — never leave "
+        "them both dependency-free. Only stories with disjoint file sets may run in "
+        "parallel; overlapping file scope without a dep causes merge conflicts and lost work. "
         "Output the complete PRD in markdown."
     )
 
