@@ -37,6 +37,11 @@ _APPEND_LOCKS_GUARD = threading.Lock()
 #: end in ``run_text(session=session)`` → ``log_llm_usage`` concurrently.
 _PRE_RUN_USAGE_LOCK = threading.Lock()
 
+#: Serialises the read-modify-write of per-task ``run_live.task-{n}.json`` files.
+#: RunStage writes the descriptor before spawning run_task and clears it after the
+#: turn from parallel worker threads; the TUI poll thread reads concurrently.
+_RUN_LIVE_LOCK = threading.Lock()
+
 
 def _append_lock(session_id: str) -> threading.Lock:
     with _APPEND_LOCKS_GUARD:
@@ -401,6 +406,40 @@ class Session:
             except Exception:
                 continue
         return "\n---\n".join(parts)
+
+    def _run_live_path(self, task_no: int) -> Path:
+        """Live-run descriptor file for a single task (1-based ``task_no``),
+        scoped like ``pending_directive.task-N.txt``."""
+        return self.dir / f"run_live.task-{task_no}.json"
+
+    def write_run_live(self, task_no: int, descriptor: dict[str, Any]) -> None:
+        """Persist the in-flight provider session descriptor for ``task_no`` so the
+        TUI can read the live provider session id mid-run. Overwrites any prior
+        descriptor (last write = current iteration wins)."""
+        self._ensure_dir()
+        p = self._run_live_path(task_no)
+        with _RUN_LIVE_LOCK:
+            p.write_text(json.dumps(descriptor, indent=2))
+
+    def read_run_live(self, task_no: int) -> dict[str, Any] | None:
+        """Return the live-run descriptor for ``task_no``, or ``None`` when no file
+        exists (between iterations = no live session)."""
+        p = self._run_live_path(task_no)
+        if not p.exists():
+            return None
+        with _RUN_LIVE_LOCK:
+            try:
+                loaded: dict[str, Any] = json.loads(p.read_text())
+                return loaded
+            except (json.JSONDecodeError, FileNotFoundError):
+                return None
+
+    def clear_run_live(self, task_no: int) -> None:
+        """Remove the live-run descriptor for ``task_no``. Idempotent — no error if
+        the file is already absent (between iterations / already cleared)."""
+        p = self._run_live_path(task_no)
+        with _RUN_LIVE_LOCK:
+            p.unlink(missing_ok=True)
 
     def set_worktree(self, task_id: str, path: str, branch: str) -> None:
         """Persist worktree path+branch for task_id so resume can reattach.
