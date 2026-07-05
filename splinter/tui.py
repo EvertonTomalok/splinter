@@ -5916,6 +5916,8 @@ def _resume_run(session: Session, status: dict[str, Any], *, reset: bool = False
         "max_iterations": int(status.get("max_iterations") or 5),
         "cowabunga": False,
         "resume": not reset,
+        "parallel": bool(status.get("parallel", False)),
+        "max_concurrency": _num("max_concurrency"),
     }
     return run_with_tui(run_kwargs, session=session)
 

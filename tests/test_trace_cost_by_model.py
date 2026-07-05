@@ -1,8 +1,12 @@
 """Tests for Trace.cost_by_model and per-model summary."""
 
+import threading
+from concurrent.futures import ThreadPoolExecutor
+
 import pytest
 
-from splinter.obs.trace import RunEntry, Trace
+from splinter.agents.runner import RunResult
+from splinter.obs.trace import RunEntry, Trace, log_run
 
 
 def _entry(model: str, cost: float, inp: int = 10, out: int = 5, task: int = 0) -> RunEntry:
@@ -221,3 +225,66 @@ class TestSummaryPerModelBullets:
         s = t.summary()
         expected = f"- total cost: ${t.total_cost:.4f}"
         assert expected in s
+
+
+def _run_result(model: str, cost: float) -> RunResult:
+    return RunResult(
+        text="",
+        model=model,
+        tier=1,
+        tokens={"input": 10, "output": 5},
+        cost=cost,
+        raw={},
+    )
+
+
+class TestConcurrentLogRun:
+    @pytest.mark.parametrize(
+        "workers,per_worker,models",
+        [
+            (4, 25, ["m1"]),
+            (8, 50, ["m1", "m2"]),
+            (8, 20, ["m1", "m2", "m3"]),
+            (16, 10, ["m1", "m2"]),
+        ],
+    )
+    def test_no_lost_updates(
+        self, workers: int, per_worker: int, models: list[str]
+    ) -> None:
+        t = Trace()
+        cost_per_entry = 0.01
+        stop = threading.Event()
+
+        def writer(worker_id: int) -> None:
+            model = models[worker_id % len(models)]
+            for i in range(per_worker):
+                log_run(t, _run_result(model, cost_per_entry), iteration=i, task=worker_id)
+
+        def reader() -> None:
+            while not stop.is_set():
+                _ = t.total_cost
+                _ = t.total_tokens
+                _ = t.cost_by_model
+                _ = t.task_cost(0)
+                _ = t.task_entries(0)
+                _ = t.model_entries(models[0])
+
+        with ThreadPoolExecutor(max_workers=workers + 2) as pool:
+            reader_futures = [pool.submit(reader) for _ in range(2)]
+            writer_futures = [pool.submit(writer, w) for w in range(workers)]
+            for f in writer_futures:
+                f.result()
+            stop.set()
+            for f in reader_futures:
+                f.result()
+
+        expected_count = workers * per_worker
+        assert len(t.entries) == expected_count
+        assert t.total_cost == pytest.approx(expected_count * cost_per_entry)
+        assert t.total_tokens["input"] == expected_count * 10
+        assert t.total_tokens["output"] == expected_count * 5
+        assert sum(t.cost_by_model.values()) == pytest.approx(t.total_cost)
+
+        for model in set(models):
+            assert model in t.cost_by_model
+        assert sum(len(t.model_entries(m)) for m in set(models)) == expected_count

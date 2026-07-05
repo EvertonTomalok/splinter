@@ -47,8 +47,10 @@ class Trace:
 
     @property
     def total_tokens(self) -> dict[str, int]:
+        with self._lock:
+            entries = list(self.entries)
         out: dict[str, int] = {}
-        for e in self.entries:
+        for e in entries:
             for key, val in e.tokens.items():
                 out[key] = out.get(key, 0) + val
         return out
@@ -59,27 +61,47 @@ class Trace:
 
     @property
     def cost_by_model(self) -> dict[str, float]:
+        with self._lock:
+            entries = list(self.entries)
         out: dict[str, float] = {}
-        for e in self.entries:
+        for e in entries:
             out[e.model] = out.get(e.model, 0.0) + e.cost
         return out
 
     def task_cost(self, task: int) -> float:
-        return sum(e.cost for e in self.entries if e.task == task)
+        with self._lock:
+            entries = list(self.entries)
+        return sum(e.cost for e in entries if e.task == task)
 
     def task_entries(self, task: int) -> list[RunEntry]:
-        return [e for e in self.entries if e.task == task]
+        with self._lock:
+            entries = list(self.entries)
+        return [e for e in entries if e.task == task]
 
     def model_entries(self, model: str) -> list[RunEntry]:
-        return [e for e in self.entries if e.model == model]
+        with self._lock:
+            entries = list(self.entries)
+        return [e for e in entries if e.model == model]
 
     def summary(self) -> str:
-        by_model = self.cost_by_model
+        with self._lock:
+            entries = list(self.entries)
+
+        total_cost = sum(e.cost for e in entries)
+        total_tokens: dict[str, int] = {}
+        for e in entries:
+            for key, val in e.tokens.items():
+                total_tokens[key] = total_tokens.get(key, 0) + val
+
+        by_model: dict[str, float] = {}
+        for e in entries:
+            by_model[e.model] = by_model.get(e.model, 0.0) + e.cost
+
         lines = [
             "# Trace\n",
-            f"- total runs: {len(self.entries)}",
-            f"- total cost: ${self.total_cost:.4f}",
-            f"- total tokens: {self.total_tokens}",
+            f"- total runs: {len(entries)}",
+            f"- total cost: ${total_cost:.4f}",
+            f"- total tokens: {total_tokens}",
             f"- elapsed: {self.elapsed:.1f}s",
         ]
 
@@ -87,11 +109,11 @@ class Trace:
             lines.append(f"- {model}: ${by_model[model]:.4f}")
         lines.append("")
 
-        tasks = sorted({e.task for e in self.entries})
+        tasks = sorted({e.task for e in entries})
         if len(tasks) > 1 or (tasks and tasks[0] > 0):
             lines.append("## Per-task\n")
             for t in tasks:
-                t_entries = self.task_entries(t)
+                t_entries = [e for e in entries if e.task == t]
                 t_cost = sum(e.cost for e in t_entries)
                 t_tokens = {
                     "input": sum(e.tokens.get("input", 0) for e in t_entries),
@@ -100,10 +122,10 @@ class Trace:
                 lines.append(f"- task {t}: {len(t_entries)} runs, ${t_cost:.4f}, tokens={t_tokens}")
             lines.append("")
 
-        if self.entries:
+        if entries:
             lines.append("## Per-model\n")
             for model in sorted(by_model):
-                m_entries = self.model_entries(model)
+                m_entries = [e for e in entries if e.model == model]
                 m_cost = by_model[model]
                 m_tokens = {
                     "input": sum(e.tokens.get("input", 0) for e in m_entries),
@@ -113,7 +135,7 @@ class Trace:
             lines.append("")
 
         lines.append("## Runs\n")
-        for e in self.entries:
+        for e in entries:
             task_prefix = f"task {e.task} " if e.task else ""
             role_label = "eval" if e.role == "eval" else f"T{e.tier}"
             indet_marker = " [!cost]" if e.cost_indeterminate else ""
@@ -167,7 +189,7 @@ class Trace:
 
 
 def log_run(trace: Trace, result: RunResult, iteration: int, task: int = 0) -> None:
-    trace.entries.append(
+    trace.add_entry(
         RunEntry(
             model=result.model,
             tier=result.tier,

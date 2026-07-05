@@ -690,6 +690,8 @@ def run_pipeline(
         started=datetime.now(timezone.utc).isoformat(),
         stage="localize",
         cowabunga=cowabunga,
+        parallel=parallel,
+        max_concurrency=max_concurrency if max_concurrency is not None else "",
     )
 
     # Seed the live-readable kowabunga state from the launch flag so scheduling
