@@ -70,6 +70,7 @@ from splinter.analyze import (
     _prd_phases,
     _prd_story_titles,
     _run_state,
+    _running_tasks,
     _task_iters,
     _tasks,
     _trace_metrics,
@@ -2117,6 +2118,78 @@ class _FinalEvalModal(ModalScreen[dict[str, str | None] | None]):
             )
 
 
+class _SelectSessionModal(ModalScreen["int | None"]):
+    """Pick which running parallel task a live directive should be sent to.
+
+    Only shown when 2+ tasks are running concurrently. Dismiss value: the chosen
+    1-based ``task_no`` (int), or ``None`` on cancel.
+    """
+
+    DEFAULT_CSS = """
+    _SelectSessionModal {
+        align: center middle;
+        background: $background 60%;
+    }
+    _SelectSessionModal > Vertical#sel-dialog {
+        width: 72;
+        height: auto;
+        max-height: 80%;
+        border: round $primary;
+        background: $surface;
+        padding: 1 2;
+    }
+    _SelectSessionModal #sel-title {
+        text-style: bold;
+        color: $primary;
+        margin-bottom: 1;
+    }
+    _SelectSessionModal #sel-list {
+        height: auto;
+        max-height: 20;
+    }
+    _SelectSessionModal Button {
+        width: 1fr;
+        height: 3;
+        margin: 0 0 1 0;
+        text-align: left;
+    }
+    _SelectSessionModal #sel-cancel {
+        border: none;
+    }
+    """
+
+    BINDINGS = [("escape", "do_cancel", "Cancel")]
+
+    def __init__(self, tasks: list[tuple[int, str]]) -> None:
+        super().__init__()
+        self._tasks = tasks
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="sel-dialog"):
+            yield Static("Which session gets the directive?", id="sel-title")
+            yield Static("[dim]Sent to the runner; the model applies it on its next iteration.[/]")
+            with VerticalScroll(id="sel-list"):
+                for task_no, title in self._tasks:
+                    label = f"Task {task_no}" + (f": {title}" if title else "")
+                    yield Button(label, id=f"sel-task-{task_no}", variant="primary")
+            yield Button("Cancel (Esc)", id="sel-cancel")
+
+    def on_mount(self) -> None:
+        first = self.query("#sel-list Button").first()
+        if first is not None:
+            first.focus()
+
+    def action_do_cancel(self) -> None:
+        self.dismiss(None)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        bid = event.button.id or ""
+        if bid.startswith("sel-task-"):
+            self.dismiss(int(bid.removeprefix("sel-task-")))
+        else:
+            self.dismiss(None)
+
+
 class _ConfirmStopModal(ModalScreen[str | None]):
     """Confirm before pausing or killing the run.
 
@@ -3235,25 +3308,49 @@ class RunApp(App[int]):
         color = {logging.ERROR: "red", logging.WARNING: "yellow"}.get(level)
         self.query_one("#log", RichLog).write(f"[{color}]{safe}[/]" if color else safe)
 
-    def _send_live_command(self) -> None:
-        from splinter import procreg
+    def _running_task_choices(self) -> list[tuple[int, str]]:
+        """Currently-running parallel tasks as (task_no, title). Empty in
+        single-task mode, where there is nothing to disambiguate."""
+        loop_md = self.session.read("loop.md")
+        if not _is_parallel_mode(loop_md):
+            return []
+        titles = {no: title for no, title, _ in _parse_parallel_tasks(self.session, loop_md)}
+        return [(no, titles.get(no, "")) for no in _running_tasks(self.session)]
 
+    def _dispatch_directive(self, text: str, *, task_no: int | None) -> None:
+        """Queue a directive for the runner without touching any live process.
+
+        The in-flight provider is never killed. The directive is merged into
+        corrections at the top of the target task's next iteration, so the model
+        decides when to act on it.
+        """
+        log = self.query_one("#log", RichLog)
+        target = f"Task {task_no}" if task_no is not None else "runner"
+        log.write(f"[bold cyan]👤 User → {escape(target)}:[/] [cyan]{escape(text)}[/]")
+        self.session.queue_live_command(text, task_no=task_no)
+        log.write("[dim]queued — applies on the target session's next iteration[/]")
+
+    def _send_live_command(self) -> None:
         inp = self.query_one("#user-cmd-input", Input)
         text = inp.value.strip()
         if not text:
             return
-        log = self.query_one("#log", RichLog)
-        log.write(f"[bold cyan]👤 User → runner:[/] [cyan]{escape(text)}[/]")
-        # Record the directive so the next run picks it up as corrections, then
-        # interrupt the in-flight provider process. Killing it (any provider, via
-        # SIGTERM to the process group) makes the loop restart that single session
-        # with the directive merged in — exactly one process keeps following, no
-        # second subprocess racing the same conversation.
-        self.session.queue_live_command(text)
-        if procreg.request_interrupt():
-            log.write("[dim]interrupting current run to apply directive…[/]")
-        else:
-            log.write("[dim]queued — applies on the next iteration[/]")
+        running = self._running_task_choices()
+        if len(running) > 1:
+            # Multiple sessions in flight — ask which one, then dispatch. No kill.
+            def _on_pick(choice: int | None) -> None:
+                if choice is None:
+                    self.query_one("#log", RichLog).write("[dim]directive cancelled[/]")
+                    return
+                self._dispatch_directive(text, task_no=choice)
+                inp.value = ""
+                inp.focus()
+
+            self.push_screen(_SelectSessionModal(running), callback=_on_pick)
+            return
+        # Exactly one running task → scope to it; none (single-task) → shared queue.
+        task_no = running[0][0] if running else None
+        self._dispatch_directive(text, task_no=task_no)
         inp.value = ""
         inp.focus()
 

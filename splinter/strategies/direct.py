@@ -538,7 +538,7 @@ class DirectStrategy(Strategy):
         for iteration in range(start_iteration, max_iterations + 1):
             tier_tries += 1
 
-            live_cmd = session.pop_live_commands()
+            live_cmd = session.pop_live_commands(task_no=task_index + 1)
             if live_cmd:
                 log.info("live directive received from TUI — injecting into corrections")
                 session.append(

@@ -351,25 +351,51 @@ class Session:
                 pass
         return {}
 
-    def queue_live_command(self, text: str) -> None:
-        """Append a live user directive to the pending queue (TUI → pipeline)."""
+    def _directive_path(self, task_no: int | None) -> Path:
+        """Queue file for a directive. ``task_no`` (1-based) scopes it to a single
+        parallel task; ``None`` is the shared queue any task loop may drain."""
+        if task_no is None:
+            return self.dir / "pending_directive.txt"
+        return self.dir / f"pending_directive.task-{task_no}.txt"
+
+    def queue_live_command(self, text: str, task_no: int | None = None) -> None:
+        """Append a live user directive to the pending queue (TUI → pipeline).
+
+        ``task_no`` (1-based) targets a single running parallel task; when omitted
+        the directive lands in the shared queue that the next task loop to poll
+        will pick up. The directive is *never* applied by killing the in-flight
+        provider — it is merged into corrections at the top of the next iteration,
+        so the model decides when to act on it.
+        """
         self._ensure_dir()
-        p = self.dir / "pending_directive.txt"
+        p = self._directive_path(task_no)
         with open(p, "a") as f:
             f.write(text.strip())
             f.write("\n---\n")
 
-    def pop_live_commands(self) -> str:
-        """Read and clear all pending live directives. Returns empty string if none."""
-        p = self.dir / "pending_directive.txt"
-        if not p.exists():
-            return ""
-        try:
-            content = p.read_text().strip()
-            p.unlink()
-            return content
-        except Exception:
-            return ""
+    def pop_live_commands(self, task_no: int | None = None) -> str:
+        """Read and clear pending live directives for ``task_no`` plus the shared
+        queue. Returns empty string if none.
+
+        A parallel task loop passes its own 1-based ``task_no`` so it drains only
+        its scoped queue (no cross-task races) and the shared queue. A single-task
+        loop passing ``None`` drains just the shared queue.
+        """
+        paths = [self.dir / "pending_directive.txt"]
+        if task_no is not None:
+            paths.append(self._directive_path(task_no))
+        parts: list[str] = []
+        for p in paths:
+            if not p.exists():
+                continue
+            try:
+                content = p.read_text().strip()
+                p.unlink()
+                if content:
+                    parts.append(content)
+            except Exception:
+                continue
+        return "\n---\n".join(parts)
 
     def set_worktree(self, task_id: str, path: str, branch: str) -> None:
         """Persist worktree path+branch for task_id so resume can reattach.
