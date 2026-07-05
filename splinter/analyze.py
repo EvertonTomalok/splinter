@@ -49,7 +49,9 @@ _EXPAND_FILES = {
 
 _CLEAR = "\033[2J\033[H"
 
-_TASK_HEADER_RE = re.compile(r"^# Task (\d+)/\d+: *(.*)$", re.MULTILINE)
+_TASK_HEADER_RE = re.compile(
+    r"^# Task (\d+)(?:/\d+)?(?:[ \t]*\[[^\]]*\])?:[ \t]*(.*)$", re.MULTILINE
+)
 _ITERATION_HEADER_RE = re.compile(r"^## Iteration (\d+)\s*$", re.MULTILINE)
 _EVAL_ITER_HEADER_RE = re.compile(r"^### Iter (\d+):", re.MULTILINE)
 _TIER_RE = re.compile(r"tier (\d+)")
@@ -139,16 +141,95 @@ def _is_parallel_mode(loop_md: str) -> bool:
     return bool(re.search(r"^# Task \d+ \[parallel\]:", loop_md, re.MULTILINE))
 
 
-def _running_tasks(session: Session) -> list[int]:
+_REVIEW_NOTE_RE = re.compile(r"^task(\d+)-review-iter-(\d+)\.md$")
+_REVIEW_TIER_RE = re.compile(r"\(T(\d+)\)")
+_REVIEW_DECISION_RE = re.compile(r"^- decision:\s*(\w+)", re.MULTILINE)
+_RUN_FILE_RE = re.compile(r"^(?:task-(\d+)-)?iter-(\d+)\.md$")
+
+
+def _parallel_task_iters(session: Session) -> dict[int, dict[int, tuple[str, str]]]:
+    r"""Map ``task_no -> {iter_no: (tier, verdict)}`` for a parallel run.
+
+    Parallel workers append their ``## Iteration`` bodies to ``loop.md``
+    interleaved across tasks, so the flat loop text can't be split per task.
+    The authoritative per-task source is instead:
+
+    - ``knowledge/task{idx}-review-iter-{m}.md`` (``idx`` 0-based) — the eval
+      review note carrying both tier (``(T1)``) and verdict (``- decision:``).
+    - ``runs/iter-{m}.md`` (task 1) / ``runs/task-{N}-iter-{m}.md`` — the raw
+      run output. A run file with no matching review note yet is an in-flight
+      iteration, recorded with verdict ``?``.
+    """
+    per_task: dict[int, dict[int, tuple[str, str]]] = {}
+
+    kdir = session.dir / "knowledge"
+    if kdir.exists():
+        for path in kdir.glob("task*-review-iter-*.md"):
+            m = _REVIEW_NOTE_RE.match(path.name)
+            if not m:
+                continue
+            task_no = int(m.group(1)) + 1  # review notes key on 0-based index
+            iter_no = int(m.group(2))
+            content = path.read_text()
+            tier_m = _REVIEW_TIER_RE.search(content)
+            dec_m = _REVIEW_DECISION_RE.search(content)
+            tier = tier_m.group(1) if tier_m else "?"
+            verdict = dec_m.group(1).upper() if dec_m else "?"
+            per_task.setdefault(task_no, {})[iter_no] = (tier, verdict)
+
     runs_dir = session.dir / "runs"
-    if not runs_dir.exists():
-        return []
-    tasks: set[int] = set()
-    for path in runs_dir.glob("task-*-iter-*.md"):
-        m = re.match(r"task-(\d+)-iter-\d+\.md$", path.name)
-        if m:
-            tasks.add(int(m.group(1)))
-    return sorted(tasks)
+    if runs_dir.exists():
+        for path in runs_dir.glob("*iter-*.md"):
+            m = _RUN_FILE_RE.match(path.name)
+            if not m:
+                continue
+            task_no = int(m.group(1)) if m.group(1) else 1
+            iter_no = int(m.group(2))
+            iters = per_task.setdefault(task_no, {})
+            if iter_no not in iters:  # no review yet → iteration still in flight
+                tier_m = re.search(r"tier (\d+)", path.read_text())
+                iters[iter_no] = (tier_m.group(1) if tier_m else "?", "?")
+    return per_task
+
+
+def _running_tasks(session: Session) -> list[int]:
+    """Task numbers whose latest iteration has no eval verdict yet — i.e. still
+    executing or awaiting review. Empty once every task reaches a terminal
+    verdict, so callers must also guard on the session being ``RUNNING``."""
+    running: list[int] = []
+    for task_no, iters in _parallel_task_iters(session).items():
+        if iters and iters[max(iters)][1] == "?":
+            running.append(task_no)
+    return sorted(running)
+
+
+def _parse_parallel_tasks(session: Session, loop_md: str) -> list[tuple[int, str, str]]:
+    r"""Parse parallel-mode loop.md into (task_no, title, body) tuples.
+
+    Titles come from the ``# Task N [parallel]:`` headers (written up front);
+    the per-task iteration bodies are reconstructed from the review/run files
+    via ``_parallel_task_iters`` because the ``## Iteration`` blocks in loop.md
+    are interleaved across concurrent workers and can't be split by position.
+    """
+    task_headers: list[tuple[int, str]] = []
+    for m in _TASK_HEADER_RE.finditer(loop_md):
+        task_headers.append((int(m.group(1)), m.group(2).strip()))
+    if not task_headers:
+        return [(1, "", loop_md)]
+
+    per_task = _parallel_task_iters(session)
+    result: list[tuple[int, str, str]] = []
+    for task_no, title in task_headers:
+        iters = per_task.get(task_no, {})
+        body_lines: list[str] = []
+        for n in sorted(iters):
+            tier, verdict = iters[n]
+            tier_txt = f"tier {tier}" if tier != "?" else "tier ?"
+            body_lines.append(f"## Iteration {n}")
+            body_lines.append(f"- model: ({tier_txt})")
+            body_lines.append(f"- verdict: {verdict}")
+        result.append((task_no, title, "\n".join(body_lines)))
+    return result
 
 
 def _tasks(loop_md: str) -> list[tuple[int, str, str]]:
@@ -380,8 +461,21 @@ def _collapse_phases(phases: list[tuple[str, str]]) -> list[tuple[str, int]]:
     return out
 
 
-def _task_iters(loop_md: str) -> list[tuple[int, str, list[tuple[int, str, str]]]]:
-    result: list[tuple[int, str, list[tuple[int, str, str]]]] = []
+def _task_iters(
+    loop_md: str, *, session: Session | None = None
+) -> list[tuple[int, str, list[tuple[int, str, str]]]]:
+    if session is not None and _is_parallel_mode(loop_md):
+        parallel_tasks = _parse_parallel_tasks(session, loop_md)
+        result: list[tuple[int, str, list[tuple[int, str, str]]]] = []
+        for task_no, title, body in parallel_tasks:
+            raw = _iterations_in_range(body, 0, len(body))
+            reindexed: list[tuple[int, str, str]] = [
+                (idx, tier, verdict) for idx, (_, tier, verdict) in enumerate(raw, 1)
+            ]
+            result.append((task_no, title, reindexed))
+        return result
+
+    result = []
     ranges = _task_ranges(loop_md)
     if not ranges:
         raw = _iterations_in_range(loop_md, 0, len(loop_md))
@@ -536,7 +630,7 @@ def _trajectory_lines(
         lines.append(f"  [dim]run[/]  [dim]{len(iters)} iters[/] · " + "  ".join(tally_parts))
 
         loop_text = session.read("loop.md") if loop_md is None else loop_md
-        task_groups = _task_iters(loop_text)
+        task_groups = _task_iters(loop_text, session=session)
         multi_task = len(task_groups) > 1
 
         # Single-shot (raphael): list the PRD stories the one task implements.
@@ -661,10 +755,10 @@ def render_overview(session: Session, state: str) -> str:
     # Single-shot (raphael): one task, many stories — surface the story count.
     if str(n_tasks) == "1" and n_stories > 1:
         task_label += f"  [dim]·[/]  [b]{n_stories}[/] [dim]stories[/]"
-    
+
     parallel_mode = _is_parallel_mode(loop)
     parallel_label = " [dim]·[/] [cyan]parallel[/]" if parallel_mode else ""
-    
+
     lines = [
         f"[bold]splinter[/] · [cyan]{session.id}[/]",
         f"{emoji} [bold {state_color}]{state}[/]  [dim]·[/]  "
@@ -746,8 +840,16 @@ def render_overview(session: Session, state: str) -> str:
         bar = "█" * filled + "░" * (10 - filled)
         lines.append("")
         lines.append(f"[dim]task[/] [cyan]{bar}[/] {done}/{task_total}")
+
     current_stage = status.get("stage", "")
     running = state == "RUNNING"
+
+    if parallel_mode and running:
+        active = _running_tasks(session)
+        if active:
+            task_list = ", ".join(f"#{t}" for t in active)
+            lines.append(f"[dim]running:[/] [yellow]{task_list}[/]")
+
     passed = any(v == "PASS" for _, _, v in iters)
 
     from splinter.agents.localizer import _count_anchors, _parse_anchors
@@ -879,7 +981,7 @@ def render_trajectory(session: Session) -> str:
     lines = ["Trajectory:"]
     for i, (phase, detail) in enumerate(phases, 1):
         lines.append(f"  P{i}. {phase}" + (f" · {detail}" if detail else ""))
-    task_groups = _task_iters(loop)
+    task_groups = _task_iters(loop, session=session)
     multi_task = len(task_groups) > 1
     prd = session.read("prd.md")
     story_titles = _prd_story_titles(session, prd_md=prd) if not multi_task else []

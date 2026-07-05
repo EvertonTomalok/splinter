@@ -59,9 +59,11 @@ from splinter.analyze import (
     _escalations,
     _eval_segments,
     _has_final_eval_artifacts,
+    _is_parallel_mode,
     _iterations,
     _knowledge_notes,
     _loop_block,
+    _parse_parallel_tasks,
     _plan_files,
     _plans_from_agentic,
     _prd_feature_name,
@@ -190,7 +192,7 @@ def _overview_md(session: Session, state: str) -> str:
                 glyph, _ = _verdict_glyph(v)
                 tally_parts.append(f"{glyph} {tally[v]}")
             lines.append(f"**Run** · {len(iters)} iters · " + " · ".join(tally_parts))
-        for task_no, _title, task_iters in _task_iters(loop):
+        for task_no, _title, task_iters in _task_iters(loop, session=session):
             if not task_iters:
                 continue
             esc = _escalations(task_iters)
@@ -209,7 +211,11 @@ def _iteration_md(session: Session, task_no: int, n: int) -> str:
     Checks ``runs/phase-{n}.md`` for phase runs before falling back to
     ``runs/iter-{n}.md`` for main-loop iterations.
     """
-    tasks = _tasks(session.read("loop.md"))
+    tasks = (
+        _parse_parallel_tasks(session, session.read("loop.md"))
+        if _is_parallel_mode(session.read("loop.md"))
+        else _tasks(session.read("loop.md"))
+    )
     if task_no < 1 or task_no > len(tasks):
         return f"_task {task_no} not found_"
 
@@ -563,7 +569,11 @@ def _final_eval_rounds_md(session: Session) -> str:
 
 def _task_md(session: Session, task_no: int, title: str) -> str:
     """Detail for an expanded task node — title, iteration tally, last verdict."""
-    tasks = _tasks(session.read("loop.md"))
+    tasks = (
+        _parse_parallel_tasks(session, session.read("loop.md"))
+        if _is_parallel_mode(session.read("loop.md"))
+        else _tasks(session.read("loop.md"))
+    )
     if task_no < 1 or task_no > len(tasks):
         return f"_task {task_no} not found_"
 
@@ -973,7 +983,11 @@ class AnalyzeApp(App[None]):
             )
 
         loop_md = self.session.read("loop.md")
-        tasks = _tasks(loop_md)
+        tasks = (
+            _parse_parallel_tasks(self.session, loop_md)
+            if _is_parallel_mode(loop_md)
+            else _tasks(loop_md)
+        )
         if len(tasks) > 1:
             for task_no, title, task_body in tasks:
                 task_iters = _iterations(task_body)
@@ -3017,9 +3031,7 @@ class RunApp(App[int]):
                 def _on_cfg(cfg: "dict[str, str | None] | None") -> None:
                     if cfg is not None:
                         self._store_config_overrides(cfg)
-                    self.call_after_refresh(
-                        lambda: self._show_ask_user_modal(prefill=prefill_text)
-                    )
+                    self.call_after_refresh(lambda: self._show_ask_user_modal(prefill=prefill_text))
 
                 self.push_screen(_EditConfigModal(self._run_config), callback=_on_cfg)
             else:
@@ -3476,9 +3488,7 @@ class RunApp(App[int]):
             if str(st.get("stage", "")) == "final_eval" or str(st.get("state", "")) == (
                 "awaiting_validation"
             ):
-                self.write_log(
-                    "— final eval complete — awaiting manual validation —", logging.INFO
-                )
+                self.write_log("— final eval complete — awaiting manual validation —", logging.INFO)
                 self.call_after_refresh(self._show_manual_validation_modal)
             else:
                 self.write_log("— run PAUSED (needs your input) —", logging.WARNING)
