@@ -101,6 +101,8 @@ class CascadeStrategy(DirectStrategy):
             skip_planner=skip_planner,
             resume=resume,
             force_replan=force_replan,
+            max_concurrency=max_concurrency,
+            done_ids=done,
         )
 
         if parallel and len(ordered) > 1:
@@ -288,9 +290,7 @@ class CascadeStrategy(DirectStrategy):
                 if not stop_dispatch:
                     ready = scheduler.ready()
                     if live_cowabunga:
-                        ready = sorted(
-                            ready, key=lambda t: 0 if is_premium_task(t, ladder) else 1
-                        )
+                        ready = sorted(ready, key=lambda t: 0 if is_premium_task(t, ladder) else 1)
                     for task in ready:
                         if budget_pool.exhausted(trace.total_cost):
                             stop_dispatch = True
@@ -363,8 +363,7 @@ class CascadeStrategy(DirectStrategy):
                 _append_task_header_once(
                     session,
                     task_index + 1,
-                    f"# Task {task_index + 1} [sequential]: "
-                    f"{task.description.splitlines()[0]}\n\n",
+                    f"# Task {task_index + 1} [sequential]: {task.description.splitlines()[0]}\n\n",
                 )
             outcome = TaskOutcome()
             result = self._run_task_loop(
@@ -390,9 +389,7 @@ class CascadeStrategy(DirectStrategy):
             if result is not None:
                 results.append(result)
 
-        blocked = [
-            tid for tid, st in scheduler.all_states().items() if st == TaskState.BLOCKED
-        ]
+        blocked = [tid for tid, st in scheduler.all_states().items() if st == TaskState.BLOCKED]
         if blocked:
             reasons = [f"{tid}: {scheduler.blocked_reason(tid)}" for tid in blocked]
             log.warning("parallel: %d task(s) blocked — %s", len(blocked), "; ".join(reasons))

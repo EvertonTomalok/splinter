@@ -20,9 +20,11 @@ The per-iteration Run -> Gate -> Eval pipeline is a Chain of Responsibility (see
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import threading
+from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass
 from typing import Any
 
@@ -36,8 +38,10 @@ from splinter.models.roster import Ladder
 from splinter.obs.agentic import agentic_scope, record_exchange
 from splinter.obs.trace import Trace
 from splinter.providers.dispatch import run_text
+from splinter.scheduling import default_max_concurrency
 from splinter.skills import resolve_eval_skill
 from splinter.strategies.base import AskUserPause, EvalVerdict, GracefulPause, Strategy
+from splinter.strategies.fanout import run_bounded
 from splinter.strategies.registry import register
 from splinter.strategies.stages import (
     EvalStage,
@@ -356,9 +360,19 @@ class DirectStrategy(Strategy):
         skip_planner: bool = False,
         resume: bool = False,
         force_replan: bool = False,
+        max_concurrency: int | None = None,
+        done_ids: set[str] | None = None,
     ) -> None:
-        """Pre-generate plans for all tasks; reuses existing files on resume."""
+        """Pre-generate plans for all tasks concurrently; reuses existing files on resume.
+
+        Tasks already completed (``done_ids`` checkpoint) are never planned — a plan
+        for a finished task is pure waste, even under ``force_replan``.
+        """
+        pending: list[tuple[int, Task]] = []
         for i, task in enumerate(tasks):
+            if done_ids and task.id and task.id in done_ids:
+                log.info("plan skipped for task %d (already completed)", i + 1)
+                continue
             task_plan_file = f"knowledge/plan-{i + 1}.md"
             if not skip_planner and not force_replan and session.read(task_plan_file).strip():
                 log.info("plan exists for task %d — reusing", i + 1)
@@ -369,6 +383,12 @@ class DirectStrategy(Strategy):
             if skip_planner:
                 log.info("plan skipped for task %d (skip_planner)", i + 1)
                 continue
+            pending.append((i, task))
+
+        if not pending:
+            return
+
+        def _plan_one(i: int, task: Task) -> None:
             try:
                 log.info("planning task %d with %s", i + 1, ladder.planner_model)
                 task_loc = session.read(f"knowledge/localization-{i + 1}.md")
@@ -387,12 +407,24 @@ class DirectStrategy(Strategy):
                         tier=0,
                         task_index=i,
                     )
-                session.write(task_plan_file, f"# Plan\n\n{plan}\n")
+                session.write(f"knowledge/plan-{i + 1}.md", f"# Plan\n\n{plan}\n")
                 if i == 0:
                     session.write("knowledge/plan.md", f"# Plan\n\n{plan}\n")
             except Exception as e:
                 # swallow: planner unavailable; _run_task_loop plans per-task as fallback
                 log.warning("bulk planning skipped for task %d: %s", i + 1, e)
+
+        def _make_item(i: int, task: Task) -> Callable[[], Awaitable[None]]:
+            async def _item() -> None:
+                # to_thread copies the contextvar context, so each worker's
+                # agentic_scope stays isolated from its siblings.
+                await asyncio.to_thread(_plan_one, i, task)
+
+            return _item
+
+        limit = max_concurrency if max_concurrency else default_max_concurrency()
+        items = [_make_item(i, task) for i, task in pending]
+        asyncio.run(run_bounded(items, concurrency=limit))
 
     def _run_plan_phase(
         self,
@@ -404,6 +436,8 @@ class DirectStrategy(Strategy):
         skip_planner: bool = False,
         resume: bool = False,
         force_replan: bool = False,
+        max_concurrency: int | None = None,
+        done_ids: set[str] | None = None,
     ) -> None:
         session.set_status("running", stage="plan")
         self._plan_all_tasks(
@@ -415,6 +449,8 @@ class DirectStrategy(Strategy):
             skip_planner=skip_planner,
             resume=resume,
             force_replan=force_replan,
+            max_concurrency=max_concurrency,
+            done_ids=done_ids,
         )
         session.set_status("running", stage="run")
 
@@ -492,9 +528,13 @@ class DirectStrategy(Strategy):
             # fresh LLM plan, e.g. a new cascade round).
             # knowledge/plan.md mirrors task 1's plan only — falling back to it for
             # a later task would silently run that task against the wrong plan.
-            existing_plan = "" if (skip_planner or force_replan) else (
-                session.read(task_plan_file).strip()
-                or (session.read("knowledge/plan.md").strip() if task_index == 0 else "")
+            existing_plan = (
+                ""
+                if (skip_planner or force_replan)
+                else (
+                    session.read(task_plan_file).strip()
+                    or (session.read("knowledge/plan.md").strip() if task_index == 0 else "")
+                )
             )
             if existing_plan:
                 log.info("plan exists for task %d — reusing (skipping planner)", task_index + 1)

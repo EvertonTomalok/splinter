@@ -90,6 +90,8 @@ class AdaptiveStrategy(CascadeStrategy):
             skip_planner=skip_planner,
             resume=resume,
             force_replan=force_replan,
+            max_concurrency=max_concurrency,
+            done_ids=done,
         )
 
         if parallel and len(ordered) > 1:

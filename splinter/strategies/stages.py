@@ -293,9 +293,7 @@ class GateStage(Stage):
                 from splinter.enums import Decision
                 from splinter.strategies.base import EvalVerdict
 
-                corrections = (
-                    f"Fix the gate failures before re-attempting:\n\n{ctx.gate_output}"
-                )
+                corrections = f"Fix the gate failures before re-attempting:\n\n{ctx.gate_output}"
                 ctx.verdict = EvalVerdict(
                     decision=Decision.RETRY,
                     reason=f"Gate failed ({ctx.gate_detail}); eval skipped.",
