@@ -41,6 +41,9 @@ class ModelProvider(ABC):
     """A pluggable backend that can run a prompt against a named model."""
 
     name: ClassVar[str]
+    #: True when the backend can create a session with a caller-chosen id
+    #: (vs. only returning one it picked itself). See ``session_id`` on :meth:`run`.
+    supports_session_create: ClassVar[bool] = False
 
     @abstractmethod
     def run(
@@ -51,6 +54,7 @@ class ModelProvider(ABC):
         variant: str | None = None,
         output_format: str = "json",
         session: str | None = None,
+        session_id: str | None = None,
         timeout: int | None = None,
         agent: str = "build",
         cwd: str | None = None,
@@ -59,6 +63,8 @@ class ModelProvider(ABC):
 
         ``cwd`` is the working directory the backend runs in — used to isolate
         parallel tasks in their own git worktrees. ``None`` means the process cwd.
+        ``session`` resumes an existing session; ``session_id`` pre-assigns a
+        create-with-id (only honoured by providers with ``supports_session_create``).
         """
         ...
 

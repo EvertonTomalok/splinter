@@ -306,6 +306,7 @@ class ClaudeProvider(ModelProvider):
 
     name = "claude"
     supports_pricing = True
+    supports_session_create = True
 
     def run(
         self,
@@ -315,6 +316,7 @@ class ClaudeProvider(ModelProvider):
         variant: str | None = None,
         output_format: str = "json",
         session: str | None = None,
+        session_id: str | None = None,
         timeout: int | None = None,
         agent: str = "build",
         cwd: str | None = None,
@@ -328,6 +330,7 @@ class ClaudeProvider(ModelProvider):
                 effort=variant,
                 output_format=output_format,
                 resume=session,
+                session_id=session_id,
                 timeout=timeout,
                 cwd=cwd,
             )

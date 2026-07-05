@@ -15,7 +15,9 @@ call, with no separate stage-level logging.
 from __future__ import annotations
 
 import time
+import uuid
 from dataclasses import replace
+from typing import Any
 
 from splinter.models.roster import provider_for
 from splinter.obs.agentic import _now_iso
@@ -237,6 +239,7 @@ def run_provider_session(
     variant: str | None = None,
     output_format: str = "json",
     session: str | None = None,
+    session_id: str | None = None,
     timeout: int | None = None,
     agent: str = "build",
     cwd: str | None = None,
@@ -251,21 +254,32 @@ def run_provider_session(
 
     ``cwd`` is the working directory the backend runs in — passed through so a
     parallel task edits (and is gated on) its own git worktree, not the main repo.
+    On the first turn (no ``session``, no ``session_id``) a per-task UUID is
+    generated here for providers that support create-with-id, so the id is known
+    from iteration 1 and reused (via the returned id) on later turns.
     """
     provider = get_provider(provider_for(model))
+    create_id = session_id
+    if (
+        session is None
+        and create_id is None
+        and getattr(provider, "supports_session_create", False)
+    ):
+        create_id = str(uuid.uuid4())
     _t0 = time.monotonic()
     _ts = _now_iso()
+    call_kwargs: dict[str, Any] = dict(
+        variant=variant,
+        output_format=output_format,
+        session=session,
+        timeout=timeout,
+        agent=_provider_agent(role=role, agent=agent),
+        cwd=cwd,
+    )
+    if create_id is not None:
+        call_kwargs["session_id"] = create_id
     try:
-        resp = provider.run(
-            prompt,
-            model,
-            variant=variant,
-            output_format=output_format,
-            session=session,
-            timeout=timeout,
-            agent=_provider_agent(role=role, agent=agent),
-            cwd=cwd,
-        )
+        resp = provider.run(prompt, model, **call_kwargs)
     except Exception as exc:
         if trace is not None:
             _log_trace_from_exc(
@@ -294,7 +308,7 @@ def run_provider_session(
             latency_s=time.monotonic() - _t0,
             ts=_ts,
         )
-    sid = resp.session_id or session or None
+    sid = resp.session_id or session or create_id
     if resp.session_id != sid:
         resp = replace(resp, session_id=sid)
     return resp, sid

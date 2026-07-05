@@ -336,6 +336,7 @@ class CodexProvider(ModelProvider):
         variant: str | None = None,
         output_format: str = "json",
         session: str | None = None,
+        session_id: str | None = None,
         timeout: int | None = None,
         agent: str = "build",
         cwd: str | None = None,
