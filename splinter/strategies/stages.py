@@ -187,21 +187,33 @@ class RunStage(Stage):
             )
             if guidance_line:
                 log.info("  ▸ %s", guidance_line.strip())
-        with agentic_scope(ctx.session, "run", ctx.task_index, ctx.iteration):
-            result = run_task(
-                ctx.task,
-                ctx.plan,
-                ctx.tier,
-                ctx.ladder,
-                effort_override=ctx.effort_override,
-                localization=ctx.localization,
-                corrections=ctx.corrections,
-                opencode_session=ctx.oc_session,
-                trace=ctx.trace,
-                iteration=ctx.iteration,
-                task_index=ctx.task_index,
-                cwd=ctx.cwd,
-            )
+        from splinter.models.roster import provider_for
+
+        task_no = ctx.task_index + 1
+        ctx.session.write_run_live(task_no, {
+            "session_id": ctx.oc_session,
+            "provider": provider_for(model_id),
+            "model": model_id,
+            "task_no": task_no,
+        })
+        try:
+            with agentic_scope(ctx.session, "run", ctx.task_index, ctx.iteration):
+                result = run_task(
+                    ctx.task,
+                    ctx.plan,
+                    ctx.tier,
+                    ctx.ladder,
+                    effort_override=ctx.effort_override,
+                    localization=ctx.localization,
+                    corrections=ctx.corrections,
+                    opencode_session=ctx.oc_session,
+                    trace=ctx.trace,
+                    iteration=ctx.iteration,
+                    task_index=ctx.task_index,
+                    cwd=ctx.cwd,
+                )
+        finally:
+            ctx.session.clear_run_live(task_no)
         log.info(
             "iter %d · ran %s · tokens=%s · $%.4f",
             ctx.iteration,

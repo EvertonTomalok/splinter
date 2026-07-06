@@ -12,6 +12,7 @@ import logging
 import re
 import threading
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -44,13 +45,90 @@ _LEGACY_RUN_RE = re.compile(
 
 @dataclass(frozen=True)
 class Event:
-    type: Literal["run", "log"]
+    type: Literal[
+        "run",
+        "log",
+        "live_message_fired",
+        "live_message_queued",
+        "abnormal_termination",
+    ]
     ts: str
     payload: dict[str, Any] = field(default_factory=dict)
 
 
 def events_path(session: Session) -> Path:
     return session.dir / EVENTS_FILENAME
+
+
+@dataclass
+class LiveMessageFiredEvent:
+    """A live user directive was fired directly into a running provider session."""
+
+    task_no: int
+    session_id: str
+    summary: str
+    schema_version: int = SCHEMA_VERSION
+
+    def to_event(self) -> Event:
+        return Event(
+            type="live_message_fired",
+            ts=datetime.now(timezone.utc).isoformat(),
+            payload={
+                "task_no": self.task_no,
+                "session_id": self.session_id,
+                "summary": self.summary,
+                "schema_version": self.schema_version,
+            },
+        )
+
+    def emit(self, session: Session) -> None:
+        append_event(session, self.to_event())
+
+
+@dataclass
+class LiveMessageQueuedEvent:
+    """A live user directive was queued for the next iteration (no live session active)."""
+
+    task_no: int
+    summary: str
+    schema_version: int = SCHEMA_VERSION
+
+    def to_event(self) -> Event:
+        return Event(
+            type="live_message_queued",
+            ts=datetime.now(timezone.utc).isoformat(),
+            payload={
+                "task_no": self.task_no,
+                "summary": self.summary,
+                "schema_version": self.schema_version,
+            },
+        )
+
+    def emit(self, session: Session) -> None:
+        append_event(session, self.to_event())
+
+
+@dataclass
+class AbnormalTerminationEvent:
+    """A task run ended unexpectedly (crash, timeout, unhandled error)."""
+
+    task_no: int
+    reason: str
+    schema_version: int = SCHEMA_VERSION
+
+    def to_event(self) -> Event:
+        return Event(
+            type="abnormal_termination",
+            ts=datetime.now(timezone.utc).isoformat(),
+            payload={
+                "task_no": self.task_no,
+                "reason": self.reason,
+                "schema_version": self.schema_version,
+            },
+        )
+
+    def emit(self, session: Session) -> None:
+        append_event(session, self.to_event())
 
 
 def append_event(session: Session, event: Event) -> None:

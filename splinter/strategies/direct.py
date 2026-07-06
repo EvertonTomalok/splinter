@@ -553,6 +553,30 @@ class DirectStrategy(Strategy):
                     f"## Live directive (iter {iteration})\n{live_cmd}\n\n",
                 )
                 corrections = _merge_guidance(corrections, live_cmd)
+                if oc_session:
+                    from splinter.agents.runner import resolve_model
+                    from splinter.models.roster import provider_for
+                    from splinter.obs.events import LiveMessageFiredEvent
+                    from splinter.providers.dispatch import fire_message_into_session
+                    _mid, _ = resolve_model(tier, ladder)
+                    fire_message_into_session(
+                        provider=provider_for(_mid),
+                        model=_mid,
+                        session_id=oc_session,
+                        message=live_cmd,
+                        cwd=cwd,
+                    )
+                    LiveMessageFiredEvent(
+                        task_no=task_index + 1,
+                        session_id=oc_session,
+                        summary=live_cmd[:200],
+                    ).emit(session)
+                else:
+                    from splinter.obs.events import LiveMessageQueuedEvent
+                    LiveMessageQueuedEvent(
+                        task_no=task_index + 1,
+                        summary=live_cmd[:200],
+                    ).emit(session)
 
             if iteration == start_iteration and resume_stage:
                 chain = build_chain_from(

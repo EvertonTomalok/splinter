@@ -431,7 +431,7 @@ class Session:
             try:
                 loaded: dict[str, Any] = json.loads(p.read_text())
                 return loaded
-            except (json.JSONDecodeError, FileNotFoundError):
+            except (json.JSONDecodeError, OSError):
                 return None
 
     def clear_run_live(self, task_no: int) -> None:
