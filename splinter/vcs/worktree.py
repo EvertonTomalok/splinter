@@ -53,6 +53,21 @@ def _branch_name(task_id: str) -> str:
     return f"splinter/{task_id}"
 
 
+def _link_deps_from_main(main_dir: Path, wt_dir: Path) -> None:
+    """Symlink dependency directories from the main repo into the worktree.
+
+    Git worktrees share tracked files but not gitignored directories like
+    ``node_modules``. Without them, gate commands (``yarn lint``, ``nx build``,
+    etc.) fail with "Couldn't find the node_modules state file". Symlinks let
+    the worktree reuse the already-installed dependencies.
+    """
+    for dep in ("node_modules",):
+        src = main_dir / dep
+        dst = wt_dir / dep
+        if src.is_dir() and not dst.exists():
+            dst.symlink_to(src, target_is_directory=True)
+
+
 def create_worktree(task_id: str, base_dir: Path | None = None) -> WorktreeHandle:
     """Create a git worktree for task_id; return its handle."""
     cwd = base_dir or Path.cwd()
@@ -66,6 +81,7 @@ def create_worktree(task_id: str, base_dir: Path | None = None) -> WorktreeHandl
         capture_output=True,
         text=True,
     )
+    _link_deps_from_main(cwd, path)
     return WorktreeHandle(path=path, branch=branch, task_id=task_id)
 
 
