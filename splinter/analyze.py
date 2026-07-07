@@ -405,11 +405,11 @@ def _plan_files(session: Session) -> list[tuple[str, str]]:
 def _plans_from_agentic(session: Session) -> int:
     """Recover missing plan files by writing them back from agentic/task-N.jsonl.
 
-    Called only when knowledge/plan*.md files are absent (cleared by an older
-    eval-fix round before the observability fix).  Writes knowledge/plan-N.md
-    for each task JSONL found.  Tasks that reused an earlier plan (no plan-stage
-    exchange recorded) receive the nearest previously-recovered plan content so
-    every task that ran gets a plan file.  Returns the count of files written.
+    Called when knowledge/plan*.md files are absent or incomplete. Only writes
+    plan files that do not already exist on disk — existing files are never
+    overwritten. Each task's plan comes from its own plan-stage entries only;
+    tasks without plan events are skipped because carry-over from other tasks
+    would produce incorrect plans.
     """
     from splinter.obs.agentic import read_events
 
@@ -422,22 +422,20 @@ def _plans_from_agentic(session: Session) -> int:
         return 0
 
     written = 0
-    last_response: str = ""
     for jsonl_path in task_paths:
         m = re.match(r"task-(\d+)\.jsonl$", jsonl_path.name)
         if not m:
             continue
         task_index = int(m.group(1))
         task_num = task_index + 1  # task-0 → plan-1
-        events = read_events(session, task_index)
-        # Use the LAST plan-stage entry — replanning overwrites earlier plans.
-        plan_events = [e for e in events if e.stage == "plan" and e.response.strip()]
-        if plan_events:
-            last_response = plan_events[-1].response.strip()
-        # Tasks that reused plan.md (no plan-stage exchange) carry the last known
-        # plan — each task that executed deserves its own plan file.
-        if not last_response:
+        plan_path = session.dir / f"knowledge/plan-{task_num}.md"
+        if plan_path.exists():
             continue
+        events = read_events(session, task_index)
+        plan_events = [e for e in events if e.stage == "plan" and e.response.strip()]
+        if not plan_events:
+            continue
+        last_response = plan_events[-1].response.strip()
         session.write(f"knowledge/plan-{task_num}.md", f"# Plan\n\n{last_response}\n")
         if task_num == 1:
             session.write("knowledge/plan.md", f"# Plan\n\n{last_response}\n")

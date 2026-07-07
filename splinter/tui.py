@@ -1065,6 +1065,7 @@ class AnalyzeApp(App[None]):
         """Render the plan pane for the current ``_plan_idx`` (0 = overview,
         1..N = plan-N.md). Shared by ◂/▸ pagination and auto-reload so a refresh
         never snaps the visible plan back to the first one."""
+        _plans_from_agentic(self.session)
         plans = _plan_files(self.session)
         total = len(plans)
         if self._plan_idx > total:  # plan count shrank between reloads
