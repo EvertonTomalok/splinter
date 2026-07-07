@@ -273,6 +273,7 @@ def _build_plan_label(idx: int, total: int) -> str:
 def _plan_overview_md(session: Session) -> str:
     """Summary screen shown when the plan node is first selected (before
     paginating). Renders a table of every plan; ◂/▸ switch between them."""
+    _plans_from_agentic(session)
     plans = _plan_files(session)
     if not plans:
         content = session.read("knowledge/plan.md").strip()

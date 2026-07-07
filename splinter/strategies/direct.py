@@ -498,6 +498,7 @@ class DirectStrategy(Strategy):
             # + user guidance. That IS the plan — what to fix is already known.
             log.info("ASK_USER resume — using corrections as plan (skill output + user guidance)")
             plan = corrections
+            session.write(task_plan_file, f"# Plan\n\n{plan}\n")
         else:
             # Reuse any existing plan — opus calls are expensive and the plan is
             # deterministic for this task. Skip reuse when skip_planner=True (caller
@@ -525,6 +526,8 @@ class DirectStrategy(Strategy):
             elif skip_planner:
                 log.info("planner skipped by user — using corrections/guidance as plan")
                 plan = corrections or user_guidance or ""
+                if plan:
+                    session.write(task_plan_file, f"# Plan\n\n{plan}\n")
             else:
                 plan = _plan_task(
                     task,
