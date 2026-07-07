@@ -382,11 +382,19 @@ def _trace_metrics(session: Session) -> dict[str, str]:
     }
 
 
+def _plan_file_order(p: Any) -> int:
+    m = re.search(r"plan-(\d+)", str(p.stem))
+    return int(m.group(1)) if m else 0
+
+
 def _plan_files(session: Session) -> list[tuple[str, str]]:
     kdir = session.dir / "knowledge"
     if not kdir.exists():
         return []
-    plans = sorted(kdir.glob("plan-*.md"))
+    plans = sorted(
+        kdir.glob("plan-*.md"),
+        key=_plan_file_order,
+    )
     result: list[tuple[str, str]] = []
     for p in plans:
         label = p.stem.replace("plan-", "plan-")
