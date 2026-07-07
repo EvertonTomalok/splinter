@@ -271,6 +271,11 @@ class CascadeStrategy(DirectStrategy):
                 cap,
             )
 
+        # Seed task_index so the TUI progress bar reflects already-checkpointed tasks
+        # on resume. Without this the bar starts at 0/N even when half the tasks are
+        # done, and on resume it can even show stale values from the previous run.
+        session.set_status("running", task_index=len(done), task_total=len(ordered))
+
         futures: dict[Future[tuple[RunResult | None, bool]], Task] = {}
 
         with ThreadPoolExecutor(max_workers=cap) as executor:
@@ -344,6 +349,15 @@ class CascadeStrategy(DirectStrategy):
                         if task.id:
                             done.add(task.id)
                             self._save_checkpoint(session, done)
+                        # Update task_index so the TUI progress bar advances in real
+                        # time. Without this the bar stays frozen until all tasks
+                        # finish, making parallel runs look stuck on resume.
+                        with session_lock:
+                            session.set_status(
+                                "running",
+                                task_index=len(done),
+                                task_total=len(ordered),
+                            )
                     else:
                         # Not a genuine PASS (stopped at max tier, budget, ASK_USER):
                         # do NOT unblock dependents or checkpoint — they'd run against

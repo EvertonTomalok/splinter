@@ -30,12 +30,6 @@ class GateResult:
     checks: list[tuple[str, bool, str]] = field(default_factory=list)
 
 
-DEFAULT_CHECKS = [
-    {"name": "ruff", "cmd": "uv run ruff check", "when": "always", "language": "python"},
-    {"name": "mypy", "cmd": "uv run mypy splinter", "when": "always", "language": "python"},
-    {"name": "pytest", "cmd": "uv run pytest", "when": "tests_exist", "language": "python"},
-]
-
 #: File under the session dir holding the resolved gate checks for this run.
 GATE_FILE = "gate.json"
 
@@ -149,7 +143,10 @@ def _load_gate_checks(
     project_dir: str = ".", session_dir: str | Path | None = None
 ) -> list[dict[str, str]]:
     configured = configured_gate_checks(project_dir, session_dir)
-    return configured if configured is not None else DEFAULT_CHECKS
+    # Never invent checks — if nothing is configured, return empty so run_gate
+    # passes with a warning. The pipeline's _resolve_gate() is responsible for
+    # populating gate.json before the run loop starts.
+    return configured if configured is not None else []
 
 
 def _should_run(check: dict[str, str], project_dir: str) -> bool:

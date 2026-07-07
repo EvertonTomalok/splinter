@@ -124,9 +124,14 @@ def _resolve_gate(session: Session, ladder: object, tasks: list[Task]) -> None:
             gate.save_gate_checks(session.dir, lang_checks)
             log.info("gate: using language-specific defaults for %s", sorted(all_langs))
         else:
+            # No language detected and nothing configured — save an empty gate so
+            # run_gate() passes without inventing checks. The user can still add
+            # checks via config.yaml or the PRD review phase.
+            gate.save_gate_checks(session.dir, [])
             log.warning(
-                "gate: could not detect checks — using defaults. Set `gate_checks` "
-                "in .splinter/config.yaml or specify them in the PRD review."
+                "gate: no linter/test/build configured and no language detected — "
+                "gate will pass. Set `gate_checks` in .splinter/config.yaml or "
+                "specify them in the PRD review."
             )
 
 
