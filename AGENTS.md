@@ -161,6 +161,37 @@ in the TUI (or `splinter configure --sync-prices`) refreshes both caches
 each family newest-first. Tests block `live_models._run`/`_get_json` in
 `conftest.py`.
 
+## Changed-scope gates (`splinter gate <kind>`)
+
+`gate_checks` run with `shell=True` in the worktree, each with its own
+`timeout` (seconds, default 120). On a big repo a whole-repo `go test ./...` or
+`tsc` blows that and the machine, so projects point their gates at
+`splinter gate <kind>` (`agents/gate_scope.py`). It checks only what the change
+touched: commits since the `splinter/*` branch was created (its oldest reflog
+entry) plus uncommitted and untracked files; on any other branch only the
+uncommitted ones (`SPLINTER_GATE_BASE` overrides). Nothing touched → pass.
+
+| kind | runs |
+|---|---|
+| `go-fmt` / `go-vet` / `go-test` | per module (closest `go.mod`), touched packages, `GOMAXPROCS=4 GOFLAGS=-p=2` |
+| `go-lint` | `golangci-lint run --concurrency=2` on touched packages; skipped without a `.golangci.*` |
+| `ts-typecheck` | workspace `typecheck` script, else a `lint` script that is `tsc`, else `tsc --noEmit` |
+| `ts-lint` | `eslint <touched files>` when an eslint config exists |
+| `ts-test` | `vitest related --run --maxWorkers=2 <touched files>`, `bun test`, else the `test` script |
+| `py-lint` / `py-type` / `py-test` | per project (closest `uv.lock`/`pyproject.toml`): `ruff check <files>`, `mypy <files>` (with a mypy config), `pytest -m "not integration"` on touched tests + the member's `tests/` |
+
+The package runner comes from the closest lockfile (bun, pnpm, yarn, npm); bun
+workspaces run tools with `bun --bun`. Worktrees get every `node_modules` up to
+four levels deep symlinked from the main checkout (`vcs/worktree.py`), and
+`node_modules` goes into `.git/info/exclude` — a `node_modules/` gitignore
+pattern does not match a symlink, so `git add -A` would commit it.
+
+```yaml
+gate_checks:
+  - {name: go-test, cmd: splinter gate go-test, when: always, language: all, timeout: 900}
+  - {name: ts-lint, cmd: splinter gate ts-lint, when: always, language: all, timeout: 300}
+```
+
 ## Decision model (jev) on recall/filter
 
 `splinter.providers.decisions` asks decision models (TypeSafe **jev** and

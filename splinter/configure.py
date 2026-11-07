@@ -224,11 +224,10 @@ LANGUAGE_GATE_DEFAULTS: dict[str, list[dict[str, str]]] = {
 }
 
 DEFAULT_CONFIG: dict[str, Any] = {
-    "gate_checks": [
-        {"name": "ruff", "cmd": "uv run ruff check", "when": "always", "language": "python"},
-        {"name": "mypy", "cmd": "uv run mypy splinter", "when": "always", "language": "python"},
-        {"name": "pytest", "cmd": "uv run pytest", "when": "tests_exist", "language": "python"},
-    ],
+    # No gates until the project sets them: an unconfigured project gets its
+    # checks detected/asked per run (pipeline._resolve_gate), never another
+    # project's commands written into its config by a save.
+    "gate_checks": [],
     "defaults": {
         "strategy": "cascade",
         "effort": "auto",

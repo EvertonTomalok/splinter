@@ -247,6 +247,18 @@ def _tests_exist(project_dir: str) -> bool:
     )
 
 
+#: Seconds a gate check may run unless the check sets its own ``timeout``.
+DEFAULT_CHECK_TIMEOUT = 120
+
+
+def _check_timeout(check: dict[str, str]) -> int:
+    try:
+        value = int(check.get("timeout", DEFAULT_CHECK_TIMEOUT))
+    except (TypeError, ValueError):
+        return DEFAULT_CHECK_TIMEOUT
+    return value if value > 0 else DEFAULT_CHECK_TIMEOUT
+
+
 def _lang_match(check: dict[str, str], languages: set[str]) -> bool:
     if not languages:
         return True
@@ -279,7 +291,7 @@ def run_gate(
                 shell=True,
                 capture_output=True,
                 text=True,
-                timeout=120,
+                timeout=_check_timeout(check),
                 cwd=project_dir,
             )
             passed = proc.returncode == 0

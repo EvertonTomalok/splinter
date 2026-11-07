@@ -524,6 +524,27 @@ def configure(
     )
 
 
+@app.command()
+def gate(
+    kind: Annotated[
+        str,
+        typer.Argument(
+            help="go-fmt | go-vet | go-lint | go-test | ts-typecheck | ts-lint | ts-test | "
+            "py-lint | py-type | py-test"
+        ),
+    ],
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Print the commands instead of running them.")
+    ] = False,
+) -> None:
+    """Run one gate kind over only the files the change touched (for gate_checks)."""
+    from pathlib import Path
+
+    from splinter.agents.gate_scope import run_kind
+
+    raise typer.Exit(run_kind(kind, Path.cwd(), dry_run=dry_run))
+
+
 def main(argv: list[str] | None = None) -> int:
     """Console-script entrypoint; returns a process exit code."""
     try:

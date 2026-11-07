@@ -138,7 +138,6 @@ class ConfigureApp(App[bool]):
     def __init__(self) -> None:
         super().__init__()
         from splinter.configure import (
-            DEFAULT_CONFIG,
             configured_agents_options,
             configured_decisions,
             load_config,
@@ -155,7 +154,7 @@ class ConfigureApp(App[bool]):
         self._agents = configured_agents_options()
         self._decisions = configured_decisions()
         self._gate_checks: list[dict[str, str]] = copy.deepcopy(
-            load_config().get("gate_checks") or DEFAULT_CONFIG["gate_checks"]
+            load_config().get("gate_checks") or []
         )
         self._sync_message = ""
 
@@ -613,7 +612,9 @@ class ConfigureApp(App[bool]):
                 continue
             if cmd:
                 name = original["name"] if cmd == original["cmd"] else cmd.split()[0]
-                checks.append({"name": name, "cmd": cmd, "when": when, "language": language})
+                checks.append(
+                    {**original, "name": name, "cmd": cmd, "when": when, "language": language}
+                )
         self._gate_checks = checks
 
     def on_checkbox_changed(self, event: Checkbox.Changed) -> None:

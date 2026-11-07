@@ -53,19 +53,70 @@ def _branch_name(task_id: str) -> str:
     return f"splinter/{task_id}"
 
 
+_DEP_DIR = "node_modules"
+_DEP_DEPTH = 4
+
+
+def _workspace_dirs(wt_dir: Path, depth: int = _DEP_DEPTH) -> list[Path]:
+    """Worktree dirs (relative, root included) up to ``depth`` levels, hidden ones pruned."""
+    found: list[Path] = [Path()]
+    frontier: list[Path] = [Path()]
+    for _ in range(depth):
+        nxt: list[Path] = []
+        for rel in frontier:
+            try:
+                children = sorted((wt_dir / rel).iterdir())
+            except OSError:
+                continue
+            nxt.extend(
+                rel / c.name
+                for c in children
+                if c.is_dir()
+                and not c.is_symlink()
+                and not c.name.startswith(".")
+                and c.name != _DEP_DIR
+            )
+        found.extend(nxt)
+        frontier = nxt
+    return found
+
+
+def _exclude_dep_links(main_dir: Path) -> None:
+    """Keep the ``node_modules`` symlinks out of ``git add -A``.
+
+    A ``node_modules/`` gitignore pattern matches directories only; a symlink is
+    a file to git, so without this every brief commit would carry the link.
+    """
+    git_dir = main_dir / ".git"
+    if not git_dir.is_dir():
+        return
+    exclude = git_dir / "info" / "exclude"
+    current = exclude.read_text() if exclude.exists() else ""
+    if _DEP_DIR in current.split():
+        return
+    exclude.parent.mkdir(parents=True, exist_ok=True)
+    sep = "" if not current or current.endswith("\n") else "\n"
+    exclude.write_text(f"{current}{sep}{_DEP_DIR}\n")
+
+
 def _link_deps_from_main(main_dir: Path, wt_dir: Path) -> None:
     """Symlink dependency directories from the main repo into the worktree.
 
     Git worktrees share tracked files but not gitignored directories like
-    ``node_modules``. Without them, gate commands (``yarn lint``, ``nx build``,
-    etc.) fail with "Couldn't find the node_modules state file". Symlinks let
-    the worktree reuse the already-installed dependencies.
+    ``node_modules``. Without them, gate commands (``yarn lint``, ``tsc``,
+    ``vitest``) fail. Every workspace up to four levels deep (``apps/web``,
+    ``web/apps/hub``, ``mocks/asaas``) gets its own link to the main repo's
+    already-installed dependencies.
     """
-    for dep in ("node_modules",):
-        src = main_dir / dep
-        dst = wt_dir / dep
-        if src.is_dir() and not dst.exists():
+    linked = False
+    for rel in _workspace_dirs(wt_dir):
+        src = main_dir / rel / _DEP_DIR
+        dst = wt_dir / rel / _DEP_DIR
+        if src.is_dir() and not dst.exists() and not dst.is_symlink():
             dst.symlink_to(src, target_is_directory=True)
+            linked = True
+    if linked:
+        _exclude_dep_links(main_dir)
 
 
 def create_worktree(

@@ -2364,6 +2364,22 @@ def test_prune_dead_prd_sessions_removes_only_old_stub_refinements(
 
 # --- US-003: ConfigureApp gates section -------------------------------------
 
+_SEED_GATES = [
+    {"name": "ruff", "cmd": "uv run ruff check", "when": "always", "language": "python"},
+    {"name": "mypy", "cmd": "uv run mypy src", "when": "always", "language": "python"},
+    {"name": "pytest", "cmd": "uv run pytest", "when": "tests_exist", "language": "python"},
+]
+
+
+def _seed_gates(root: Path) -> None:
+    import yaml
+
+    from splinter.configure import invalidate_config_cache
+
+    (root / ".splinter").mkdir(parents=True, exist_ok=True)
+    (root / ".splinter" / "config.yaml").write_text(yaml.safe_dump({"gate_checks": _SEED_GATES}))
+    invalidate_config_cache()
+
 
 def test_configure_tui_lists_gate_checks(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
     import asyncio
@@ -2371,16 +2387,17 @@ def test_configure_tui_lists_gate_checks(tmp_path: Path, monkeypatch: "pytest.Mo
     from splinter.tui_configure import ConfigureApp
 
     monkeypatch.chdir(tmp_path)
+    _seed_gates(tmp_path)
 
     async def drive() -> None:
         app = ConfigureApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            assert app._gate_checks == DEFAULT_CONFIG["gate_checks"]
+            assert app._gate_checks == _SEED_GATES
             gate_rows = app.query("#gate-rows .gate-row")
-            assert len(gate_rows) == len(DEFAULT_CONFIG["gate_checks"])
+            assert len(gate_rows) == len(_SEED_GATES)
             # Verify language column is present for each row
-            for i in range(len(DEFAULT_CONFIG["gate_checks"])):
+            for i in range(len(_SEED_GATES)):
                 lang_select = app.query_one(f"#gate_lang_{i}")
                 assert lang_select is not None
 
@@ -2407,7 +2424,8 @@ def test_configure_save_preserves_gate_checks(
 
     asyncio.run(drive())
     config = load_config()
-    assert config["gate_checks"] == DEFAULT_CONFIG["gate_checks"]
+    # An unconfigured project saves no gates — never another project's defaults.
+    assert config["gate_checks"] == []
 
 
 def test_configure_save_with_seeded_config(
@@ -2460,6 +2478,7 @@ def test_configure_tui_gate_delete(tmp_path: Path, monkeypatch: "pytest.MonkeyPa
     from splinter.tui_configure import ConfigureApp
 
     monkeypatch.chdir(tmp_path)
+    _seed_gates(tmp_path)
 
     async def drive() -> None:
         app = ConfigureApp()
@@ -2478,7 +2497,7 @@ def test_configure_tui_gate_delete(tmp_path: Path, monkeypatch: "pytest.MonkeyPa
 
     asyncio.run(drive())
     config = load_config()
-    assert len(config["gate_checks"]) == len(DEFAULT_CONFIG["gate_checks"]) - 1
+    assert len(config["gate_checks"]) == len(_SEED_GATES) - 1
 
 
 def test_write_gate_checks_preserves_models(
@@ -2822,6 +2841,7 @@ def test_configure_tui_edit_gate_cmd(tmp_path: Path, monkeypatch: "pytest.Monkey
     from splinter.tui_configure import ConfigureApp
 
     monkeypatch.chdir(tmp_path)
+    _seed_gates(tmp_path)
 
     async def drive() -> None:
         app = ConfigureApp()
@@ -2841,8 +2861,42 @@ def test_configure_tui_edit_gate_cmd(tmp_path: Path, monkeypatch: "pytest.Monkey
     config = load_config()
     assert config["gate_checks"][0]["cmd"] == "uv run ruff check --strict"
     assert config["gate_checks"][0]["language"] == "rust"
-    assert config["gate_checks"][1] == DEFAULT_CONFIG["gate_checks"][1]
-    assert config["gate_checks"][2] == DEFAULT_CONFIG["gate_checks"][2]
+    assert config["gate_checks"][1] == _SEED_GATES[1]
+    assert config["gate_checks"][2] == _SEED_GATES[2]
+
+
+def test_configure_tui_save_keeps_gate_timeout(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
+) -> None:
+    import asyncio
+
+    import yaml
+    from textual.widgets import Input
+
+    from splinter.configure import invalidate_config_cache, load_config
+    from splinter.tui_configure import ConfigureApp
+
+    monkeypatch.chdir(tmp_path)
+    gate = {"name": "go-test", "cmd": "splinter gate go-test", "when": "always",
+            "language": "all", "timeout": 900}
+    (tmp_path / ".splinter").mkdir()
+    (tmp_path / ".splinter" / "config.yaml").write_text(yaml.safe_dump({"gate_checks": [gate]}))
+    invalidate_config_cache()
+
+    async def drive() -> None:
+        app = ConfigureApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one("#gate_cmd_0", Input).value = "splinter gate go-vet"
+            await pilot.pause()
+            await pilot.press("s")
+            await pilot.pause()
+        assert app.saved
+
+    asyncio.run(drive())
+    (saved,) = load_config()["gate_checks"]
+    assert saved["cmd"] == "splinter gate go-vet"
+    assert saved["timeout"] == 900
 
 
 def test_configure_tui_delete_all_gates(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
