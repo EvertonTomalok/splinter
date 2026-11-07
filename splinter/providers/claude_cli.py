@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from splinter.procreg import run_subprocess
+from splinter.procreg import build_child_env, run_subprocess
 from splinter.providers.base import ModelPrice, ModelProvider, ProviderResponse
 
 # Child of "splinter" so the run-pane log handler surfaces these live.
@@ -226,6 +227,11 @@ def run(
     session_id: str | None = None,
     timeout: int | None = None,
     cwd: str | None = None,
+    env: dict[str, str] | None = None,
+    idle_timeout: float | None = None,
+    disallowed_tools: Sequence[str] = (),
+    permission_mode: str | None = None,
+    unset_env: Sequence[str] = (),
 ) -> ClaudeResult:
     if timeout is None:
         from splinter.configure import configured_timeout
@@ -240,8 +246,14 @@ def run(
         model,
         "--output-format",
         cli_format,
-        "--dangerously-skip-permissions",
     ]
+    if permission_mode is not None:
+        cmd.extend(["--permission-mode", permission_mode])
+    else:
+        cmd.append("--dangerously-skip-permissions")
+    if disallowed_tools:
+        cmd.append("--disallowedTools")
+        cmd.extend(list(disallowed_tools))
     if stream_json:
         cmd.append("--verbose")
     effort = _normalize_effort(effort)
@@ -255,10 +267,13 @@ def run(
     # whose first line is the '---' YAML fence) isn't mistaken for a CLI flag.
     cmd.extend(["--", prompt])
 
+    child_env = build_child_env(env, tuple(unset_env))
     proc = run_subprocess(
         cmd,
         timeout=timeout,
         cwd=cwd,
+        env=child_env,
+        idle_timeout=idle_timeout,
         on_line=_stream_claude_event if stream_json else None,
     )
     if proc.returncode != 0:

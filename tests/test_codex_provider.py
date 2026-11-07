@@ -245,7 +245,12 @@ def test_run_normal_cmd_construction(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, object] = {}
 
     def fake_subprocess(
-        cmd: list[str], timeout: int = 0, cwd: object = None, on_line: object = None
+        cmd: list[str],
+        timeout: int = 0,
+        cwd: object = None,
+        on_line: object = None,
+        env: object = None,
+        idle_timeout: object = None,
     ) -> object:
         captured["cmd"] = cmd
         return _fake_proc(_SAMPLE_JSONL)
@@ -272,7 +277,12 @@ def test_run_read_only_sandbox_for_prd_agent(monkeypatch: pytest.MonkeyPatch) ->
     captured: dict[str, object] = {}
 
     def fake_subprocess(
-        cmd: list[str], timeout: int = 0, cwd: object = None, on_line: object = None
+        cmd: list[str],
+        timeout: int = 0,
+        cwd: object = None,
+        on_line: object = None,
+        env: object = None,
+        idle_timeout: object = None,
     ) -> object:
         captured["cmd"] = cmd
         return _fake_proc(_SAMPLE_JSONL)
@@ -294,7 +304,12 @@ def test_run_falls_back_to_output_last_message(monkeypatch: pytest.MonkeyPatch) 
     )
 
     def fake_subprocess(
-        cmd: list[str], timeout: int = 0, cwd: object = None, on_line: object = None
+        cmd: list[str],
+        timeout: int = 0,
+        cwd: object = None,
+        on_line: object = None,
+        env: object = None,
+        idle_timeout: object = None,
     ) -> object:
         out_idx = cmd.index("-o")
         Path(cmd[out_idx + 1]).write_text("from output-last-message file")
@@ -314,7 +329,12 @@ def test_run_resume_preserves_session_id_without_thread_started(
     )
 
     def fake_subprocess(
-        cmd: list[str], timeout: int = 0, cwd: object = None, on_line: object = None
+        cmd: list[str],
+        timeout: int = 0,
+        cwd: object = None,
+        on_line: object = None,
+        env: object = None,
+        idle_timeout: object = None,
     ) -> object:
         return _fake_proc(jsonl)
 
@@ -328,7 +348,12 @@ def test_run_strips_codex_prefix_from_model_flag(monkeypatch: pytest.MonkeyPatch
     captured: dict[str, object] = {}
 
     def fake_subprocess(
-        cmd: list[str], timeout: int = 0, cwd: object = None, on_line: object = None
+        cmd: list[str],
+        timeout: int = 0,
+        cwd: object = None,
+        on_line: object = None,
+        env: object = None,
+        idle_timeout: object = None,
     ) -> object:
         captured["cmd"] = cmd
         return _fake_proc(_SAMPLE_JSONL)
@@ -346,7 +371,12 @@ def test_run_effort_flag_added(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, object] = {}
 
     def fake_subprocess(
-        cmd: list[str], timeout: int = 0, cwd: object = None, on_line: object = None
+        cmd: list[str],
+        timeout: int = 0,
+        cwd: object = None,
+        on_line: object = None,
+        env: object = None,
+        idle_timeout: object = None,
     ) -> object:
         captured["cmd"] = cmd
         return _fake_proc(_SAMPLE_JSONL)
@@ -364,7 +394,12 @@ def test_run_effort_alias_mapped(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, object] = {}
 
     def fake_subprocess(
-        cmd: list[str], timeout: int = 0, cwd: object = None, on_line: object = None
+        cmd: list[str],
+        timeout: int = 0,
+        cwd: object = None,
+        on_line: object = None,
+        env: object = None,
+        idle_timeout: object = None,
     ) -> object:
         captured["cmd"] = cmd
         return _fake_proc(_SAMPLE_JSONL)
@@ -381,7 +416,12 @@ def test_run_auto_effort_omitted(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, object] = {}
 
     def fake_subprocess(
-        cmd: list[str], timeout: int = 0, cwd: object = None, on_line: object = None
+        cmd: list[str],
+        timeout: int = 0,
+        cwd: object = None,
+        on_line: object = None,
+        env: object = None,
+        idle_timeout: object = None,
     ) -> object:
         captured["cmd"] = cmd
         return _fake_proc(_SAMPLE_JSONL)
@@ -398,7 +438,12 @@ def test_run_resume_uses_subcommand(monkeypatch: pytest.MonkeyPatch) -> None:
     session_id = "019eb885-0bf2-7be2-b265-81dc3637472b"
 
     def fake_subprocess(
-        cmd: list[str], timeout: int = 0, cwd: object = None, on_line: object = None
+        cmd: list[str],
+        timeout: int = 0,
+        cwd: object = None,
+        on_line: object = None,
+        env: object = None,
+        idle_timeout: object = None,
     ) -> object:
         captured["cmd"] = cmd
         return _fake_proc(_SAMPLE_JSONL)
@@ -417,7 +462,12 @@ def test_run_resume_uses_subcommand(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_run_returns_session_id(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_subprocess(
-        cmd: list[str], timeout: int = 0, cwd: object = None, on_line: object = None
+        cmd: list[str],
+        timeout: int = 0,
+        cwd: object = None,
+        on_line: object = None,
+        env: object = None,
+        idle_timeout: object = None,
     ) -> object:
         return _fake_proc(_SAMPLE_JSONL)
 
@@ -429,7 +479,12 @@ def test_run_returns_session_id(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_run_nonzero_exit_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_subprocess(
-        cmd: list[str], timeout: int = 0, cwd: object = None, on_line: object = None
+        cmd: list[str],
+        timeout: int = 0,
+        cwd: object = None,
+        on_line: object = None,
+        env: object = None,
+        idle_timeout: object = None,
     ) -> object:
         return SimpleNamespace(returncode=1, stdout="", stderr="auth error")
 
@@ -440,7 +495,12 @@ def test_run_nonzero_exit_raises(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_run_calls_on_line_callback(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_subprocess(
-        cmd: list[str], timeout: int = 0, cwd: object = None, on_line: object = None
+        cmd: list[str],
+        timeout: int = 0,
+        cwd: object = None,
+        on_line: object = None,
+        env: object = None,
+        idle_timeout: object = None,
     ) -> object:
         if on_line is not None:
             for line in _SAMPLE_JSONL.splitlines():
@@ -495,7 +555,12 @@ def test_codex_provider_returns_provider_response(monkeypatch: pytest.MonkeyPatc
     from splinter.providers.base import ProviderResponse
 
     def fake_subprocess(
-        cmd: list[str], timeout: int = 0, cwd: object = None, on_line: object = None
+        cmd: list[str],
+        timeout: int = 0,
+        cwd: object = None,
+        on_line: object = None,
+        env: object = None,
+        idle_timeout: object = None,
     ) -> object:
         return _fake_proc(_SAMPLE_JSONL)
 
@@ -514,7 +579,12 @@ def test_codex_provider_gap_on_rate_limit(monkeypatch: pytest.MonkeyPatch) -> No
     from splinter.providers.base import ProviderGapError
 
     def fake_subprocess(
-        cmd: list[str], timeout: int = 0, cwd: object = None, on_line: object = None
+        cmd: list[str],
+        timeout: int = 0,
+        cwd: object = None,
+        on_line: object = None,
+        env: object = None,
+        idle_timeout: object = None,
     ) -> object:
         return SimpleNamespace(returncode=1, stdout="", stderr="429 rate limit exceeded")
 
@@ -537,7 +607,12 @@ def test_codex_provider_gap_on_text_error(monkeypatch: pytest.MonkeyPatch) -> No
     )
 
     def fake_subprocess(
-        cmd: list[str], timeout: int = 0, cwd: object = None, on_line: object = None
+        cmd: list[str],
+        timeout: int = 0,
+        cwd: object = None,
+        on_line: object = None,
+        env: object = None,
+        idle_timeout: object = None,
     ) -> object:
         return _fake_proc(gap_jsonl)
 
@@ -558,7 +633,12 @@ def test_codex_provider_does_not_treat_normal_text_as_gap(monkeypatch: pytest.Mo
     )
 
     def fake_subprocess(
-        cmd: list[str], timeout: int = 0, cwd: object = None, on_line: object = None
+        cmd: list[str],
+        timeout: int = 0,
+        cwd: object = None,
+        on_line: object = None,
+        env: object = None,
+        idle_timeout: object = None,
     ) -> object:
         return _fake_proc(jsonl)
 
@@ -573,7 +653,12 @@ def test_codex_provider_passes_session_as_resume(monkeypatch: pytest.MonkeyPatch
     session_id = "019eb885-0bf2-7be2-b265-81dc3637472b"
 
     def fake_subprocess(
-        cmd: list[str], timeout: int = 0, cwd: object = None, on_line: object = None
+        cmd: list[str],
+        timeout: int = 0,
+        cwd: object = None,
+        on_line: object = None,
+        env: object = None,
+        idle_timeout: object = None,
     ) -> object:
         captured["cmd"] = cmd
         return _fake_proc(_SAMPLE_JSONL)

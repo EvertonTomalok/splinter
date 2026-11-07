@@ -50,7 +50,7 @@ def test_prompt_with_leading_dashes_is_not_parsed_as_flag(
         cmd: list[str],
         timeout: int = 0,
         cwd: object = None,
-        on_line: object = None,
+        on_line: object = None, env: object = None, idle_timeout: object = None,
     ) -> object:
         captured["cmd"] = cmd
         return SimpleNamespace(returncode=0, stdout='{"result": "ok"}', stderr="")
@@ -78,7 +78,7 @@ def test_claude_json_runs_use_stream_json_for_live_trace(
         cmd: list[str],
         timeout: int = 0,
         cwd: object = None,
-        on_line: object = None,
+        on_line: object = None, env: object = None, idle_timeout: object = None,
     ) -> object:
         captured["cmd"] = cmd
         captured["on_line"] = on_line
@@ -135,7 +135,7 @@ def test_claude_run_uses_configured_timeout_when_unset(
         cmd: list[str],
         timeout: int = 0,
         cwd: object = None,
-        on_line: object = None,
+        on_line: object = None, env: object = None, idle_timeout: object = None,
     ) -> object:
         seen["timeout"] = timeout
         return SimpleNamespace(returncode=0, stdout='{"result": "ok"}', stderr="")

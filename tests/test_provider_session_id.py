@@ -51,7 +51,12 @@ def _patch_claude_subprocess(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]
     captured: list[list[str]] = []
 
     def fake_subprocess(
-        cmd: list[str], timeout: int = 0, cwd: object = None, on_line: object = None
+        cmd: list[str],
+        timeout: int = 0,
+        cwd: object = None,
+        on_line: object = None,
+        env: object = None,
+        idle_timeout: object = None,
     ) -> object:
         captured.append(cmd)
         sid = _cmd_value_after(cmd, "--session-id") or _cmd_value_after(cmd, "--resume") or ""
@@ -179,7 +184,12 @@ def test_non_claude_provider_ignores_session_id(monkeypatch: pytest.MonkeyPatch)
     oc_captured: list[list[str]] = []
 
     def fake_oc_subprocess(
-        cmd: list[str], timeout: int = 0, cwd: object = None, on_line: object = None
+        cmd: list[str],
+        timeout: int = 0,
+        cwd: object = None,
+        on_line: object = None,
+        env: object = None,
+        idle_timeout: object = None,
     ) -> object:
         oc_captured.append(cmd)
         return _fake_proc(json.dumps({"text": "ok", "session_id": "oc-sess"}))
@@ -194,7 +204,12 @@ def test_non_claude_provider_ignores_session_id(monkeypatch: pytest.MonkeyPatch)
     codex_captured: list[list[str]] = []
 
     def fake_codex_subprocess(
-        cmd: list[str], timeout: int = 0, cwd: object = None, on_line: object = None
+        cmd: list[str],
+        timeout: int = 0,
+        cwd: object = None,
+        on_line: object = None,
+        env: object = None,
+        idle_timeout: object = None,
     ) -> object:
         codex_captured.append(cmd)
         return _fake_proc(
@@ -211,7 +226,12 @@ def test_non_claude_provider_ignores_session_id(monkeypatch: pytest.MonkeyPatch)
     cursor_captured: list[list[str]] = []
 
     def fake_cursor_subprocess(
-        cmd: list[str], timeout: int = 0, cwd: object = None, on_line: object = None
+        cmd: list[str],
+        timeout: int = 0,
+        cwd: object = None,
+        on_line: object = None,
+        env: object = None,
+        idle_timeout: object = None,
     ) -> object:
         cursor_captured.append(cmd)
         return _fake_proc(

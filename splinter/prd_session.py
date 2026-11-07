@@ -250,6 +250,7 @@ def _ask(prompt: str, *, resume: str | None, session: object = None) -> Turn:
         session=resume,
         timeout=prd_timeout,
         role="prd",
+        pool=ladder.step_pool("prd"),
     )
     tokens = {
         "input": result.tokens.get("input", 0) or 0,
@@ -511,6 +512,10 @@ def prd_session_is_resumable(session: "Session") -> bool:
     events_path = session.dir / "events.jsonl"
     if events_path.exists() and events_path.stat().st_size > 0:
         return True
+    if session.read_status().get("source") == "task":
+        return bool(
+            session.read("task.yaml").strip() or session.read("knowledge/plan.md").strip()
+        )
     return bool(user_story_titles(session.read("prd.md")))
 
 

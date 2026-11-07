@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from splinter.agents.gate import run_gate, task_languages
 from splinter.agents.runner import RunResult, Task, _build_prompt
 from splinter.memory.session import Session
-from splinter.models.roster import Ladder, provider_for
+from splinter.models.roster import Ladder, load_ladder, provider_for
 from splinter.obs.agentic import _now_iso, record_exchange
 from splinter.obs.trace import RunEntry, Trace
 from splinter.providers.dispatch import run_text
@@ -77,6 +77,7 @@ def _phase_plan(session: Session, description: str, cfg: PhaseConfig, phase_num:
         variant=cfg.plan_effort,
         timeout=None,
         session=session,
+        pool=load_ladder().step_pool("planner"),
     )
     record_exchange(prompt, plan_text, model=cfg.plan_model)
     return plan_text

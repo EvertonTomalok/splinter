@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import subprocess
 from dataclasses import dataclass
 from typing import Any
@@ -69,6 +70,11 @@ def run(
     timeout: int | None = None,
     agent: str = "build",
     cwd: str | None = None,
+    env: dict[str, str] | None = None,
+    idle_timeout: float | None = None,
+    standalone: bool = False,
+    auto: bool = False,
+    config_content: str | None = None,
 ) -> OpencodeResult:
     if timeout is None:
         from splinter.configure import configured_timeout
@@ -80,6 +86,12 @@ def run(
     cmd: list[str] = [
         "opencode",
         "run",
+    ]
+    if standalone:
+        cmd.append("--standalone")
+    if auto:
+        cmd.append("--auto")
+    cmd += [
         "-m",
         model,
         "--agent",
@@ -98,7 +110,19 @@ def run(
     # (yargs prints usage and exits 1 otherwise).
     cmd.extend(["--", prompt])
 
-    proc = run_subprocess(cmd, timeout=timeout, cwd=cwd, on_line=_stream_event)
+    child_env = env if env is not None else dict(os.environ)
+    if config_content is not None:
+        child_env = dict(child_env)
+        child_env["OPENCODE_CONFIG_CONTENT"] = config_content
+
+    proc = run_subprocess(
+        cmd,
+        timeout=timeout,
+        cwd=cwd,
+        env=child_env,
+        idle_timeout=idle_timeout,
+        on_line=_stream_event,
+    )
     if proc.returncode != 0:
         raise RuntimeError(f"opencode exited {proc.returncode}: {proc.stderr.strip()}")
 

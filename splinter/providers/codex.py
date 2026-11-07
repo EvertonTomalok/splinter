@@ -145,14 +145,25 @@ def _is_message_item(item: dict[str, Any]) -> bool:
     return _item_kind(item) in _MESSAGE_KINDS
 
 
-def _build_base_flags(bare_model: str, *, effort: str | None, agent: str) -> list[str]:
+def _build_base_flags(
+    bare_model: str,
+    *,
+    effort: str | None,
+    agent: str,
+    sandbox: str | None = None,
+    network_access: bool = True,
+) -> list[str]:
     flags: list[str] = ["--json", "--skip-git-repo-check", "-m", bare_model]
-    if _use_read_only_sandbox(agent):
+    if sandbox is not None:
+        flags.extend(["-s", sandbox])
+    elif _use_read_only_sandbox(agent):
         flags.extend(["-s", "read-only"])
     else:
         flags.append("--dangerously-bypass-approvals-and-sandbox")
     if effort is not None:
         flags.extend(["-c", f"model_reasoning_effort={effort}"])
+    if sandbox == "workspace-write" and not network_access:
+        flags.extend(["-c", "sandbox_workspace_write.network_access=false"])
     return flags
 
 
@@ -263,6 +274,10 @@ def run(
     timeout: int | None = None,
     agent: str = "build",
     cwd: str | None = None,
+    env: dict[str, str] | None = None,
+    idle_timeout: float | None = None,
+    sandbox: str | None = None,
+    network_access: bool = True,
 ) -> CodexResult:
     if timeout is None:
         from splinter.configure import configured_timeout
@@ -271,7 +286,13 @@ def run(
 
     bare_model = _strip_prefix(model)
     normalized_effort = _normalize_effort(effort)
-    base_flags = _build_base_flags(bare_model, effort=normalized_effort, agent=agent)
+    base_flags = _build_base_flags(
+        bare_model,
+        effort=normalized_effort,
+        agent=agent,
+        sandbox=sandbox,
+        network_access=network_access,
+    )
 
     last_msg_path: Path | None = None
     fd, last_msg_name = tempfile.mkstemp(suffix=".md")
@@ -287,7 +308,14 @@ def run(
         else:
             cmd = ["codex", "exec", *base_flags, "--", prompt]
 
-        proc = run_subprocess(cmd, timeout=timeout, cwd=cwd, on_line=_stream_codex_event)
+        proc = run_subprocess(
+            cmd,
+            timeout=timeout,
+            cwd=cwd,
+            env=env,
+            idle_timeout=idle_timeout,
+            on_line=_stream_codex_event,
+        )
         if proc.returncode != 0:
             raise RuntimeError(f"codex exited {proc.returncode}: {proc.stderr.strip()}")
 

@@ -100,6 +100,18 @@ class Evaluator:
                 skill_section_text = section("Eval Skill", eval_skill.body)
         gate_text = "PASS" if gate_passed else f"FAIL — {gate_detail or 'mechanical checks failed'}"
         directive_section = section("User Directive", user_directive) if user_directive else ""
+        full_prompt = render(
+            "eval",
+            task_section=section("Task", task.description),
+            acceptance_section=section("Acceptance Criteria", task.acceptance),
+            plan_section=section("Implementation Plan", plan) if plan else "",
+            output_section=section("Implementation Output", run_output),
+            gate_section=section("Mechanical Gate Result", gate_text),
+            previous_evals_section=section("Previous Eval Feedback", previous_evals),
+            user_directive_section=directive_section,
+            skill_section=skill_section_text,
+            standards_section=section("Code Conventions", load_standards()),
+        )
         if session:
             # Session already holds task/acceptance/plan/standards — send only the delta.
             prompt = render(
@@ -110,19 +122,7 @@ class Evaluator:
                 user_directive_section=directive_section,
             )
         else:
-            plan_section_text = section("Implementation Plan", plan) if plan else ""
-            prompt = render(
-                "eval",
-                task_section=section("Task", task.description),
-                acceptance_section=section("Acceptance Criteria", task.acceptance),
-                plan_section=plan_section_text,
-                output_section=section("Implementation Output", run_output),
-                gate_section=section("Mechanical Gate Result", gate_text),
-                previous_evals_section=section("Previous Eval Feedback", previous_evals),
-                user_directive_section=directive_section,
-                skill_section=skill_section_text,
-                standards_section=section("Code Conventions", load_standards()),
-            )
+            prompt = full_prompt
         response, sid = run_provider_session(
             prompt,
             model,
@@ -135,6 +135,8 @@ class Evaluator:
             tier=tier,
             task_index=task_index,
             role="eval",
+            pool=self.ladder.step_pool("eval"),
+            fallback_prompt=full_prompt,
         )
         record_exchange(prompt, response.text, model=model)
         verdict = self._parse_verdict(response.text)
@@ -148,7 +150,7 @@ class Evaluator:
                 f"Previous invalid reply:\n{response.text}"
             )
             repaired, repaired_sid = run_provider_session(
-                repair_prompt,
+                repair_prompt if sid else full_prompt + "\n\n" + repair_prompt,
                 model,
                 variant=effort,
                 session=sid,
@@ -159,6 +161,8 @@ class Evaluator:
                 tier=tier,
                 task_index=task_index,
                 role="eval",
+                pool=self.ladder.step_pool("eval"),
+                fallback_prompt=full_prompt + "\n\n" + repair_prompt,
             )
             record_exchange(repair_prompt, repaired.text, model=model)
             verdict = self._parse_verdict(repaired.text)

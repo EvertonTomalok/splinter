@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -239,6 +240,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "budget": None,
         "soft_budget": True,
     },
+    "agents": {
+        "acceptance_check": "gate+eval",
+        "stall_min": 8,
+        "max_attempts": 3,
+        "probe_on_start": False,
+    },
 }
 
 
@@ -269,6 +276,226 @@ def configured_soft_budget() -> bool:
         return bool(value)
     except (ValueError, TypeError):
         return True
+
+
+DECISION_USE_TARGETS = ("recall", "recall_large", "filter")
+
+
+@dataclass(frozen=True)
+class DecisionsOptions:
+    """Decision model (jev) under ``decisions:``.
+
+    ``providers`` is the ordered chain (primary, then fallback), each slot with
+    its own model and token; ``use_for`` holds the per-step toggles (busca /
+    filtro). The flat ``provider``/``model``/``url``/``api_key_env`` fields
+    mirror the primary slot for older callers.
+    """
+
+    provider: str = "openrouter"
+    model: str = "typesafe/jev-1.14"
+    url: str = ""
+    api_key_env: str = ""
+    use_for: tuple[str, ...] = ()
+    threshold: float = 0.5
+    providers: tuple[Any, ...] = ()
+
+
+def _decision_slots(raw: dict[str, Any]) -> tuple[Any, ...]:
+    """Parse ``decisions.providers``; a legacy flat config becomes one slot."""
+    from splinter.providers.decisions import DECISION_PROVIDERS, DecisionSlot
+
+    entries = raw.get("providers")
+    if not isinstance(entries, list) or not entries:
+        entries = [
+            {
+                "provider": raw.get("provider", "openrouter"),
+                "model": raw.get("model", ""),
+                "url": raw.get("url", ""),
+                "api_key_env": raw.get("api_key_env", ""),
+            }
+        ]
+    slots: list[DecisionSlot] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        provider = str(entry.get("provider", "")).strip()
+        if provider not in DECISION_PROVIDERS:
+            continue
+        slots.append(
+            DecisionSlot(
+                provider=provider,
+                model=str(entry.get("model") or "").strip(),
+                api_key=str(entry.get("api_key") or "").strip(),
+                api_key_env=str(entry.get("api_key_env") or "").strip(),
+                url=str(entry.get("url") or "").strip(),
+            )
+        )
+    return tuple(slots) or (DecisionSlot(),)
+
+
+def configured_decisions() -> DecisionsOptions:
+    """Read ``decisions:`` from config; every field falls back on invalid values."""
+    from splinter.providers.decisions import DEFAULT_DECISION_MODEL
+
+    raw = load_config().get("decisions", {})
+    if not isinstance(raw, dict):
+        return DecisionsOptions()
+    use_raw = raw.get("use_for", [])
+    use_for = (
+        tuple(
+            str(u).strip().lower()
+            for u in use_raw
+            if str(u).strip().lower() in DECISION_USE_TARGETS
+        )
+        if isinstance(use_raw, (list, tuple))
+        else ()
+    )
+    try:
+        threshold = min(max(float(raw.get("threshold", 0.5)), 0.0), 1.0)
+    except (ValueError, TypeError):
+        threshold = 0.5
+    slots = _decision_slots(raw)
+    primary = slots[0]
+    return DecisionsOptions(
+        provider=primary.provider,
+        model=primary.resolved_model() or DEFAULT_DECISION_MODEL,
+        url=primary.url,
+        api_key_env=primary.api_key_env,
+        use_for=use_for,
+        threshold=threshold,
+        providers=slots,
+    )
+
+
+def write_decisions_config(
+    *,
+    provider: str | None = None,
+    model: str | None = None,
+    url: str | None = None,
+    api_key_env: str | None = None,
+    use_for: list[str] | tuple[str, ...] | None = None,
+    threshold: float | None = None,
+    providers: list[dict[str, str]] | None = None,
+) -> Path:
+    """Merge the ``decisions:`` section into config.yaml; ``None`` fields are kept.
+
+    ``providers`` replaces the whole chain (empty fields are omitted) and drops
+    the legacy flat ``provider``/``model``/``url``/``api_key_env`` keys.
+    """
+    config = load_config()
+    section = dict(config.get("decisions") or {})
+    if providers is not None:
+        for legacy in ("provider", "model", "url", "api_key_env"):
+            section.pop(legacy, None)
+        section["providers"] = [
+            {k: v for k, v in entry.items() if v} for entry in providers if entry.get("provider")
+        ]
+    elif isinstance(section.get("providers"), list) and section["providers"]:
+        first = dict(section["providers"][0])
+        flat = {"provider": provider, "model": model, "url": url, "api_key_env": api_key_env}
+        first.update({k: v for k, v in flat.items() if v is not None})
+        section["providers"] = [first, *section["providers"][1:]]
+        provider = model = url = api_key_env = None
+    if provider is not None:
+        section["provider"] = provider
+    if model is not None:
+        section["model"] = model
+    if url is not None:
+        section["url"] = url
+    if api_key_env is not None:
+        section["api_key_env"] = api_key_env
+    if use_for is not None:
+        section["use_for"] = [u for u in use_for if u in DECISION_USE_TARGETS]
+    if threshold is not None:
+        section["threshold"] = min(max(float(threshold), 0.0), 1.0)
+    config["decisions"] = section
+    p = _config_path("project")
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with open(p, "w") as f:
+        yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+    invalidate_config_cache()
+    return p
+
+
+ACCEPTANCE_CHECK_VALUES = ("gate", "gate+eval", "gate+orchestrator")
+_LEGACY_AGENTS_KEYS = frozenset({"engines", "engine_models", "engine_efforts"})
+
+
+@dataclass(frozen=True)
+class AgentsOptions:
+    """Run knobs under ``agents:``; the model per brief comes from its effort chain."""
+
+    acceptance_check: str = "gate+eval"
+    stall_min: float = 8.0
+    max_attempts: int = 3
+    probe_on_start: bool = False
+
+
+def configured_agents_options() -> AgentsOptions:
+    """Read ``agents:`` from config, falling back per-field on invalid values."""
+    raw = load_config().get("agents", {})
+    if not isinstance(raw, dict):
+        return AgentsOptions()
+    acceptance = str(raw.get("acceptance_check", "gate+eval")).strip()
+    if acceptance not in ACCEPTANCE_CHECK_VALUES:
+        acceptance = "gate+eval"
+    try:
+        stall_min = max(float(raw.get("stall_min", 8.0)), 0.0)
+    except (ValueError, TypeError):
+        stall_min = 8.0
+    try:
+        max_attempts = max(int(raw.get("max_attempts", 3)), 1)
+    except (ValueError, TypeError):
+        max_attempts = 3
+    return AgentsOptions(
+        acceptance_check=acceptance,
+        stall_min=stall_min,
+        max_attempts=max_attempts,
+        probe_on_start=bool(raw.get("probe_on_start", False)),
+    )
+
+
+def write_agents_config(
+    *,
+    acceptance_check: str | None = None,
+    stall_min: float | None = None,
+    max_attempts: int | None = None,
+    probe_on_start: bool | None = None,
+) -> Path:
+    """Merge the ``agents:`` run knobs into config.yaml; ``None`` fields are kept.
+
+    The model a brief runs on is not configured here: its effort picks the
+    ladder tier and that tier's model chain. Legacy per-engine keys
+    (``engines``/``engine_models``/``engine_efforts``) are dropped on write.
+    """
+    config = load_config()
+    section = {
+        k: v
+        for k, v in dict(config.get("agents") or DEFAULT_CONFIG["agents"]).items()
+        if k not in _LEGACY_AGENTS_KEYS
+    }
+
+    if acceptance_check is not None:
+        if acceptance_check not in ACCEPTANCE_CHECK_VALUES:
+            raise ValueError(
+                f"invalid acceptance_check {acceptance_check!r}; "
+                f"use one of: {', '.join(ACCEPTANCE_CHECK_VALUES)}"
+            )
+        section["acceptance_check"] = acceptance_check
+    if stall_min is not None:
+        section["stall_min"] = max(float(stall_min), 0.0)
+    if max_attempts is not None:
+        section["max_attempts"] = max(int(max_attempts), 1)
+    if probe_on_start is not None:
+        section["probe_on_start"] = probe_on_start
+
+    config["agents"] = section
+    p = _config_path("project")
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with open(p, "w") as f:
+        yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+    invalidate_config_cache()
+    return p
 
 
 def _config_path(scope: str = "project") -> Path:
@@ -378,10 +605,32 @@ CLAUDE_MODELS: list[str] = [
     "sonnet",
     "haiku",
     "claude-fable-5",
-    "claude-opus-4-8",
-    "claude-sonnet-4-6",
-    "claude-haiku-4-5",
+    "claude-fable-5-1",
+    "claude-opus-5-5",
+    "claude-sonnet-5-5",
+    "claude-haiku-5-5",
 ]
+
+_SNAPSHOT_SUFFIX = re.compile(r"-\d{8}$")
+_RETIRED_PREFIXES = ("claude-2", "claude-3", "claude-instant")
+
+
+def synced_models_by_provider() -> dict[str, list[str]]:
+    """Model ids from the synced catalogue (``.splinter/pricing.json``), by provider.
+
+    "Sync prices" refreshes this from the live public catalogue, so new releases
+    reach the pickers without a code change. Dated snapshots and retired
+    families are left out to keep the lists short.
+    """
+    from splinter.models.pricing_store import load_store
+    from splinter.models.roster import provider_for
+
+    groups: dict[str, set[str]] = {}
+    for model_id in load_store():
+        if _SNAPSHOT_SUFFIX.search(model_id) or model_id.startswith(_RETIRED_PREFIXES):
+            continue
+        groups.setdefault(provider_for(model_id), set()).add(model_id)
+    return {k: sorted(v) for k, v in groups.items()}
 
 CODEX_MODELS: list[str] = [
     "codex/gpt-5.5",
@@ -463,8 +712,24 @@ def unpriced_models(model_ids: list[str]) -> list[str]:
     return sorted(missing)
 
 
+def _engine_models_by_provider() -> dict[str, list[str]]:
+    """Engine-CLI models as selectable ids, grouped by engine provider.
+
+    Only the CLIs that are not otherwise listed (mcode, kimi, agy) are exposed —
+    the claude/codex/opencode engines are already covered by their provider
+    model lists. Ids carry the routing prefix so provider_for resolves them.
+    """
+    from splinter.engines.catalog import CATALOG
+
+    groups: dict[str, set[str]] = {}
+    for engine in CATALOG:
+        if engine.provider in ("mcode", "kimi", "agy") and engine.model:
+            groups.setdefault(engine.provider, set()).add(f"{engine.provider}/{engine.model}")
+    return {k: sorted(v) for k, v in groups.items()}
+
+
 def available_models() -> list[str]:
-    """All selectable model ids: claude + opencode + ladder + codex + cursor."""
+    """All selectable model ids: claude + opencode + ladder + codex + cursor + engines."""
     from splinter.models.roster import load_ladder
 
     models: set[str] = set(CLAUDE_MODELS)
@@ -480,6 +745,8 @@ def available_models() -> list[str]:
         models.update(_cursor_models())
     except Exception:
         pass
+    for group in _engine_models_by_provider().values():
+        models.update(group)
     return sorted(models)
 
 
@@ -523,12 +790,19 @@ def available_models_by_provider() -> dict[str, list[str]]:
         opencode_set.update(oc_future.result())
         cursor_set = cursor_future.result()
 
-    return {
-        "claude": sorted(claude),
-        "codex": sorted(CODEX_MODELS),
-        "cursor": sorted(cursor_set),
+    synced = synced_models_by_provider()
+    groups: dict[str, list[str]] = {
+        "claude": sorted(claude | set(synced.get("claude", []))),
+        "codex": sorted(set(CODEX_MODELS) | set(synced.get("codex", []))),
+        "cursor": sorted(set(cursor_set) | set(synced.get("cursor", []))),
         "opencode": sorted(opencode_set),
     }
+    from splinter.models.live_models import cached_provider_models
+
+    for provider, engine_models in _engine_models_by_provider().items():
+        live = cached_provider_models(provider)
+        groups[provider] = sorted(set(engine_models) | set(synced.get(provider, [])) | set(live))
+    return groups
 
 
 # Reasoning-effort variants Splinter accepts and normalizes per provider.
@@ -550,6 +824,24 @@ def current_model_selections() -> dict[str, Any]:
             "prd": ladder.prd_model,
             "eval": ladder.eval_model,
             "tiers": [t.models[0] for t in tiers],
+        },
+        "tier_pools": [
+            ", ".join(
+                f"{m}@{t.model_variants[m]}" if t.model_variants.get(m) else m
+                for m in t.models[1:]
+            )
+            for t in tiers
+        ],
+        "step_pools": {
+            step: ", ".join(ladder.step_pools.get(step, [])[1:])
+            for step in (
+                "localizer_recall",
+                "localizer_recall_large",
+                "localizer_precision",
+                "planner",
+                "prd",
+                "eval",
+            )
         },
         "efforts": {
             "localizer_recall": ladder.localizer_recall_variant,
@@ -861,6 +1153,10 @@ def _prune_accidental_sessions(before: set[str]) -> None:
             delete_session(sid)
 
 
+def _agents_flags_present(**kwargs: object) -> bool:
+    return any(v is not None for v in kwargs.values())
+
+
 def run_configure(
     *,
     gate_checks: str | None = None,
@@ -871,6 +1167,16 @@ def run_configure(
     use_default: bool = False,
     use_cc_only: bool = False,
     sync_prices_flag: bool = False,
+    agents_acceptance: str | None = None,
+    agents_stall_min: float | None = None,
+    agents_max_attempts: int | None = None,
+    agents_probe_on_start: bool | None = None,
+    decisions_provider: str | None = None,
+    decisions_model: str | None = None,
+    jev_recall: bool | None = None,
+    jev_filter: bool | None = None,
+    jev_recall_large: bool | None = None,
+    decisions_threshold: float | None = None,
 ) -> int:
     if use_cc_only:
         return _swap_config("config.claude.yaml")
@@ -883,12 +1189,35 @@ def run_configure(
 
     _before = set(list_sessions())
 
+    agents_requested = _agents_flags_present(
+        acceptance=agents_acceptance,
+        stall_min=agents_stall_min,
+        max_attempts=agents_max_attempts,
+        probe_on_start=agents_probe_on_start,
+    )
+    decisions_requested = _agents_flags_present(
+        provider=decisions_provider,
+        model=decisions_model,
+        recall=jev_recall,
+        recall_large=jev_recall_large,
+        filter=jev_filter,
+        threshold=decisions_threshold,
+    )
+
     try:
         if sync_prices_flag:
+            from splinter.models.live_models import sync_model_lists
+
             count, failures = sync_prices()
             print(f"synced {count} model price(s) to .splinter/pricing.json")
             for provider, err in sorted(failures.items()):
                 print(f"  {provider}: {err}")
+            lists, list_failures = sync_model_lists()
+            for group in ("providers", "decisions"):
+                for name, models in sorted(lists.get(group, {}).items()):
+                    print(f"  {name}: {len(models)} model(s)")
+            for name, err in sorted(list_failures.items()):
+                print(f"  {name}: {err}")
             return 0
 
         if interactive is None:
@@ -896,10 +1225,42 @@ def run_configure(
 
         # Interactive with no direct flags → open the model-selection TUI, which
         # writes config.yaml itself on save.
-        if interactive and not gate_checks and not init_prompts and timeout is None:
-            from splinter.tui import run_configure_tui
+        if (
+            interactive
+            and not gate_checks
+            and not init_prompts
+            and timeout is None
+            and not agents_requested
+            and not decisions_requested
+        ):
+            from splinter.tui_configure import run_configure_tui
 
             return run_configure_tui()
+
+        if decisions_requested:
+            use_for: list[str] | None = None
+            flags = {"recall": jev_recall, "recall_large": jev_recall_large, "filter": jev_filter}
+            if any(v is not None for v in flags.values()):
+                current = configured_decisions().use_for
+                use_for = [
+                    t
+                    for t in DECISION_USE_TARGETS
+                    if (flags[t] if flags[t] is not None else t in current)
+                ]
+            write_decisions_config(
+                provider=decisions_provider,
+                model=decisions_model,
+                use_for=use_for,
+                threshold=decisions_threshold,
+            )
+
+        if agents_requested:
+            write_agents_config(
+                acceptance_check=agents_acceptance,
+                stall_min=agents_stall_min,
+                max_attempts=agents_max_attempts,
+                probe_on_start=agents_probe_on_start,
+            )
 
         config = load_config()
 

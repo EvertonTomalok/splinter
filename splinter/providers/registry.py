@@ -6,14 +6,26 @@ strategy here, so the call site never branches on the backend.
 
 from __future__ import annotations
 
+from splinter.providers.agy import AgyProvider
 from splinter.providers.base import ModelPrice, ModelProvider, PriceableProvider
 from splinter.providers.claude_cli import ClaudeProvider
 from splinter.providers.codex import CodexProvider
 from splinter.providers.cursor import CursorProvider
+from splinter.providers.kimi import KimiProvider
+from splinter.providers.mcode import McodeProvider
 from splinter.providers.opencode import OpencodeProvider
 
 _PROVIDERS: dict[str, ModelProvider] = {
-    p.name: p for p in (ClaudeProvider(), OpencodeProvider(), CodexProvider(), CursorProvider())
+    p.name: p
+    for p in (
+        ClaudeProvider(),
+        OpencodeProvider(),
+        CodexProvider(),
+        CursorProvider(),
+        McodeProvider(),
+        AgyProvider(),
+        KimiProvider(),
+    )
 }
 
 

@@ -101,6 +101,7 @@ def _run_prd(
         output_format="json",
         timeout=prd_timeout,
         role="prd",
+        pool=ladder.step_pool("prd"),
     )
     questions = result1.text
     session.log_llm_usage(
@@ -142,6 +143,7 @@ def _run_prd(
         session=resume,
         timeout=prd_timeout,
         role="prd",
+        pool=ladder.step_pool("prd"),
     )
     prd_text = result2.text
     session.log_llm_usage(

@@ -45,6 +45,20 @@ def _ladder() -> Ladder:
     )
 
 
+def test_large_recall_uses_large_pool(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from unittest.mock import patch
+
+    ladder = _ladder()
+    ladder.step_pools = {"localizer_recall_large": ["recall-large-model", "fallback-large"]}
+    session = _session(tmp_path, monkeypatch, "large")
+    with (
+        patch.object(localizer, "_run_search_tools", return_value="x" * 1000000),
+        patch.object(localizer, "_recall_phase", return_value="[]") as recall,
+    ):
+        localizer._localize_item(0, "task", ladder, session=session)
+    assert recall.call_args.kwargs["pool"] == ladder.step_pool("localizer_recall_large")
+
+
 def _session(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, session_id: str) -> Session:
     monkeypatch.setenv("SPLINTER_HOME", str(tmp_path / "home"))
     return Session(session_id)
@@ -63,6 +77,7 @@ def _fake_recall_phase(delays: dict[str, float] | None = None) -> Callable[..., 
         *,
         agent: str,
         session: object,
+        pool: object = None,
     ) -> str:
         m = re.search(r"US-(\d+)", item_text)
         n = m.group(1) if m else "0"
@@ -191,7 +206,8 @@ Add login to the app.
 Add user profile to the app."""
 
     def fake_recall(item_text: str, search_results: str, model: str, variant: str,
-                    timeout: int | None, *, agent: str, session: object) -> str:
+                    timeout: int | None, *, agent: str, session: object,
+                    pool: object = None) -> str:
         story_id = "001" if "Auth" in item_text else "002"
         symbol = f"login_{story_id}" if story_id == "001" else f"profile_{story_id}"
         return json.dumps(
@@ -235,6 +251,7 @@ def test_localize_n1_baseline_matches_original_format(
         *,
         agent: str,
         session: object,
+        pool: object = None,
     ) -> str:
         return json.dumps(
             [
@@ -315,6 +332,7 @@ def test_localize_respects_max_concurrency(
         *,
         agent: str,
         session: object,
+        pool: object = None,
     ) -> str:
         nonlocal max_concurrent, current
         with lock:

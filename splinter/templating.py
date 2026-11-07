@@ -33,6 +33,8 @@ TEMPLATE_NAMES = (
     "eval",
     "localize_recall",
     "localize_precision",
+    "refine",
+    "acceptance_eval",
 )
 
 

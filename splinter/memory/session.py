@@ -346,6 +346,7 @@ class Session:
             m["input"] = int(m.get("input", 0)) + tokens.get("input", 0)
             m["output"] = int(m.get("output", 0)) + tokens.get("output", 0)
             m["cost"] = float(m.get("cost", 0.0)) + cost
+            m["calls"] = int(m.get("calls", 0)) + 1
             models[model] = m
             data["models"] = models
             self._ensure_dir()
@@ -360,6 +361,19 @@ class Session:
             except json.JSONDecodeError:
                 pass
         return {}
+
+    def read_jev_usage(self) -> dict[str, float | int]:
+        """Sum the decision-model (``jev:*``) entries of ``pre_run_usage.json``."""
+        models = self.read_pre_run_usage().get("models", {})
+        total: dict[str, float | int] = {"cost": 0.0, "input": 0, "output": 0, "calls": 0}
+        for name, entry in models.items():
+            if not str(name).startswith("jev:") or not isinstance(entry, dict):
+                continue
+            total["cost"] = float(total["cost"]) + float(entry.get("cost", 0.0))
+            total["input"] = int(total["input"]) + int(entry.get("input", 0))
+            total["output"] = int(total["output"]) + int(entry.get("output", 0))
+            total["calls"] = int(total["calls"]) + int(entry.get("calls", 0))
+        return total
 
     def _directive_path(self, task_no: int | None) -> Path:
         """Queue file for a directive. ``task_no`` (1-based) scopes it to a single

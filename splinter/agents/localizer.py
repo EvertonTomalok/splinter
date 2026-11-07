@@ -6,8 +6,10 @@ import json
 import logging
 import re
 import shutil
+from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from typing import Any
 
 from splinter.memory.knowledge import KnowledgeStore
 from splinter.memory.session import Session
@@ -262,6 +264,7 @@ def _recall_phase(
     timeout: int | None = None,
     agent: str = "build",
     session: object = None,
+    pool: Sequence[str] | None = None,
 ) -> str:
     """Cheap model filters the raw search results to a candidate list."""
     text = _strip_frontmatter(prd_text)
@@ -300,6 +303,7 @@ def _recall_phase(
         timeout=timeout,
         agent=agent,
         session=session,
+        pool=pool,
     )
     record_exchange(prompt, text, model=model)
     return text
@@ -393,6 +397,135 @@ def _meta_anchors(repo_path: str, existing_files: set[str]) -> list[CodeAnchor]:
     return result
 
 
+def _jev_decision_options() -> Any:
+    from splinter.configure import configured_decisions
+
+    return configured_decisions()
+
+
+def _record_jev_usage(session: object, result: Any) -> None:
+    """Log a jev call's spend on the session; never lets accounting break ranking."""
+    log_usage = getattr(session, "log_llm_usage", None)
+    if log_usage is None:
+        return
+    try:
+        log_usage(
+            f"jev:{result.model}",
+            {"input": result.input_tokens, "output": result.output_tokens},
+            result.cost,
+        )
+    except Exception as exc:
+        log.warning("jev usage recording failed: %s", exc)
+
+
+def _jev_rank_anchors(
+    item_text: str,
+    anchors: list[CodeAnchor],
+    *,
+    hot: float,
+    medium: float,
+    session: object = None,
+) -> list[CodeAnchor]:
+    """Re-rank recall anchors through a decision model (jev) — one noul per anchor.
+
+    Below-threshold anchors are dropped; the rest carry the calibrated
+    probability as confidence (and relevance re-derived from it), sorted best
+    first. Fails open: any decision error keeps the LLM's original anchors.
+    """
+    from splinter.providers.decisions import (
+        decide_chain,
+        noul_questions,
+        parse_noul_answers,
+    )
+
+    opts = _jev_decision_options()
+    if not anchors:
+        return anchors
+    lines = [
+        f"## Task\n{item_text.strip()[:6000]}\n\n## Candidate code locations"
+    ]
+    for i, anchor in enumerate(anchors):
+        symbol = f":{anchor.symbol}" if anchor.symbol else ""
+        lines.append(f"- [{i}] `{anchor.file}{symbol}` — {anchor.reason}")
+    try:
+        result = decide_chain(
+            "\n".join(lines),
+            noul_questions(
+                len(anchors),
+                "Is this candidate code location relevant for implementing the task?",
+                items=[f"{a.file}:{a.symbol}" if a.symbol else a.file for a in anchors],
+            ),
+            opts.providers,
+        )
+    except Exception as exc:
+        log.warning("jev anchor ranking failed — keeping LLM anchors: %s", exc)
+        return anchors
+    _record_jev_usage(session, result)
+    probs = parse_noul_answers(result, len(anchors))
+    ranked: list[tuple[float, CodeAnchor]] = []
+    for anchor, prob in zip(anchors, probs):
+        if prob < opts.threshold:
+            log.info("jev dropped anchor %s (p=%.2f)", anchor.file, prob)
+            continue
+        ranked.append(
+            (
+                prob,
+                replace(
+                    anchor,
+                    confidence=prob,
+                    relevance=_relevance_from_confidence(prob, hot=hot, medium=medium),
+                ),
+            )
+        )
+    if not ranked:
+        log.warning("jev dropped every anchor — keeping LLM anchors (fail-open)")
+        return anchors
+    ranked.sort(key=lambda pair: pair[0], reverse=True)
+    return [anchor for _prob, anchor in ranked]
+
+
+def _jev_rank_files(
+    description: str, files: list[str], *, session: object = None
+) -> list[str]:
+    """Order/filter target files for the per-task summary via decision model.
+
+    Fails open on any error; when every file lands below threshold the original
+    list is kept (the summarizer LLM still gets to judge).
+    """
+    from splinter.providers.decisions import (
+        decide_chain,
+        noul_questions,
+        parse_noul_answers,
+    )
+
+    opts = _jev_decision_options()
+    if not files:
+        return files
+    state = f"## Task\n{description.strip()[:6000]}\n\n## Files\n" + "\n".join(
+        f"- [{i}] `{path}`" for i, path in enumerate(files)
+    )
+    try:
+        result = decide_chain(
+            state,
+            noul_questions(
+                len(files),
+                "Does this file hold content relevant to the task?",
+                items=list(files),
+            ),
+            opts.providers,
+        )
+    except Exception as exc:
+        log.warning("jev file ranking failed — keeping original files: %s", exc)
+        return files
+    _record_jev_usage(session, result)
+    probs = parse_noul_answers(result, len(files))
+    scored = [(prob, path) for prob, path in zip(probs, files) if prob >= opts.threshold]
+    if not scored:
+        return files
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    return [path for _prob, path in scored]
+
+
 def filter_task_context(
     task: object,
     ladder: Ladder,
@@ -413,6 +546,13 @@ def filter_task_context(
 
     if not target_files:
         return ""
+
+    from splinter.configure import configured_decisions
+
+    if "filter" in configured_decisions().use_for:
+        target_files = _jev_rank_files(description, list(target_files), session=session)
+        if not target_files:
+            return ""
 
     file_contents = _read_candidate_files(target_files)
     if not file_contents:
@@ -439,6 +579,7 @@ def filter_task_context(
             timeout=ladder.localizer_recall_timeout,
             agent=ladder.localizer_agent,
             session=session,
+            pool=ladder.step_pool("localizer_precision"),
         )
     except (ProviderGapError, RuntimeError) as e:
         log.warning("filter model failed (%s), retrying with fallback", type(e).__name__)
@@ -489,7 +630,9 @@ def _localize_item(
         recall_model = ladder.localizer_recall_model
         recall_variant = ladder.localizer_recall_variant
         recall_timeout = ladder.localizer_recall_timeout
+        jev_target = "recall"
         if len(search_results) > LARGE_CONTEXT_CHARS and ladder.localizer_recall_large_model:
+            jev_target = "recall_large"
             recall_model = ladder.localizer_recall_large_model
             recall_variant = ladder.localizer_recall_large_variant
             recall_timeout = ladder.localizer_recall_large_timeout
@@ -505,6 +648,7 @@ def _localize_item(
                 recall_timeout,
                 agent=ladder.localizer_agent,
                 session=session,
+                pool=ladder.step_pool(f"localizer_{jev_target}"),
             )
         except (ProviderGapError, RuntimeError) as e:
             log.warning(
@@ -530,6 +674,20 @@ def _localize_item(
             hot=ladder.localizer_relevance_hot,
             medium=ladder.localizer_relevance_medium,
         ) or _anchors_from_recall(recall_output)
+
+        from splinter.configure import configured_decisions
+
+        if jev_target in configured_decisions().use_for:
+            log.info(
+                "localize[%d]: jev %s ranking on %d anchor(s)", index, jev_target, len(anchors)
+            )
+            anchors = _jev_rank_anchors(
+                item_text,
+                anchors,
+                hot=ladder.localizer_relevance_hot,
+                medium=ladder.localizer_relevance_medium,
+                session=session,
+            )
 
         # Log a warning whenever the recall model omitted the reason field — _norm_reason
         # fills it with a generated fallback, but the model SHOULD be returning it.

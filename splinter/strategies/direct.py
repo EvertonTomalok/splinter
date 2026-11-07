@@ -601,6 +601,11 @@ class DirectStrategy(Strategy):
                 effort_override=effort,
                 oc_session=oc_session,
                 eval_session=eval_session,
+                session_model=(
+                    last_result.model if last_result is not None
+                    else str(checkpoint.run_result["model"])
+                    if checkpoint is not None and checkpoint.run_result else None
+                ),
                 corrections=corrections,
                 user_directive=live_cmd,
                 eval_history=eval_history,
@@ -1001,6 +1006,7 @@ def _make_plan(
         tier=tier,
         task_index=task_index,
         role="plan",
+        pool=ladder.step_pool("planner"),
     )
     record_exchange(prompt, plan, model=ladder.planner_model)
     return plan

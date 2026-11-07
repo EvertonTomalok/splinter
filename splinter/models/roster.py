@@ -22,13 +22,23 @@ CODEX_MODELS: dict[str, str] = {
 
 def provider_for(model_id: str) -> str:
     """Infer the provider from a model id."""
+    if model_id.startswith("mcode/"):
+        return "mcode"
+    if model_id.startswith("kimi/"):
+        return "kimi"
+    if model_id.startswith("agy/"):
+        return "agy"
     if model_id.startswith("codex/"):
         return "codex"
     if model_id.startswith("opencode-go/") or model_id.startswith("opencode/"):
         return "opencode"
     if model_id.startswith("cursor/"):
         return "cursor"
-    return "claude"
+    if model_id.startswith("claude/") or "/" not in model_id:
+        return "claude"
+    # Any other ``<provider>/<model>`` is an opencode subscription/provider id
+    # (zai-coding-plan/…, minimax-coding-plan/…, minimax/…, openrouter/…).
+    return "opencode"
 
 
 @dataclass
@@ -39,6 +49,20 @@ class Tier:
     provider: str = "opencode"
     variants: dict[str, str | None] = field(default_factory=dict)
     pricing: dict[str, ModelPrice] = field(default_factory=dict)
+    #: Per-model variant carried by a pool entry (``model@variant``): when the
+    #: runner reroutes to that sibling, the variant follows the model.
+    model_variants: dict[str, str] = field(default_factory=dict)
+
+
+def parse_pool_entry(entry: str) -> tuple[str, str | None]:
+    """Split a tier pool entry into (model, variant).
+
+    ``model@variant`` → ``("model", "variant")``; a plain model → ``(model, None)``.
+    The variant is the per-model effort that applies when this pool sibling is
+    the one running (rate-limit fallback keeps its own effort).
+    """
+    model, _, variant = entry.partition("@")
+    return model.strip(), (variant.strip() or None) if "@" in entry else None
 
 
 @dataclass
@@ -79,9 +103,21 @@ class Ladder:
     localizer_precision_timeout: int = 3600
     tier_timeouts: dict[int, int] = field(default_factory=dict)
     model_prices: dict[str, ModelPrice] = field(default_factory=dict)
+    #: Ordered fallback pools per LLM step (entries "model" or "model@variant");
+    #: a step without a pool entry degrades to its single primary model.
+    step_pools: dict[str, list[str]] = field(default_factory=dict)
 
     def tier_variant(self, level: int) -> str | None:
         return self.tier_variants.get(level)
+
+    def step_pool(self, step: str) -> list[str]:
+        """Ordered fallback entries for an LLM step (``planner``, ``eval``, …)."""
+        return list(self.step_pools.get(step, []))
+
+    def model_variant(self, level: int, model: str) -> str | None:
+        """Variant carried by a tier pool entry (``model@variant``), if any."""
+        tier = self.tier_by_level(level)
+        return tier.model_variants.get(model)
 
     def tier_timeout(self, level: int) -> int:
         return self.tier_timeouts.get(level, self.default_timeout)
@@ -163,13 +199,23 @@ def load_ladder(raw: dict[str, Any] | None = None) -> Ladder:
 
     tiers: list[Tier] = []
     for td in raw["tiers"]:
+        models: list[str] = []
+        model_variants: dict[str, str] = {}
+        for entry in td["models"]:
+            model, variant = parse_pool_entry(str(entry))
+            if not model:
+                continue
+            models.append(model)
+            if variant:
+                model_variants[model] = variant
         tiers.append(
             Tier(
                 name=td["name"],
                 level=td["level"],
-                models=td["models"],
+                models=models,
                 provider=td.get("provider", "opencode"),
                 variants=td.get("variants", {}),
+                model_variants=model_variants,
             )
         )
 
@@ -253,27 +299,46 @@ def _apply_config_overrides(ladder: Ladder) -> None:
     t = cfg.get("timeouts") if isinstance(cfg.get("timeouts"), dict) else {}
 
     if m:
-        if m.get("localizer_recall"):
-            ladder.localizer_recall_model = m["localizer_recall"]
-        if m.get("localizer_recall_large"):
-            ladder.localizer_recall_large_model = m["localizer_recall_large"]
-        if m.get("localizer_precision"):
-            ladder.localizer_precision_model = m["localizer_precision"]
+        for step, attr in (
+            ("localizer_recall", "localizer_recall_model"),
+            ("localizer_recall_large", "localizer_recall_large_model"),
+            ("localizer_precision", "localizer_precision_model"),
+            ("planner", "planner_model"),
+            ("prd", "prd_model"),
+            ("eval", "eval_model"),
+        ):
+            raw_step = m.get(step)
+            if not raw_step:
+                continue
+            entries = (
+                [str(x).strip() for x in raw_step if str(x).strip()]
+                if isinstance(raw_step, (list, tuple))
+                else [str(raw_step).strip()]
+            )
+            entries = [e for e in entries if e]
+            if not entries:
+                continue
+            primary, _primary_variant = parse_pool_entry(entries[0])
+            setattr(ladder, attr, primary)
+            if len(entries) > 1 or "@" in entries[0]:
+                ladder.step_pools[step] = entries
+            else:
+                ladder.step_pools.pop(step, None)
         if m.get("localizer_recall_fallback"):
             ladder.localizer_recall_fallback_model = m["localizer_recall_fallback"]
-        if m.get("planner"):
-            ladder.planner_model = m["planner"]
-        if m.get("prd"):
-            ladder.prd_model = m["prd"]
-        if m.get("eval"):
-            ladder.eval_model = m["eval"]
-        for level, model_id in enumerate(m.get("tiers") or []):
-            if not model_id:
+        for level, entry in enumerate(m.get("tiers") or []):
+            if isinstance(entry, (list, tuple)):
+                pool = [str(x).strip() for x in entry if str(x).strip()]
+            else:
+                pool = [str(entry)] if entry else []
+            if not pool:
                 continue
+            parsed = [parse_pool_entry(item) for item in pool]
             for tier in ladder.tiers:
                 if tier.level == level:
-                    tier.models = [model_id, *tier.models[1:]]
-                    tier.provider = provider_for(model_id)
+                    tier.models = [model for model, _ in parsed]
+                    tier.model_variants = {model: v for model, v in parsed if v}
+                    tier.provider = provider_for(tier.models[0])
                     break
 
     if e:

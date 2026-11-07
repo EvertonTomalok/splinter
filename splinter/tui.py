@@ -11,7 +11,6 @@
 
 from __future__ import annotations
 
-import copy
 import json
 import logging
 import re
@@ -27,7 +26,6 @@ from textual.app import App, ComposeResult, SystemCommand
 from textual.binding import Binding
 from textual.command import DiscoveryHit, Hit, Hits
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.geometry import Offset
 from textual.reactive import reactive
 from textual.screen import ModalScreen, Screen
 from textual.system_commands import SystemCommandsProvider
@@ -3640,21 +3638,6 @@ def run_with_tui(run_kwargs: dict[str, Any], session: Session | None = None) -> 
 # --- configure -------------------------------------------------------------
 
 
-class _PinnedVerticalScroll(VerticalScroll):
-    """Scroll container that never auto-scrolls to reveal a focused/highlighted
-    descendant. Textual would otherwise call ``scroll_to_region`` (via
-    ``Screen.scroll_to_center`` → ``Widget.scroll_to_widget``) whenever a child
-    gains focus — e.g. selecting a model in the overlay jumps the list to the
-    bottom. Manual scrolling (mouse wheel, PageUp/Down, arrows) goes through
-    ``scroll_to``/``scroll_relative`` and is unaffected."""
-
-    def scroll_to_region(self, *args: Any, **kwargs: Any) -> Offset:  # type: ignore[override]
-        return Offset(0, 0)
-
-    def scroll_to_widget(self, *args: Any, **kwargs: Any) -> bool:  # type: ignore[override]
-        return False
-
-
 class _TemplateEditor(TextArea):
     """Markdown editor with the keymap users expect.
 
@@ -3987,738 +3970,6 @@ class TemplatesScreen(Screen[None]):
         self._do_save()
 
 
-class ConfigureApp(App[bool]):
-    """Pick a model per pipeline step, then write config.yaml on save."""
-
-    CSS = """
-    #rows { padding: 0 1; height: 1fr; }
-    .step {
-        height: auto;
-        min-height: 4;
-        border-left: thick $primary;
-        padding-left: 1;
-        margin-bottom: 1;
-        align: left middle;
-    }
-    .step.run { border-left: thick $success; }
-    .step-info { width: 44; height: 100%; align: left middle; }
-    .step-name { text-style: bold; height: 1; }
-    .step-desc { color: $text-muted; height: 1; }
-    .provider-sel { width: 16; height: 3; margin-right: 1; }
-    .model-panel { width: 1fr; height: auto; }
-    .model-trigger { width: 1fr; height: 3; }
-    .model-state { display: none; }
-    .model-float {
-        overlay: screen;
-        constrain: inside;
-        width: 60%;
-        height: auto;
-        background: $surface;
-        border: solid $accent;
-        margin: 2 8;
-        padding: 1;
-    }
-    .model-float-filter { width: 1fr; height: 3; }
-    .model-float-list { width: 1fr; height: 6; }
-    .effort-sel { width: 14; height: 3; margin-left: 1; }
-    .timeout-inp { width: 14; height: 3; margin-left: 1; }
-    Select > SelectCurrent { height: 3; }
-    #gates { padding: 0 1; margin-top: 1; height: auto; }
-    #gate-rows { height: auto; }
-    .section-title { text-style: bold; margin-bottom: 1; }
-    .gate-actions { height: 3; margin-bottom: 1; }
-    .gate-actions Button { margin-right: 1; }
-    .gate-row {
-      height: auto;
-      min-height: 3;
-      border-left: thick $warning;
-      padding-left: 1;
-      margin-bottom: 1;
-      align: left middle;
-    }
-    .gate-name { width: 14; text-style: bold; height: 3; content-align: left middle; }
-    .gate-cmd { width: 45%; height: 3; }
-    .gate-when { width: 18; height: 3; margin-left: 1; }
-    .gate-lang { width: 18; height: 3; margin-left: 1; }
-    .gate-del { width: 10; height: 3; margin-left: 1; }
-    .gate-add-input { width: 1fr; height: 3; margin-right: 1; }
-    #sync-bar {
-        height: auto;
-        min-height: 3;
-        padding: 0 1;
-        margin-bottom: 1;
-        align: left middle;
-    }
-    #sync-prices { width: auto; margin-left: 1; }
-    #sync-status { width: 1fr; height: auto; color: $text-muted; margin-right: 1; }
-    #unpriced-banner { width: auto; color: $warning; text-style: bold; margin-right: 1; }
-    """
-
-    BINDINGS = [
-        ("s", "save", "Save"),
-        ("q", "quit", "Quit"),
-        # ctrl+c is left to the focused widget (TextArea copy); ctrl+q quits.
-        ("ctrl+q", "quit", "Quit"),
-    ]
-
-    def __init__(self) -> None:
-        super().__init__()
-        from splinter.configure import (
-            DEFAULT_CONFIG,
-            current_model_selections,
-            load_config,
-        )
-
-        self.saved = False
-        self.saved_path = ""
-        self._models_by_provider: dict[str, list[str]] = {}
-        self._models: list[str] = []
-        self._row_filters: dict[str, str] = {}
-        self._row_models: dict[str, list[str]] = {}
-        current = current_model_selections()
-        self._cur_models = current["models"]
-        self._cur_efforts = current["efforts"]
-        self._cur_timeouts = current["timeouts"]
-        self._cur_providers = dict(current.get("providers", {}))
-        tier_prov_list = self._cur_providers.get("tiers", [])
-        for i, p in enumerate(tier_prov_list):
-            self._cur_providers[f"tier_{i}"] = p
-        self._gate_checks: list[dict[str, str]] = copy.deepcopy(
-            load_config().get("gate_checks") or DEFAULT_CONFIG["gate_checks"]
-        )
-        self._sync_message = ""
-
-    @staticmethod
-    def _select(
-        options: list[tuple[str, str]], current: object, choices: list[str], **kwargs: Any
-    ) -> Select[str]:
-        # Pass value= only for a real selection; this Textual rejects value=BLANK.
-        if current in choices:
-            return Select(options, value=str(current), **kwargs)
-        return Select(options, **kwargs)
-
-    def _row(
-        self,
-        sid: str,
-        name: str,
-        desc: str,
-        model: object,
-        effort: object,
-        timeout: object = None,
-        *,
-        run: bool = False,
-    ) -> Horizontal:
-        from splinter.configure import EFFORT_CHOICES
-
-        cur_prov = self._cur_providers.get(sid)
-        if isinstance(cur_prov, str) and cur_prov in self._PROVIDER_CHOICES:
-            prov = cur_prov
-        else:
-            prov = "(default)"
-        prov_opts = [(p, p) for p in self._PROVIDER_CHOICES]
-        effort_opts = [(e, e) for e in EFFORT_CHOICES]
-        name_label = Label(name, classes="step-name")
-        desc_label = Label(desc, classes="step-desc")
-        name_label.tooltip = desc
-        desc_label.tooltip = desc
-        info = Vertical(name_label, desc_label, classes="step-info")
-        info.tooltip = desc
-        provider_sel = self._select(
-            prov_opts,
-            prov,
-            self._PROVIDER_CHOICES,
-            id=f"{sid}__prov",
-            classes="provider-sel",
-            tooltip="provider",
-        )
-        trigger_label = str(model) if isinstance(model, str) and model else ""
-        trigger = Button(trigger_label, id=f"{sid}__trigger", classes="model-trigger")
-        hidden_filter = Input(
-            value=self._row_filters.get(sid, ""),
-            id=f"{sid}__filter",
-            classes="model-state",
-        )
-        cur_model_str = str(model) if model and isinstance(model, str) else ""
-        model_list = OptionList(
-            *([cur_model_str] if cur_model_str else []),
-            id=sid,
-            classes="model-state",
-        )
-        if cur_model_str:
-            model_list.highlighted = 0
-        model_panel = Vertical(trigger, hidden_filter, model_list, classes="model-panel")
-        effort_sel = self._select(
-            effort_opts,
-            effort,
-            EFFORT_CHOICES,
-            id=f"{sid}__eff",
-            prompt="effort",
-            tooltip="reasoning effort",
-            classes="effort-sel",
-        )
-        timeout_inp = Input(
-            value=str(timeout) if timeout else "",
-            id=f"{sid}__to",
-            type="integer",
-            placeholder="3600",
-            tooltip="per-call timeout (seconds)",
-            classes="timeout-inp",
-        )
-        return Horizontal(
-            info,
-            provider_sel,
-            model_panel,
-            effort_sel,
-            timeout_inp,
-            classes="step run" if run else "step",
-        )
-
-    _WHEN_CHOICES: list[str] = ["always", "tests_exist", "proto_changed"]
-    _PROVIDER_CHOICES: list[str] = ["(default)", "claude", "opencode", "codex", "cursor"]
-
-    def _model_opts_for(self, provider: str, flt: str) -> list[tuple[str, str]]:
-        if not self._models_by_provider:
-            return []
-        candidates: set[str] = set()
-        if provider == "(default)":
-            for models in self._models_by_provider.values():
-                candidates.update(models)
-        else:
-            candidates.update(self._models_by_provider.get(provider, []))
-        return [(m, m) for m in sorted(candidates) if flt.lower() in m.lower()]
-
-    def _gate_row(self, index: int, check: dict[str, str]) -> Horizontal:
-        from splinter.configure import gate_default_languages
-
-        when_opts = [(w, w) for w in self._WHEN_CHOICES]
-        lang_choices = [""] + gate_default_languages()
-        lang_opts = [(lang or "—", lang) for lang in lang_choices]
-        return Horizontal(
-            Label(check.get("name", ""), classes="gate-name"),
-            Input(value=check.get("cmd", ""), id=f"gate_cmd_{index}", classes="gate-cmd"),
-            self._select(
-                when_opts,
-                check.get("when", "always"),
-                self._WHEN_CHOICES,
-                id=f"gate_when_{index}",
-                classes="gate-when",
-            ),
-            self._select(
-                lang_opts,
-                check.get("language", ""),
-                lang_choices,
-                id=f"gate_lang_{index}",
-                classes="gate-lang",
-            ),
-            Button("Delete", id=f"gate_del_{index}", classes="gate-del", variant="error"),
-            classes="gate-row",
-        )
-
-    def _gates_section(self) -> Vertical:
-        rows = [self._gate_row(i, c) for i, c in enumerate(self._gate_checks)]
-        return Vertical(
-            Label("Gates", classes="section-title"),
-            Horizontal(
-                Input(
-                    id="gate_add_input",
-                    placeholder="cmd1; cmd2",
-                    classes="gate-add-input",
-                ),
-                Button("Add custom", id="gate_add"),
-                Button("Append language preset", id="gate_preset"),
-                classes="gate-actions",
-            ),
-            Vertical(*rows, id="gate-rows"),
-            id="gates",
-        )
-
-    def _rebuild_gates(self) -> None:
-        gate_rows = self.query_one("#gate-rows", Vertical)
-        gate_rows.remove_children()
-        for i, check in enumerate(self._gate_checks):
-            gate_rows.mount(self._gate_row(i, check))
-
-    def _capture_gates(self) -> None:
-        """Read all live gate Input/Select widgets into self._gate_checks (new list)."""
-        from splinter.configure import gate_default_languages
-
-        lang_choices = [""] + gate_default_languages()
-        checks: list[dict[str, str]] = []
-        for i, original in enumerate(self._gate_checks):
-            try:
-                cmd = self.query_one(f"#gate_cmd_{i}", Input).value.strip()
-                raw_when: Any = self.query_one(f"#gate_when_{i}", Select).value
-                when = (
-                    raw_when
-                    if isinstance(raw_when, str) and raw_when in self._WHEN_CHOICES
-                    else "always"
-                )
-                raw_lang: Any = self.query_one(f"#gate_lang_{i}", Select).value
-                language = (
-                    raw_lang
-                    if isinstance(raw_lang, str) and raw_lang in lang_choices and raw_lang
-                    else "all"
-                )
-            except Exception:
-                checks.append(dict(original))
-                continue
-            if cmd:
-                name = original["name"] if cmd == original["cmd"] else cmd.split()[0]
-                checks.append(
-                    {
-                        "name": name,
-                        "cmd": cmd,
-                        "when": when,
-                        "language": language,
-                    }
-                )
-        self._gate_checks = checks
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        bid = event.button.id or ""
-        if bid == "sync-prices":
-            self._do_sync_prices()
-        elif bid == "goto-templates":
-            self.push_screen(TemplatesScreen())
-        elif bid == "gate_preset":
-            self.push_screen(_GateLangModal(), self._on_lang_picked)
-        elif bid == "gate_add":
-            self._capture_gates()
-            raw = self.query_one("#gate_add_input", Input).value.strip()
-            if raw:
-                from splinter.agents.gate import parse_gate_spec
-
-                self._gate_checks = self._gate_checks + parse_gate_spec(raw, "all")
-            try:
-                self.query_one("#gate_add_input", Input).value = ""
-            except Exception:
-                pass
-            self._rebuild_gates()
-        elif bid.startswith("gate_del_"):
-            self._capture_gates()
-            index = int(bid[len("gate_del_") :])
-            self._gate_checks = [c for j, c in enumerate(self._gate_checks) if j != index]
-            self._rebuild_gates()
-        elif bid.endswith("__trigger"):
-            sid = bid[:-9]
-            oid = f"{sid}__overlay"
-            if self.query(f"#{oid}"):
-                try:
-                    self.query_one(f"#{oid}").remove()
-                except Exception:
-                    pass
-                return
-            self._show_model_overlay(sid)
-
-    def _on_lang_picked(self, language: str | None) -> None:
-        if language is None:
-            return
-        self._capture_gates()
-        from splinter.configure import gate_default_for
-
-        new_checks = gate_default_for(language)
-        self._gate_checks = self._gate_checks + [dict(c) for c in new_checks]
-        self._rebuild_gates()
-
-    def compose(self) -> ComposeResult:
-        from splinter.configure import MODEL_STEPS, TIER_STEPS
-
-        rows: list[Horizontal] = [
-            self._row(
-                key,
-                label,
-                desc,
-                self._cur_models.get(key),
-                self._cur_efforts.get(key),
-                self._cur_timeouts.get(key),
-            )
-            for key, label, desc in MODEL_STEPS
-        ]
-        tier_models = self._cur_models.get("tiers", [])
-        tier_efforts = self._cur_efforts.get("tiers", [])
-        tier_timeouts = self._cur_timeouts.get("tiers", [])
-        for i, (label, desc) in enumerate(TIER_STEPS):
-            rows.append(
-                self._row(
-                    f"tier_{i}",
-                    label,
-                    desc,
-                    tier_models[i] if i < len(tier_models) else None,
-                    tier_efforts[i] if i < len(tier_efforts) else None,
-                    tier_timeouts[i] if i < len(tier_timeouts) else None,
-                    run=True,
-                )
-            )
-
-        yield Header()
-        yield Horizontal(
-            Static("", id="unpriced-banner"),
-            Static("", id="sync-status"),
-            Button(
-                "Sync prices",
-                id="sync-prices",
-                variant="primary",
-                tooltip=(
-                    "Fetch current pricing from public endpoints (no API key) "
-                    "and save to .splinter/pricing.json"
-                ),
-            ),
-            Button("Templates ▸", id="goto-templates"),
-            id="sync-bar",
-        )
-        yield _PinnedVerticalScroll(*rows, self._gates_section(), id="rows")
-        yield Footer()
-
-    def on_mount(self) -> None:
-        self.title = "splinter · configure"
-        self.sub_title = "model · effort · timeout per step — s: save · q: cancel"
-        self.query_one("#rows", VerticalScroll).loading = True
-        self.run_worker(self._fetch_models, thread=True, name="fetch-models", exclusive=True)
-
-    def _repopulate_model(self, sid: str) -> None:
-        try:
-            model_widget = self.query_one(f"#{sid}", OptionList)
-        except Exception:
-            return
-        current_idx: Any = model_widget.highlighted
-        current: str = ""
-        if current_idx is not None:
-            opt: Any = model_widget.get_option_at_index(current_idx)
-            if opt is not None:
-                current = str(getattr(opt, "prompt", ""))
-        flt = self._row_filters.get(sid, "")
-        full = self._row_models.get(sid, [])
-        if not full:
-            try:
-                provider_widget = self.query_one(f"#{sid}__prov", Select)
-                provider_val: Any = provider_widget.value
-                provider = provider_val if isinstance(provider_val, str) else "(default)"
-                full = [opt[0] for opt in self._model_opts_for(provider, "")]
-                self._row_models[sid] = full
-            except Exception:
-                return
-        opts = _filter_models(full, flt)
-        model_widget.clear_options()
-        for label in opts:
-            model_widget.add_option(label)
-        if current and current in opts:
-            for i, label in enumerate(opts):
-                if label == current:
-                    model_widget.highlighted = i
-                    break
-
-    def on_select_changed(self, event: Select.Changed) -> None:
-        if event.select.id and event.select.id.endswith("__prov"):
-            sid = event.select.id[:-6]
-            provider_val: Any = event.select.value
-            provider = provider_val if isinstance(provider_val, str) else "(default)"
-            full = [opt[0] for opt in self._model_opts_for(provider, "")]
-            self._row_models[sid] = full
-            self._repopulate_model(sid)
-            self._sync_trigger(sid)
-
-    def _sync_trigger(self, sid: str) -> None:
-        try:
-            trigger = self.query_one(f"#{sid}__trigger", Button)
-            st = self.query_one(f"#{sid}", OptionList)
-            idx = st.highlighted
-            if idx is not None:
-                opt = st.get_option_at_index(idx)
-                if opt is not None:
-                    trigger.label = str(getattr(opt, "prompt", ""))
-                    return
-            trigger.label = ""
-        except Exception:
-            pass
-
-    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
-        oid = event.option_list.id or ""
-        if not oid.endswith("__overlay_list"):
-            return
-        sid = oid[:-14]
-        opt = event.option_list.get_option_at_index(event.option_index)
-        label = str(getattr(opt, "prompt", "")) if opt is not None else ""
-        try:
-            trigger = self.query_one(f"#{sid}__trigger", Button)
-            trigger.label = label
-        except Exception:
-            pass
-        if label:
-            try:
-                st = self.query_one(f"#{sid}", OptionList)
-                st.clear_options()
-                st.add_option(label)
-                st.highlighted = 0
-            except Exception:
-                pass
-        try:
-            trigger = self.query_one(f"#{sid}__trigger", Button)
-            # scroll_visible=False: keep the viewport put. Focusing the trigger
-            # otherwise scrolls #rows to reveal it, jumping the list to the end.
-            trigger.focus(scroll_visible=False)
-        except Exception:
-            pass
-        self._dismiss_model_overlay(sid)
-
-    def _show_model_overlay(self, sid: str) -> None:
-        full = self._row_models.get(sid, [])
-        if not full:
-            try:
-                provider_widget = self.query_one(f"#{sid}__prov", Select)
-                provider_val: Any = provider_widget.value
-                provider = provider_val if isinstance(provider_val, str) else "(default)"
-                full = [opt[0] for opt in self._model_opts_for(provider, "")]
-                self._row_models[sid] = full
-            except Exception:
-                pass
-        flt = self._row_filters.get(sid, "")
-        opts = _filter_models(full, flt)
-        try:
-            st = self.query_one(f"#{sid}", OptionList)
-            current_idx: Any = st.highlighted
-        except Exception:
-            current_idx = None
-        current: str = ""
-        if current_idx is not None:
-            opt = st.get_option_at_index(current_idx)
-            if opt is not None:
-                current = str(getattr(opt, "prompt", ""))
-        filter_inp = Input(
-            value=flt,
-            id=f"{sid}__overlay_filter",
-            placeholder="filter…",
-            classes="model-float-filter",
-        )
-        ol = OptionList(*opts, id=f"{sid}__overlay_list", classes="model-float-list")
-        if current and current in opts:
-            for i, label in enumerate(opts):
-                if label == current:
-                    ol.highlighted = i
-                    break
-        overlay = Vertical(
-            filter_inp,
-            ol,
-            id=f"{sid}__overlay",
-            classes="model-float",
-        )
-        overlay.styles.layer = "above"
-        self.mount(overlay)
-        try:
-            filter_inp.focus()
-        except Exception:
-            pass
-
-    def _dismiss_model_overlay(self, sid: str) -> None:
-        try:
-            y = self.query_one("#rows", VerticalScroll).scroll_y
-        except Exception:
-            y = None
-
-        try:
-            self.query_one(f"#{sid}__overlay").remove()
-        except Exception:
-            pass
-
-        if y is not None:
-
-            def _restore_scroll() -> None:
-                try:
-                    self.query_one("#rows", VerticalScroll).scroll_to(y=y, animate=False)
-                except Exception:
-                    pass
-
-            self.set_timer(0, _restore_scroll)
-
-    def on_input_changed(self, event: Input.Changed) -> None:
-        eid = event.input.id or ""
-        if eid.endswith("__filter") and not eid.endswith("__overlay_filter"):
-            sid = eid[:-8]
-            self._row_filters[sid] = event.value
-            self._repopulate_model(sid)
-        elif eid.endswith("__overlay_filter"):
-            sid = eid[:-16]
-            flt = event.value.lower()
-            full = self._row_models.get(sid, [])
-            opts = [m for m in full if flt in m.lower()]
-            self._row_filters[sid] = event.value
-            try:
-                ol = self.query_one(f"#{sid}__overlay_list", OptionList)
-                ol.clear_options()
-                for label in opts:
-                    ol.add_option(label)
-            except Exception:
-                pass
-
-    def on_key(self, event: events.Key) -> None:
-        if event.key == "escape":
-            overlays = list(self.query(".model-float"))
-            if overlays:
-                for w in overlays:
-                    w.remove()
-                event.stop()
-
-    def _do_sync_prices(self) -> None:
-        from splinter.configure import sync_prices
-
-        count, failures = sync_prices()
-        parts = [f"synced {count} price(s)"]
-        for provider, err in sorted(failures.items()):
-            parts.append(f"{provider}: {err}")
-        self._sync_message = " · ".join(parts)
-        self._refresh_pricing_ui()
-
-    def _refresh_pricing_ui(self) -> None:
-        try:
-            self.query_one("#sync-status", Static).update(self._sync_message)
-        except Exception:
-            pass
-        self._update_unpriced_banner()
-
-    def _update_unpriced_banner(self) -> None:
-        from splinter.configure import unpriced_models
-
-        all_models = sorted({m for models in self._models_by_provider.values() for m in models})
-        missing = unpriced_models(all_models)
-        try:
-            banner = self.query_one("#unpriced-banner", Static)
-            if missing:
-                banner.update("new model prices availabe — sync it")
-                banner.display = True
-            else:
-                banner.update("")
-                banner.display = False
-        except Exception:
-            pass
-
-    def _fetch_models(self) -> None:
-        from splinter.configure import available_models_by_provider
-
-        self._models_by_provider = available_models_by_provider()
-        self._models = sorted({m for models in self._models_by_provider.values() for m in models})
-        self.call_from_thread(self._rebuild_rows)
-
-    def _rebuild_rows(self) -> None:
-        from splinter.configure import MODEL_STEPS, TIER_STEPS
-
-        rows_container = self.query_one("#rows", VerticalScroll)
-        for child in rows_container.children:
-            if child.id != "gates":
-                child.remove()
-        gates_widget = self.query_one("#gates", Vertical)
-        rows: list[Horizontal] = [
-            self._row(
-                key,
-                label,
-                desc,
-                self._cur_models.get(key),
-                self._cur_efforts.get(key),
-                self._cur_timeouts.get(key),
-            )
-            for key, label, desc in MODEL_STEPS
-        ]
-        tier_models = self._cur_models.get("tiers", [])
-        tier_efforts = self._cur_efforts.get("tiers", [])
-        tier_timeouts = self._cur_timeouts.get("tiers", [])
-        for i, (label, desc) in enumerate(TIER_STEPS):
-            rows.append(
-                self._row(
-                    f"tier_{i}",
-                    label,
-                    desc,
-                    tier_models[i] if i < len(tier_models) else None,
-                    tier_efforts[i] if i < len(tier_efforts) else None,
-                    tier_timeouts[i] if i < len(tier_timeouts) else None,
-                    run=True,
-                )
-            )
-        for row in reversed(rows):
-            rows_container.mount(row, before=gates_widget)
-        rows_container.loading = False
-        self._update_unpriced_banner()
-
-    def action_save(self) -> None:
-        from splinter.configure import (
-            MODEL_STEPS,
-            TIER_STEPS,
-            write_model_config,
-        )
-
-        self._capture_gates()
-
-        def sel_value(sid: str) -> str:
-            try:
-                widget = self.query_one(f"#{sid}", OptionList)
-                idx = widget.highlighted
-                opt: Any = widget.get_option_at_index(idx) if idx is not None else None
-                if opt is not None:
-                    return str(getattr(opt, "id", None) or getattr(opt, "prompt", ""))
-                return ""
-            except Exception:
-                try:
-                    value = self.query_one(f"#{sid}", Select).value
-                    return value if isinstance(value, str) else ""
-                except Exception:
-                    return ""
-
-        def prov_value(sid: str) -> str | None:
-            value = self.query_one(f"#{sid}__prov", Select).value
-            if not isinstance(value, str) or value == "(default)":
-                return None
-            return value
-
-        def to_value(sid: str) -> int | None:
-            raw = self.query_one(f"#{sid}", Input).value.strip()
-            return int(raw) if raw.isdigit() and int(raw) > 0 else None
-
-        models: dict[str, Any] = {}
-        efforts: dict[str, Any] = {}
-        timeouts: dict[str, Any] = {}
-        providers: dict[str, Any] = {}
-        for key, _, _ in MODEL_STEPS:
-            if sel_value(key):
-                models[key] = sel_value(key)
-            efforts[key] = sel_value(f"{key}__eff")
-            timeouts[key] = to_value(f"{key}__to")
-            providers[key] = prov_value(key)
-
-        tier_models: list[str] = []
-        tier_efforts: list[str] = []
-        tier_timeouts: list[int | None] = []
-        tier_providers: list[str | None] = []
-        for i in range(len(TIER_STEPS)):
-            model = sel_value(f"tier_{i}") or self._cur_models["tiers"][i]
-            tier_models.append(model)
-            tier_efforts.append(sel_value(f"tier_{i}__eff"))
-            tier_timeouts.append(to_value(f"tier_{i}__to"))
-            tier_providers.append(prov_value(f"tier_{i}"))
-        models["tiers"] = tier_models
-        efforts["tiers"] = tier_efforts
-        timeouts["tiers"] = tier_timeouts
-        providers["tiers"] = tier_providers
-
-        self.saved_path = str(
-            write_model_config(
-                models,
-                efforts,
-                timeouts=timeouts,
-                gate_checks=self._gate_checks,
-                providers=providers,
-            )
-        )
-        self.saved = True
-        self.exit(True)
-
-
-def run_configure_tui() -> int:
-    app = ConfigureApp()
-    app.run()
-    if app.saved:
-        print(f"config written to {app.saved_path}")
-    else:
-        print("configure cancelled — nothing written.")
-    return 0
-
-
 # --- interactive PRD session -----------------------------------------------
 
 
@@ -4765,13 +4016,14 @@ class ConfirmQuit(ModalScreen[bool]):
 
     BINDINGS = [("escape", "stay", "Stay")]
 
-    def __init__(self, session_id: str) -> None:
+    def __init__(self, session_id: str, what: str = "PRD") -> None:
         super().__init__()
         self.session_id = session_id
+        self.what = what
 
     def compose(self) -> ComposeResult:
         with Vertical(id="box"):
-            yield Static("Leave this PRD session?")
+            yield Static(f"Leave this {self.what} session?")
             yield Static("The draft is saved — resume later with:")
             yield Static(f"uv run splinter resume {self.session_id}", id="cmd")
             with Horizontal(id="qbuttons"):
@@ -4844,8 +4096,9 @@ class ComposerTextArea(TextArea):
         if event.key == "ctrl+s":
             event.stop()
             event.prevent_default()
-            assert isinstance(self.app, PrdSessionApp)
-            self.app.action_send()
+            send = getattr(self.app, "action_send", None)
+            if callable(send):
+                send()
             return
         await super()._on_key(event)
 
@@ -4995,6 +4248,8 @@ class PrdSessionApp(App[int | None]):
         self._generating = False
         self._started_at: str | None = None
         self._source_prd_path = str(run_kwargs.get("prd_path") or "")
+        self._failed = False
+        self._last_job: tuple[Any, dict[str, Any]] | None = None
 
     def _save_state(self) -> None:
         """Persist enough to resume this refinement: conversation id, phase, strategy."""
@@ -5047,7 +4302,8 @@ class PrdSessionApp(App[int | None]):
         try:
             self._initial_prd = Path(path).read_text() if path else ""
         except OSError as exc:
-            self._fail(f"cannot read PRD: {exc}")
+            self._say(f"[red]ERROR: {escape(f'cannot read PRD: {exc}')}[/]")
+            self.set_timer(2.0, lambda: self.exit(None))
             return
         if not self._initial_prd.strip():
             self._initial_prd = self.session.read("prd.md")
@@ -5286,9 +4542,13 @@ class PrdSessionApp(App[int | None]):
         elif phase == "trust":
             btns.append(Button("Send PRD", id="accept", variant="success"))
             btns.append(Button("Cowabunga", id="cowabunga", variant="warning"))
+        elif phase == "generate":
+            btns.append(Button("Generate PRD", id="generate", variant="success"))
         else:  # chat
             btns.append(Button("Fulfilled", id="fulfilled", variant="success"))
             btns.append(Button("Cowabunga", id="cowabunga", variant="warning"))
+        if self._failed:
+            btns.append(Button("Retry", id="retry", variant="error"))
         bar = self.query_one("#actions", Horizontal)
 
         async def _swap() -> None:
@@ -5332,19 +4592,34 @@ class PrdSessionApp(App[int | None]):
 
             _Path(self._source_prd_path).write_text(md)
         except OSError as exc:
-            self._fail(f"cannot write PRD: {exc}")
+            self._say(f"[red]ERROR: {escape(f'cannot write PRD: {exc}')}[/]")
 
     def _focus_instructions(self) -> None:
         self.query_one("#instructions", TextArea).focus()
 
     def _fail(self, msg: str) -> None:
+        """A model error keeps the screen open: show it in red and offer Retry."""
         self._say(f"[red]ERROR: {escape(msg)}[/]")
-        self.set_timer(2.0, lambda: self.exit(None))
+        self._failed = True
+        if self.phase == "init" and not self._generating:
+            self.phase = "chat"
+        self._render_actions("generate" if self._generating else self.phase)
+        self._set_busy(False, "retry, or keep typing")
 
     def _spawn(self, fn: Any, **kw: Any) -> None:
         from functools import partial
 
+        self._failed = False
+        self._last_job = (fn, kw)
         self.run_worker(partial(fn, **kw), thread=True, name="prd")
+
+    def _retry(self) -> None:
+        if self._busy or self._last_job is None:
+            return
+        fn, kw = self._last_job
+        self._say("[dim]retrying…[/]")
+        self._set_busy(True, "retrying…")
+        self._spawn(fn, **kw)
 
     def _grounding(self, text: str) -> str:
         """Return grounding string from cached localization, or "" if --no-ground."""
@@ -5592,6 +4867,8 @@ class PrdSessionApp(App[int | None]):
         bid = event.button.id or ""
         if bid == "send":
             self.action_send()
+        elif bid == "retry":
+            self._retry()
         elif bid == "generate":
             self._on_generate()
         elif bid == "accept":
@@ -6034,6 +5311,10 @@ def resume_session(session_id: str | None, *, reset: bool = False) -> int:
     session = Session(sid)
     status = session.read_status()
     if status.get("state") == "refining":
+        if status.get("source") == "task":
+            from splinter import tui_plan
+
+            return tui_plan._resume_plan(session, status)
         return _resume_prd(session, status)
 
     state = _run_state(session)

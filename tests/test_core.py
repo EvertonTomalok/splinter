@@ -257,10 +257,9 @@ def test_configure_tui_saves_models_and_efforts(
 ) -> None:
     import asyncio
 
-    from textual.widgets import Select
-
+    from splinter.configure_chain import efforts_for
     from splinter.providers import opencode
-    from splinter.tui import ConfigureApp
+    from splinter.tui_configure import ConfigureApp
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(
@@ -272,12 +271,26 @@ def test_configure_tui_saves_models_and_efforts(
     async def drive() -> None:
         app = ConfigureApp()
         async with app.run_test() as pilot:
+            await app.workers.wait_for_complete()
             await pilot.pause()
+            assert set(app._models_by_provider.keys()) == {
+                "claude",
+                "opencode",
+                "codex",
+                "cursor",
+                "mcode",
+                "agy",
+                "kimi",
+            }
+            primary = app._chains["planner"][0]
+            cycle = efforts_for(primary.model)
+            current = primary.effort if primary.effort in cycle else ""
+            steps = (cycle.index("max") - cycle.index(current)) % len(cycle)
+            app.query_one("#chain-planner").focus()
+            for _ in range(steps):
+                await pilot.press("right")
             await pilot.pause()
-            assert app._models_by_provider
-            assert set(app._models_by_provider.keys()) == {"claude", "opencode", "codex", "cursor"}
-            app.query_one("#planner__eff", Select).value = "max"
-            await pilot.pause()
+            assert app._chains["planner"][0].effort == "max"
             await pilot.press("s")
             await pilot.pause()
         assert app.saved
@@ -665,7 +678,15 @@ def test_opencode_extract_tokens_handles_nested() -> None:
 
 
 def test_provider_registry() -> None:
-    assert set(available_providers()) == {"claude", "opencode", "codex", "cursor"}
+    assert set(available_providers()) == {
+        "claude",
+        "opencode",
+        "codex",
+        "cursor",
+        "mcode",
+        "agy",
+        "kimi",
+    }
     assert get_provider("claude").name == "claude"
     with pytest.raises(ValueError):
         get_provider("bogus")
@@ -741,7 +762,7 @@ def test_available_models_by_provider_keys(
         lambda timeout=30: ["opencode-go/foo", "opencode/bar", "other/baz"],
     )
     result = available_models_by_provider()
-    assert set(result.keys()) == {"claude", "opencode", "codex", "cursor"}
+    assert set(result.keys()) == {"claude", "opencode", "codex", "cursor", "mcode", "agy", "kimi"}
     assert result["codex"] == sorted(CODEX_MODELS)
     assert "sonnet" in result["claude"]
     assert "opus" in result["claude"]
@@ -752,6 +773,9 @@ def test_available_models_by_provider_keys(
     assert "opencode-go/foo" in result["opencode"]
     assert "opencode/bar" in result["opencode"]
     assert "other/baz" in result["opencode"]
+    assert "mcode/minimax/MiniMax-M3" in result["mcode"]
+    assert "agy/gemini-3.8-flash" in result["agy"]
+    assert "kimi/kimi-code/k3.1-pro" in result["kimi"]
 
 
 def test_available_models_by_provider_isolates_failure(
@@ -2344,7 +2368,7 @@ def test_prune_dead_prd_sessions_removes_only_old_stub_refinements(
 def test_configure_tui_lists_gate_checks(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
     import asyncio
 
-    from splinter.tui import ConfigureApp
+    from splinter.tui_configure import ConfigureApp
 
     monkeypatch.chdir(tmp_path)
 
@@ -2369,7 +2393,7 @@ def test_configure_save_preserves_gate_checks(
     import asyncio
 
     from splinter.configure import load_config
-    from splinter.tui import ConfigureApp
+    from splinter.tui_configure import ConfigureApp
 
     monkeypatch.chdir(tmp_path)
 
@@ -2394,7 +2418,7 @@ def test_configure_save_with_seeded_config(
     import yaml
 
     from splinter.configure import load_config
-    from splinter.tui import ConfigureApp
+    from splinter.tui_configure import ConfigureApp
 
     monkeypatch.chdir(tmp_path)
     custom_checks = [
@@ -2433,7 +2457,7 @@ def test_configure_tui_gate_delete(tmp_path: Path, monkeypatch: "pytest.MonkeyPa
     from textual.widgets import Button
 
     from splinter.configure import load_config
-    from splinter.tui import ConfigureApp
+    from splinter.tui_configure import ConfigureApp
 
     monkeypatch.chdir(tmp_path)
 
@@ -2478,7 +2502,7 @@ def test_append_language_preset_rust(tmp_path: Path, monkeypatch: "pytest.Monkey
     from textual.widgets import Button
 
     from splinter.configure import load_config
-    from splinter.tui import ConfigureApp
+    from splinter.tui_configure import ConfigureApp
 
     monkeypatch.chdir(tmp_path)
 
@@ -2520,7 +2544,7 @@ def test_append_two_languages_rust_then_go(
 
     from textual.widgets import Button
 
-    from splinter.tui import ConfigureApp
+    from splinter.tui_configure import ConfigureApp
 
     monkeypatch.chdir(tmp_path)
 
@@ -2567,7 +2591,7 @@ def test_append_duplicate_languages(tmp_path: Path, monkeypatch: "pytest.MonkeyP
 
     from textual.widgets import Button
 
-    from splinter.tui import ConfigureApp
+    from splinter.tui_configure import ConfigureApp
 
     monkeypatch.chdir(tmp_path)
 
@@ -2599,7 +2623,7 @@ def test_append_cancel_leaves_unchanged(tmp_path: Path, monkeypatch: "pytest.Mon
 
     from textual.widgets import Button
 
-    from splinter.tui import ConfigureApp
+    from splinter.tui_configure import ConfigureApp
 
     monkeypatch.chdir(tmp_path)
 
@@ -2626,7 +2650,7 @@ def test_append_preset_persists_on_save(tmp_path: Path, monkeypatch: "pytest.Mon
     from textual.widgets import Button
 
     from splinter.configure import load_config
-    from splinter.tui import ConfigureApp
+    from splinter.tui_configure import ConfigureApp
 
     monkeypatch.chdir(tmp_path)
 
@@ -2756,7 +2780,7 @@ def test_configure_tui_add_custom_gate(tmp_path: Path, monkeypatch: "pytest.Monk
     from textual.widgets import Button, Input, Select
 
     from splinter.configure import load_config
-    from splinter.tui import ConfigureApp
+    from splinter.tui_configure import ConfigureApp
 
     monkeypatch.chdir(tmp_path)
 
@@ -2795,7 +2819,7 @@ def test_configure_tui_edit_gate_cmd(tmp_path: Path, monkeypatch: "pytest.Monkey
     from textual.widgets import Input, Select
 
     from splinter.configure import load_config
-    from splinter.tui import ConfigureApp
+    from splinter.tui_configure import ConfigureApp
 
     monkeypatch.chdir(tmp_path)
 
@@ -2827,7 +2851,7 @@ def test_configure_tui_delete_all_gates(tmp_path: Path, monkeypatch: "pytest.Mon
     from textual.widgets import Button
 
     from splinter.configure import load_config
-    from splinter.tui import ConfigureApp
+    from splinter.tui_configure import ConfigureApp
 
     monkeypatch.chdir(tmp_path)
 
@@ -2852,138 +2876,10 @@ def test_configure_tui_delete_all_gates(tmp_path: Path, monkeypatch: "pytest.Mon
 # --- US-002: _model_opts_for composition ------------------------------------
 
 
-def test_model_opts_for_claude_only(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
-    from splinter.models.roster import CODEX_MODELS as ROSTER_CODEX_MODELS
-    from splinter.tui import ConfigureApp
-
-    monkeypatch.chdir(tmp_path)
-    app = ConfigureApp()
-    app._models_by_provider = {
-        "claude": ["opus", "sonnet"],
-        "opencode": ["opencode-go/deepseek-v4-flash-free", "opencode-go/minimax-m3"],
-        "codex": sorted(ROSTER_CODEX_MODELS.values()),
-    }
-
-    opts = app._model_opts_for("claude", "")
-
-    opt_ids = {v for _label, v in opts}
-    assert "sonnet" in opt_ids
-    assert "opus" in opt_ids
-    assert "opencode-go/deepseek-v4-flash-free" not in opt_ids
-    assert "opencode-go/minimax-m3" not in opt_ids
-    for codex_id in ROSTER_CODEX_MODELS.values():
-        assert codex_id not in opt_ids
 
 
-def test_model_opts_for_opencode_only(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
-    from splinter.models.roster import CODEX_MODELS as ROSTER_CODEX_MODELS
-    from splinter.tui import ConfigureApp
-
-    monkeypatch.chdir(tmp_path)
-    app = ConfigureApp()
-    app._models_by_provider = {
-        "claude": ["opus", "sonnet"],
-        "opencode": ["opencode-go/deepseek-v4-flash-free", "opencode-go/minimax-m3"],
-        "codex": sorted(ROSTER_CODEX_MODELS.values()),
-    }
-    opts = app._model_opts_for("opencode", "")
-
-    opt_ids = {v for _label, v in opts}
-    assert "sonnet" not in opt_ids
-    assert "opus" not in opt_ids
-    assert "opencode-go/deepseek-v4-flash-free" in opt_ids
-    assert "opencode-go/minimax-m3" in opt_ids
-    for codex_id in ROSTER_CODEX_MODELS.values():
-        assert codex_id not in opt_ids
 
 
-def test_model_opts_for_filter_narrows(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
-    from splinter.tui import ConfigureApp
-
-    monkeypatch.chdir(tmp_path)
-    app = ConfigureApp()
-    app._models_by_provider = {
-        "opencode": [
-            "opencode-go/deepseek-v4-flash-free",
-            "opencode-go/deepseek-v4-pro",
-            "opencode-go/minimax-m3",
-        ],
-    }
-
-    all_opencode = app._model_opts_for("opencode", "")
-    assert len(all_opencode) == 3
-
-    flash_opts = app._model_opts_for("opencode", "flash")
-    assert len(flash_opts) == 1
-    assert flash_opts[0][1] == "opencode-go/deepseek-v4-flash-free"
-
-    deepseek_opts = app._model_opts_for("opencode", "deepseek")
-    assert len(deepseek_opts) == 2
-    assert {v for _label, v in deepseek_opts} == {
-        "opencode-go/deepseek-v4-flash-free",
-        "opencode-go/deepseek-v4-pro",
-    }
-
-    empty = app._model_opts_for("opencode", "nonexistent")
-    assert len(empty) == 0
-
-
-def test_model_opts_for_codex_includes_roster_ids(
-    tmp_path: Path,
-    monkeypatch: "pytest.MonkeyPatch",
-) -> None:
-    from splinter.models.roster import CODEX_MODELS as ROSTER_CODEX_MODELS
-    from splinter.tui import ConfigureApp
-
-    monkeypatch.chdir(tmp_path)
-    app = ConfigureApp()
-    app._models_by_provider = {"codex": sorted(ROSTER_CODEX_MODELS.values())}
-
-    opts = app._model_opts_for("codex", "")
-    expected = sorted(ROSTER_CODEX_MODELS.values())
-    assert len(opts) == len(expected)
-    for (label, value), expected_id in zip(opts, expected):
-        assert label == expected_id
-        assert value == expected_id
-    assert {v for _label, v in opts} == set(expected)
-
-
-def test_model_opts_for_default_shows_all(
-    tmp_path: Path,
-    monkeypatch: "pytest.MonkeyPatch",
-) -> None:
-    from splinter.tui import ConfigureApp
-
-    monkeypatch.chdir(tmp_path)
-    app = ConfigureApp()
-    app._models_by_provider = {
-        "claude": ["opus", "sonnet"],
-        "opencode": ["opencode-go/deepseek-v4-flash-free", "opencode-go/minimax-m3"],
-        "codex": ["codex/gpt-5-codex"],
-    }
-    opts = app._model_opts_for("(default)", "")
-    opt_ids = {v for _label, v in opts}
-    assert "sonnet" in opt_ids
-    assert "opencode-go/deepseek-v4-flash-free" in opt_ids
-    assert "codex/gpt-5-codex" in opt_ids
-    assert len(opts) == 5
-
-
-def test_model_opts_for_default_filter_narrows(
-    tmp_path: Path,
-    monkeypatch: "pytest.MonkeyPatch",
-) -> None:
-    from splinter.tui import ConfigureApp
-
-    monkeypatch.chdir(tmp_path)
-    app = ConfigureApp()
-    app._models_by_provider = {
-        "claude": ["sonnet"],
-        "opencode": ["opencode-go/deepseek-v4-flash-free", "opencode-go/minimax-m3"],
-    }
-    opts = app._model_opts_for("(default)", "flash")
-    assert len(opts) == 1
-    assert opts[0][1] == "opencode-go/deepseek-v4-flash-free"
 
 
 def test_current_model_selections_returns_providers_block(
@@ -3049,159 +2945,9 @@ def test_write_model_config_providers_none_preserves_existing(
     assert config["providers"] == existing
 
 
-def test_configure_tui_model_trigger_toggles_overlay(
-    tmp_path: Path,
-    monkeypatch: "pytest.MonkeyPatch",
-) -> None:
-    import asyncio
-
-    from textual.widgets import Button
-
-    from splinter.providers import opencode
-    from splinter.tui import ConfigureApp
-
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(
-        opencode,
-        "list_models",
-        lambda timeout=30: ["opencode-go/test-a", "opencode-go/test-b"],
-    )
-
-    async def drive() -> None:
-        app = ConfigureApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            await pilot.pause()
-            app.query_one("#tier_5__trigger", Button).press()
-            await pilot.pause()
-            assert len(app.query("#tier_5__overlay")) == 1
-            app.query_one("#tier_5__trigger", Button).press()
-            await pilot.pause()
-            assert len(app.query("#tier_5__overlay")) == 0
-
-    asyncio.run(drive())
 
 
-def test_configure_tui_rows_use_compact_height() -> None:
-    from splinter.tui import ConfigureApp
 
-    assert "min-height: 4;" in ConfigureApp.CSS
-    assert "min-height: 12;" not in ConfigureApp.CSS
-    assert ".step-desc { color: $text-muted; height: 1; }" in ConfigureApp.CSS
-
-
-def test_configure_tui_row_description_tooltips(
-    tmp_path: Path,
-    monkeypatch: "pytest.MonkeyPatch",
-) -> None:
-    import asyncio
-
-    from textual.widgets import Label
-
-    from splinter.configure import MODEL_STEPS, TIER_STEPS
-    from splinter.providers import opencode
-    from splinter.tui import ConfigureApp
-
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(opencode, "list_models", lambda timeout=30: [])
-
-    async def drive() -> None:
-        app = ConfigureApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            expected = {desc for _key, _label, desc in MODEL_STEPS}
-            expected.update(desc for _label, desc in TIER_STEPS)
-            names = list(app.query(".step-name").results(Label))
-            descs = list(app.query(".step-desc").results(Label))
-            infos = list(app.query(".step-info").results())
-            assert len(names) == len(descs) == len(infos) == len(expected)
-            for widget in [*names, *descs, *infos]:
-                assert widget.tooltip in expected
-
-    asyncio.run(drive())
-
-
-def test_configure_tui_provider_change_repopulates_model_list(
-    tmp_path: Path,
-    monkeypatch: "pytest.MonkeyPatch",
-) -> None:
-    import asyncio
-
-    from textual.widgets import OptionList, Select
-
-    from splinter.providers import opencode
-    from splinter.tui import ConfigureApp
-
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(
-        opencode,
-        "list_models",
-        lambda timeout=30: ["opencode-go/test-a", "opencode-go/test-b"],
-    )
-
-    async def drive() -> None:
-        app = ConfigureApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            await pilot.pause()
-            model_widget = app.query_one("#planner", OptionList)
-            provider_widget = app.query_one("#planner__prov", Select)
-            provider_widget.value = "opencode"
-            await pilot.pause()
-            opt_ids = {str(o.prompt) for o in model_widget._options}
-            assert "sonnet" not in opt_ids
-            assert "opus" not in opt_ids
-            assert "opencode-go/test-a" in opt_ids
-            provider_widget.value = "claude"
-            await pilot.pause()
-            claude_ids = {str(o.prompt) for o in model_widget._options}
-            assert "sonnet" in claude_ids
-            assert "opus" in claude_ids
-            assert "opencode-go/test-a" not in claude_ids
-
-    asyncio.run(drive())
-
-
-def test_configure_tui_provider_filter_persists_across_switch(
-    tmp_path: Path,
-    monkeypatch: "pytest.MonkeyPatch",
-) -> None:
-    import asyncio
-
-    from textual.widgets import Input, OptionList, Select
-
-    from splinter.providers import opencode
-    from splinter.tui import ConfigureApp
-
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(
-        opencode,
-        "list_models",
-        lambda timeout=30: ["opencode-go/deepseek-v4-flash-free", "opencode-go/minimax-m3"],
-    )
-
-    async def drive() -> None:
-        app = ConfigureApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            await pilot.pause()
-            provider_widget = app.query_one("#planner__prov", Select)
-            filter_widget = app.query_one("#planner__filter", Input)
-            model_widget = app.query_one("#planner", OptionList)
-            provider_widget.value = "opencode"
-            await pilot.pause()
-            filter_widget.value = "flash"
-            await pilot.pause()
-            opt_ids = {str(o.prompt) for o in model_widget._options}
-            assert "opencode-go/deepseek-v4-flash-free" in opt_ids
-            assert "opencode-go/minimax-m3" not in opt_ids
-            provider_widget.value = "claude"
-            await pilot.pause()
-            assert filter_widget.value == "flash"
-            claude_ids = {str(o.prompt) for o in model_widget._options}
-            assert len(claude_ids) < 3
-
-    asyncio.run(drive())
 
 
 # --- US-002: gate language survives save/load --------------------------------

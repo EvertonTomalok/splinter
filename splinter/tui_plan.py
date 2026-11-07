@@ -1,0 +1,547 @@
+"""Plan mode TUI for ``splinter run --task``: ask, plan, edit, then run.
+
+Same layout as :class:`splinter.tui.PrdSessionApp`. The **planner** model asks
+implementation questions about the task, the user answers, the planner writes
+the plan, the user edits it, and Run hands the session to ``RunApp``. The direct
+strategy then reuses ``knowledge/plan.md`` instead of planning again.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable, Iterable
+from datetime import datetime, timezone
+from functools import partial
+from pathlib import Path
+from typing import Any
+
+import yaml
+from rich.markup import escape
+from rich.text import Text
+from textual.app import App, ComposeResult, SystemCommand
+from textual.binding import Binding
+from textual.containers import Horizontal, Vertical
+from textual.reactive import reactive
+from textual.widgets import Button, Footer, Header, RichLog, TextArea
+
+from splinter import plan_session
+from splinter.agents.runner import Task
+from splinter.memory.session import Session
+from splinter.prd_session import Turn, is_cowabunga
+from splinter.tui import (
+    _MAXIMIZE_CSS,
+    _PALETTE_CSS,
+    ComposerTextArea,
+    ConfirmQuit,
+    _find_shortcuts_cmd,
+    _OrderedCommandsProvider,
+)
+
+DEFAULT_STRATEGY = "raphael"
+_PLAN_WORDS = {"fulfilled", "done", "plan", "write plan"}
+_RUN_WORDS = {"accept", "run", "go"}
+_HINTS = {
+    "chat": "your answers / write plan / cowabunga",
+    "review": "describe changes / run / cowabunga",
+}
+
+
+class PlanSessionApp(App[int | None]):
+    """Plan one task with the planner model before it runs.
+
+    Phases: ``clarify`` (planner asks) → ``chat`` (answers until Write plan) →
+    ``review`` (edit the plan on the left) → ``run`` (save + exit 0).
+    """
+
+    CSS = (
+        """
+    #draftpane { width: 50%; border-right: solid $primary; }
+    #task-edit, #plan-edit { height: 1fr; border: round $primary; }
+    #chatpane { width: 1fr; }
+    #convo { height: 1fr; padding: 0 1; }
+    #composer { dock: bottom; height: auto; }
+    #entry { height: 8; border: round $primary; }
+    #actions { height: 3; padding: 0 1; align: left middle; }
+    #actions Button {
+        height: 3; min-width: 10; width: auto; margin: 0 1 0 0; padding: 0 2;
+    }
+    """
+        + _PALETTE_CSS
+        + _MAXIMIZE_CSS
+    )
+
+    COMMANDS = {_OrderedCommandsProvider}
+
+    BINDINGS = [
+        Binding("ctrl+c", "abort", "Abort", show=False),
+        Binding("escape", "abort", "Abort"),
+        Binding("ctrl+s", "send", "Send", key_display="ctrl+s"),
+    ]
+
+    FATAL_EXIT_DELAY = 2.0
+
+    _maximized: reactive[bool] = reactive(False)
+
+    def __init__(self, session: Session, run_kwargs: dict[str, Any]) -> None:
+        super().__init__()
+        self.session = session
+        self.run_kwargs = run_kwargs
+        self.resuming = bool(run_kwargs.get("resume"))
+        self.no_ground = bool(run_kwargs.get("no_ground"))
+        self.strategy = str(run_kwargs.get("strategy") or DEFAULT_STRATEGY)
+        self.phase = "init"
+        self.claude_session = ""
+        self._task_base: dict[str, Any] = {}
+        self._task_name = Path(str(run_kwargs.get("task_path") or "task.yaml")).name
+        self._localization: str | None = None
+        self._convo_lines: list[str] = []
+        self._busy = False
+        self._auto_run = False
+        self._failed = False
+        self._last_job: tuple[Callable[..., None], dict[str, Any]] | None = None
+        self._started_at = datetime.now(timezone.utc).isoformat()
+
+    # --- layout ---
+    def compose(self) -> ComposeResult:
+        yield Header(show_clock=True)
+        with Horizontal():
+            with Vertical(id="draftpane"):
+                task_edit = TextArea(id="task-edit", soft_wrap=True)
+                task_edit.border_subtitle = "editable"
+                yield task_edit
+                plan_edit = TextArea(id="plan-edit", soft_wrap=True)
+                plan_edit.border_title = "Plan"
+                plan_edit.border_subtitle = "editable"
+                plan_edit.display = False
+                yield plan_edit
+            with Vertical(id="chatpane"):
+                yield RichLog(id="convo", markup=True, wrap=True)
+                with Vertical(id="composer"):
+                    entry = ComposerTextArea(id="entry", soft_wrap=True)
+                    entry.border_subtitle = "Ctrl+S send · ↵ newline"
+                    yield entry
+                    with Horizontal(id="actions"):
+                        yield from self._action_buttons("chat")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self.title = "splinter · plan"
+        if self.resuming:
+            self._resume()
+            return
+        path = Path(str(self.run_kwargs.get("task_path") or ""))
+        try:
+            loaded = yaml.safe_load(path.read_text()) or {}
+            if not isinstance(loaded, dict):
+                raise ValueError("task yaml must be a mapping")
+        except (OSError, ValueError, yaml.YAMLError) as exc:
+            self._fatal(f"cannot read task: {exc}")
+            return
+        self._task_base = loaded
+        task = Task(
+            description=str(loaded.get("description", "")),
+            acceptance=str(loaded.get("acceptance", "")),
+        )
+        self._load_task_editor(plan_session.task_text(task))
+        self._set_phase("clarify")
+        self._save_state()
+        self._ask_questions()
+
+    def _load_task_editor(self, text: str) -> None:
+        editor = self.query_one("#task-edit", TextArea)
+        editor.text = text
+        editor.border_title = f"Task · {self._task_name}"
+
+    def _ask_questions(self) -> None:
+        self._say("[dim]planner reading the task, drafting implementation questions…[/]")
+        self._set_busy(True, "planner reading the task…")
+        self._spawn(self._questions_worker, task_md=self._task_md())
+
+    # --- resume ---
+    def _resume(self) -> None:
+        status = self.session.read_status()
+        self.claude_session = str(status.get("claude_session") or "")
+        saved = status.get("strategy")
+        if saved and saved != "?" and not self.run_kwargs.get("strategy"):
+            self.strategy = str(saved)
+        self._task_name = str(status.get("task_name") or self._task_name)
+        self._task_base = self._read_saved_task(status)
+        task = Task(
+            description=str(self._task_base.get("description", "")),
+            acceptance=str(self._task_base.get("acceptance", "")),
+        )
+        self._load_task_editor(plan_session.task_text(task))
+        self._replay_convo()
+        phase = str(status.get("phase") or "chat")
+        plan = self._saved_plan()
+        self._say(f"[magenta]⟳ resumed {self.session.id} at phase '{phase}'.[/]")
+        if phase in ("review", "run") and plan:
+            self._enter_review(plan, "[green]Plan restored. Edit it on the left, then Run.[/]")
+        elif phase == "clarify" and not self.claude_session:
+            self._set_phase("clarify")
+            self._ask_questions()
+        else:
+            self._enter_chat("[green]Continue: answer, 'Write plan', or 'cowabunga'.[/]")
+
+    def _read_saved_task(self, status: dict[str, Any]) -> dict[str, Any]:
+        for raw in (self.session.dir / "task.yaml", status.get("task_path")):
+            if not raw:
+                continue
+            try:
+                loaded = yaml.safe_load(Path(str(raw)).read_text()) or {}
+            except (OSError, yaml.YAMLError):
+                continue
+            if isinstance(loaded, dict):
+                return loaded
+        return {}
+
+    def _saved_plan(self) -> str:
+        text = self.session.read("knowledge/plan.md")
+        return plan_session.strip_plan_header(text) if text.strip() else ""
+
+    def _replay_convo(self) -> None:
+        prior = self.session.read("convo.md")
+        records = [r for r in prior.split("\x00") if r] if prior.strip() else []
+        convo = self.query_one("#convo", RichLog)
+        for rec in records:
+            try:
+                Text.from_markup(rec)
+            except Exception:  # noqa: BLE001 — bad markup in an old log must not abort resume
+                rec = escape(rec)
+            convo.write(rec)
+        self._convo_lines = records
+        if records:
+            convo.write("[dim]─── resumed ───[/]")
+
+    # --- state ---
+    def _set_phase(self, phase: str) -> None:
+        self.phase = phase
+        self.sub_title = phase
+
+    def _task_md(self) -> str:
+        return str(self.query_one("#task-edit", TextArea).text)
+
+    def _plan_md(self) -> str:
+        return str(self.query_one("#plan-edit", TextArea).text)
+
+    def _persist_task(self) -> Path:
+        description, acceptance = plan_session.parse_task_text(self._task_md())
+        return plan_session.save_task(self.session, description, acceptance, self._task_base)
+
+    def _save_state(self) -> None:
+        task_path = self._persist_task()
+        self.session.set_status(
+            "refining",
+            source="task",
+            phase=self.phase,
+            claude_session=self.claude_session,
+            task_path=str(task_path),
+            task_name=self._task_name,
+            strategy=self.strategy,
+            started_at=self._started_at,
+        )
+
+    # --- ui helpers ---
+    def _say(self, msg: str, *, persist: bool = True) -> None:
+        self.query_one("#convo", RichLog).write(msg)
+        if persist:
+            self._convo_lines.append(msg)
+            self.session.write("convo.md", "\x00".join(self._convo_lines))
+
+    def _set_busy(self, busy: bool, placeholder: str = "") -> None:
+        self._busy = busy
+        entry = self.query_one("#entry", TextArea)
+        entry.disabled = busy
+        for btn in self.query("#actions Button"):
+            btn.disabled = busy
+        if placeholder:
+            entry.border_title = placeholder
+        if not busy:
+            entry.focus()
+
+    def _action_buttons(self, phase: str) -> list[Button]:
+        btns = [Button("Send (Ctrl+S)", id="send", variant="primary")]
+        if phase == "review":
+            btns.append(Button("Run", id="run", variant="success"))
+        else:
+            btns.append(Button("Write plan", id="write-plan", variant="success"))
+        btns.append(Button("Cowabunga", id="cowabunga", variant="warning"))
+        if self._failed:
+            btns.append(Button("Retry", id="retry", variant="error"))
+        return btns
+
+    def _render_actions(self, phase: str) -> None:
+        btns = self._action_buttons(phase)
+        bar = self.query_one("#actions", Horizontal)
+
+        async def _swap() -> None:
+            await bar.remove_children()
+            await bar.mount(*btns)
+
+        self.run_worker(_swap, name="actions")  # type: ignore[arg-type]
+
+    def _fatal(self, msg: str) -> None:
+        self._say(f"[red]ERROR: {escape(msg)}[/]", persist=False)
+        self.set_timer(self.FATAL_EXIT_DELAY, lambda: self.exit(None))
+
+    def _fail(self, msg: str) -> None:
+        """A model error keeps the screen open: show it, offer Retry."""
+        self._say(f"[red]ERROR: {escape(msg)}[/]")
+        self._failed = True
+        self._render_actions("review" if self.phase == "review" else "chat")
+        self._set_busy(False, "retry, or keep typing")
+
+    def _spawn(self, fn: Callable[..., None], **kw: Any) -> None:
+        self._failed = False
+        self._last_job = (fn, kw)
+        self.run_worker(partial(fn, **kw), thread=True, name="plan")
+
+    def _retry(self) -> None:
+        if self._busy or self._last_job is None:
+            return
+        fn, kw = self._last_job
+        self._say("[dim]retrying…[/]")
+        self._set_busy(True, "retrying…")
+        self._spawn(fn, **kw)
+
+    # --- workers (off the UI thread) ---
+    def _grounding(self, text: str) -> str:
+        if self.no_ground:
+            return ""
+        if self._localization is None:
+            from splinter import prd_session
+            from splinter.models.roster import load_ladder
+
+            self._localization = prd_session.ground_localization(
+                self.session, load_ladder(), text
+            )
+        return self._localization
+
+    def _run_turn(self, after: Callable[[Turn], None], fn: Callable[..., Turn], **kw: Any) -> None:
+        try:
+            turn = fn(session=self.session, **kw)
+        except Exception as exc:  # noqa: BLE001 — surfaced in the UI with Retry
+            self.call_from_thread(self._fail, f"planner: {exc}")
+            return
+        self.call_from_thread(after, turn)
+
+    def _questions_worker(self, task_md: str) -> None:
+        self._run_turn(
+            self._after_questions,
+            plan_session.open_plan_questions,
+            task_md=task_md,
+            localization=self._grounding(task_md),
+        )
+
+    def _refine_worker(self, answers: str, task_md: str) -> None:
+        self._run_turn(
+            self._after_refine,
+            plan_session.refine_plan,
+            answers=answers,
+            resume=self.claude_session,
+            current_task=task_md,
+            localization=self._grounding(task_md),
+        )
+
+    def _write_worker(self, task_md: str, autodecide: bool) -> None:
+        self._run_turn(
+            self._after_plan,
+            plan_session.write_plan,
+            resume=self.claude_session,
+            current_task=task_md,
+            autodecide=autodecide,
+            localization=self._grounding(task_md),
+        )
+
+    def _revise_worker(self, instructions: str, plan_md: str) -> None:
+        self._run_turn(
+            self._after_revise,
+            plan_session.revise_plan,
+            instructions=instructions,
+            resume=self.claude_session,
+            current_plan=plan_md,
+        )
+
+    # --- worker callbacks (UI thread) ---
+    def _take_session(self, turn: Turn) -> None:
+        self.claude_session = turn.session_id or self.claude_session
+
+    def _after_questions(self, turn: Turn) -> None:
+        self._take_session(turn)
+        self._say(escape(turn.text))
+        self._enter_chat(
+            "[green]Answer (e.g. 1A,2C), click 'Write plan' when ready, "
+            "or 'cowabunga' to plan and run.[/]"
+        )
+
+    def _after_refine(self, turn: Turn) -> None:
+        self._take_session(turn)
+        self._say(escape(turn.text))
+        self._enter_chat("[green]Updated. Answer what is open, 'Write plan', or 'cowabunga'.[/]")
+
+    def _after_plan(self, turn: Turn) -> None:
+        self._take_session(turn)
+        plan = plan_session.strip_plan_header(turn.text)
+        plan_session.save_plan(self.session, plan)
+        if self._auto_run:
+            self._show_plan(plan)
+            self._run()
+            return
+        self._enter_review(plan, "[green]Plan written. Edit it on the left, then Run.[/]")
+
+    def _after_revise(self, turn: Turn) -> None:
+        self._take_session(turn)
+        plan = plan_session.strip_plan_header(turn.text)
+        plan_session.save_plan(self.session, plan)
+        self._enter_review(plan, "[green]Plan revised. Run, or describe more changes.[/]")
+
+    def _enter_chat(self, hint: str) -> None:
+        self._set_phase("chat")
+        self._save_state()
+        self._say(hint)
+        self._render_actions("chat")
+        self._set_busy(False, _HINTS["chat"])
+
+    def _show_plan(self, plan: str) -> None:
+        plan_edit = self.query_one("#plan-edit", TextArea)
+        plan_edit.text = plan
+        self.query_one("#task-edit", TextArea).display = False
+        plan_edit.display = True
+
+    def _enter_review(self, plan: str, hint: str) -> None:
+        self._show_plan(plan)
+        self._set_phase("review")
+        self._save_state()
+        self._say(hint)
+        self._render_actions("review")
+        self._set_busy(False, _HINTS["review"])
+
+    # --- input dispatch ---
+    def action_send(self) -> None:
+        self._submit(self.query_one("#entry", TextArea).text)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        bid = event.button.id or ""
+        if bid == "send":
+            self.action_send()
+        elif bid == "retry":
+            self._retry()
+        elif bid == "write-plan":
+            self._submit("plan")
+        elif bid in ("run", "cowabunga"):
+            self._submit(bid)
+
+    def _submit(self, raw: str) -> None:
+        if self._busy:
+            return
+        text = raw.strip()
+        self.query_one("#entry", TextArea).text = ""
+        if not text:
+            return
+        self._say(f"[cyan]> {escape(text)}[/]")
+        if self.phase == "review":
+            self._on_review(text)
+        else:
+            self._on_chat(text)
+
+    def _on_chat(self, text: str) -> None:
+        task_md = self._task_md()
+        self._auto_run = is_cowabunga(text)
+        if self._auto_run:
+            self._set_busy(True, "cowabunga — writing the plan, then running…")
+            self._spawn(self._write_worker, task_md=task_md, autodecide=True)
+        elif text.lower() in _PLAN_WORDS:
+            self._set_busy(True, "planner writing the plan…")
+            self._spawn(self._write_worker, task_md=task_md, autodecide=False)
+        else:
+            self._set_busy(True, "planner incorporating your answers…")
+            self._spawn(self._refine_worker, answers=text, task_md=task_md)
+
+    def _on_review(self, text: str) -> None:
+        if is_cowabunga(text) or text.lower() in _RUN_WORDS:
+            self._run()
+            return
+        self._set_busy(True, "planner revising the plan…")
+        self._spawn(self._revise_worker, instructions=text, plan_md=self._plan_md())
+
+    # --- finish ---
+    def _run(self) -> None:
+        plan = self._plan_md()
+        if not plan.strip():
+            self._say("[yellow]The plan is empty — write or revise it before running.[/]")
+            return
+        plan_session.save_plan(self.session, plan)
+        self._set_phase("run")
+        self._save_state()
+        self._say(f"[green]▶ running with strategy '{self.strategy}'…[/]")
+        self.exit(0)
+
+    def action_abort(self) -> None:
+        if isinstance(self.screen, ConfirmQuit):
+            return
+
+        def _decide(leave: bool | None) -> None:
+            if leave:
+                from splinter import procreg
+
+                procreg.terminate_all()
+                self.exit(None)
+
+        self.push_screen(ConfirmQuit(self.session.id, "plan"), _decide)
+
+    def get_system_commands(self, screen: Any) -> Iterable[SystemCommand]:
+        yield _find_shortcuts_cmd(screen, self)
+        yield SystemCommand("Theme", "Change the current theme", self.action_change_theme)
+        label = "Minimize" if self._maximized else "Maximize"
+        yield SystemCommand(label, "Toggle the right panel size", self.action_toggle_maximize)
+        yield SystemCommand("Quit", "Quit the application", self.action_quit)
+
+    def action_toggle_maximize(self) -> None:
+        self._maximized = not self._maximized
+
+    def watch__maximized(self, val: bool) -> None:
+        self.set_class(val, "--maximized")
+
+
+def _handoff(session: Session, run_kwargs: dict[str, Any], result: int | None) -> int:
+    """After the plan screen: run in-app on Run, else print how to resume."""
+    from splinter.tui import run_with_tui
+
+    status = session.read_status()
+    if result == 0 and status.get("phase") == "run":
+        final = {
+            **run_kwargs,
+            "task_path": str(session.dir / "task.yaml"),
+            "prd_path": None,
+            "strategy": str(status.get("strategy") or DEFAULT_STRATEGY),
+            "resume": False,
+        }
+        return run_with_tui(final, session=session)
+    if session.dir.exists():
+        print(f"plan session aborted — resume later: uv run splinter resume {session.id}")
+    return 0
+
+
+def run_plan_interactive(run_kwargs: dict[str, Any]) -> int:
+    """Plan the task in a TUI, then execute it in the same session."""
+    from splinter.memory.session import new_session_id
+
+    session = Session(new_session_id())
+    result = PlanSessionApp(session, run_kwargs).run()
+    return _handoff(session, run_kwargs, result)
+
+
+def _resume_plan(session: Session, status: dict[str, Any]) -> int:
+    """Re-enter a plan-mode session at its saved phase."""
+    saved = status.get("strategy")
+    run_kwargs: dict[str, Any] = {
+        "strategy": saved if saved and saved != "?" else None,
+        "task_path": str(status.get("task_path") or session.dir / "task.yaml"),
+        "prd_path": None,
+        "effort": None,
+        "budget": None,
+        "max_iterations": 5,
+        "cowabunga": False,
+        "resume": True,
+    }
+    result = PlanSessionApp(session, run_kwargs).run()
+    return _handoff(session, run_kwargs, result)

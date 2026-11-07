@@ -137,7 +137,7 @@ class TestTemplatesScreenNav:
         monkeypatch.chdir(tmp_path)
 
         async def drive() -> None:
-            from splinter.tui import ConfigureApp
+            from splinter.tui_configure import ConfigureApp
 
             app = ConfigureApp()
             async with app.run_test(size=(160, 40)) as pilot:
@@ -193,7 +193,8 @@ class TestTemplatesScreenSaveDefault:
         monkeypatch.chdir(tmp_path)
 
         async def drive() -> None:
-            from splinter.tui import ConfigureApp, TemplatesScreen
+            from splinter.tui import TemplatesScreen
+            from splinter.tui_configure import ConfigureApp
 
             app = ConfigureApp()
             async with app.run_test(size=(160, 40)) as pilot:

@@ -37,3 +37,15 @@ def _mock_opencode_list_models(monkeypatch: pytest.MonkeyPatch) -> None:
             "openrouter/test/model",
         ],
     )
+
+
+@pytest.fixture(autouse=True)
+def _block_live_model_lists(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Live model lists shell out (agy, kimi) and hit the network — never in tests."""
+    from splinter.models import live_models
+
+    def _blocked(*args: object, **kwargs: object) -> object:
+        raise RuntimeError("live model lists are blocked in tests")
+
+    monkeypatch.setattr(live_models, "_run", _blocked)
+    monkeypatch.setattr(live_models, "_get_json", _blocked)

@@ -58,6 +58,8 @@ splinter/
   pipeline.py         # Orchestrates locate → plan → run → gate → eval
   analyze.py          # Session state viewer
   configure.py        # Project config writer
+  configure_chain.py  # Fallback-chain state for the configure TUI
+  tui_configure.py    # configure TUI (list + detail), widgets in tui_configure_widgets.py
   memory/
     session.py        # Session dir management, markdown I/O
     knowledge.py      # Topic-scoped markdown notes (no embeddings)
@@ -68,12 +70,28 @@ splinter/
     localizer.py      # LLM-driven code search (recall + precision)
     runner.py         # Task execution, model/variant resolution
     gate.py           # Deterministic checks (ruff/mypy/pytest)
+    acceptance.py     # Brief acceptance validator (gate | gate+eval | gate+orchestrator)
+    laws.py           # Workhorse contract, brief template, AGENT_RESULT protocol
+    refiner.py        # PRD tasks → waves of briefs with deps
+  engines/            # Engine CLIs for the agents strategy
+    catalog.py        # Engine catalog (mcode, agy, sonnet, codex, glm, …)
+    health.py         # Circuit breaker + live probe
+    routing.py        # Effort → tier → model chain → engine (by model prefix)
+    pool.py           # First healthy engine of a chain
+    failures.py       # STALL/LIMIT/CRASH/EMPTY/MISSING classification
+    launch.py         # Engine → provider invocation seam (guards, watchdog)
   strategies/
     base.py           # Strategy ABC, EvalVerdict
     direct.py         # Raphael: single-task loop with escalation
+    agents.py         # plan-with-agents: briefs, engines, integration branch
   providers/
     claude_cli.py     # Subprocess wrapper for `claude -p`
     opencode.py       # Subprocess wrapper for `opencode run`
+    mcode.py          # Subprocess wrapper for `mcode exec`
+    agy.py            # Subprocess wrapper for `agy`
+  vcs/
+    worktree.py       # Worktree lifecycle, --no-ff merges into integration
+    guard.py          # guard.sh + PATH shims (workhorses may only edit files)
   tools/
     search.py         # grep/cat/file-list through rtk
   obs/
@@ -93,6 +111,155 @@ samples/
 5. **On 1st fail** — save corrections to memory, retry in **same session** with corrections
 6. **On 2nd consecutive fail** — re-plan with eval history, **escalate tier**, fresh session
 7. **Escalates** T0→T1→T2→T3→T4 until **opus 4.8 high**, then stops
+
+## Model pools (every LLM step, smarter model calling)
+
+Every step's model list is a **pool, not a singleton** — runners (ladder tiers)
+and pipeline steps alike (planner, prd, eval, localizer recall/large/precision).
+`models.<step>` and `models.tiers[n]` accept a single id or an ordered list of
+`model[@variant]` entries; the first model whose breaker is closed wins
+(`resolve_model` + `engines/runtime.py`). On a transient provider gap
+(429/overload) the failing model's breaker opens and the retry **reroutes to
+the next healthy sibling in the same step** — each sibling with its own effort
+(`model@variant`) — inside `dispatch._call_provider`, so planner/reviewer/
+localizer/prd get the same fallback as runners. Sessions resume only on the
+primary; when every sibling is tripped the primary runs anyway (fail-open).
+
+```yaml
+models:
+  planner: [sonnet@high, opencode/deepseek-v4-pro@medium, codex/gpt-5.5]
+  eval: [opus@high, sonnet@low]
+  tiers:
+    - [opencode/deepseek-v4-flash-free, mcode/minimax/MiniMax-M3, claude/haiku]
+```
+
+`splinter configure` (`tui_configure.py`, pure state in `configure_chain.py`) is
+list + detail: the left column lists steps, the effort tiers (EFFORT → MODEL)
+and run settings with a one-line summary; the right pane shows the selected
+chain as an ordered list (provider · model · effort, plus a clickable effort select) — `a` add fallback, `x`
+remove, `←/→` effort, `shift+↑/↓` reorder, `enter` swap model. The picker asks
+for the provider first (`tab`/`shift+tab` cycle it while typing) (claude, opencode, codex, cursor, mcode, kimi, agy) and
+prefixes a typed custom id with it. Effort cycles only through the provider's
+native names (`configure_chain.PROVIDER_EFFORTS`): claude low…max, codex
+low…xhigh, opencode minimal…max, agy low/medium/high; mcode/kimi/cursor have no
+effort knob ("—").
+
+Model lists are live, never hard-coded only:
+
+| source | feeds | cache |
+|---|---|---|
+| `opencode models`, `agent --list-models` | opencode, cursor | fetched on open |
+| public pricing catalogue (litellm) | claude, codex | `.splinter/pricing.json` |
+| `agy models` (effort suffix stripped) | agy | `.splinter/models.json` |
+| `kimi provider list --json` | kimi | `.splinter/models.json` |
+| OpenRouter `/api/v1/models?output_modalities=all` (`decisions`) | jev models | `.splinter/models.json` |
+| Vercel `/v1/models` (`type: evaluation`) | jev models | `.splinter/models.json` |
+
+mcode has no listing command, so it keeps the engine-catalog ids. "Sync models"
+in the TUI (or `splinter configure --sync-prices`) refreshes both caches
+(`models/live_models.py`); opening configure only reads them. The picker lists
+each family newest-first. Tests block `live_models._run`/`_get_json` in
+`conftest.py`.
+
+## Decision model (jev) on recall/filter
+
+`splinter.providers.decisions` asks decision models (TypeSafe **jev** and
+friends) typed questions and gets calibrated probabilities back, no generated
+text. The localizer uses it to re-rank recall anchors and filter target files:
+one batched noul/predicate question per item, below-threshold items drop,
+probabilities become anchor confidence. Fails open (any error keeps the LLM's
+own answer).
+
+Providers are adapters over two wire formats:
+
+| provider | endpoint | wire | default model | key env |
+|---|---|---|---|---|
+| `openrouter` | `/api/alpha/decisions` | typesafe (`state`, keyed `noul`) | `typesafe/jev-1.14` | `OPENROUTER_API_KEY` |
+| `vercel` | `ai-gateway.vercel.sh/v1/decisions` | OpenAI (`input`, `predicate` array) | `typesafe-ai/jev` | `AI_GATEWAY_API_KEY` |
+
+`decide_chain` walks `decisions.providers` in order — primary, then fallback —
+each slot with its own model and token (`api_key` literal or `api_key_env`):
+
+```yaml
+decisions:
+  providers:
+    - {provider: vercel, model: typesafe-ai/jev, api_key_env: AI_GATEWAY_API_KEY}
+    - {provider: openrouter, model: typesafe/jev-1.14}   # key from OPENROUTER_API_KEY
+  use_for: [recall, recall_large, filter]   # per-step toggles
+  threshold: 0.5
+```
+
+A legacy flat `provider`/`model`/`url`/`api_key_env` config reads as one slot.
+
+```bash
+splinter configure --jev-recall --jev-filter --decisions-model typesafe/jev-1.14
+```
+
+In the configure TUI the "jev" item holds only the credentials (primary +
+fallback: provider, model, token or `$VAR`, plus the cutoff); the "usar jev"
+toggles live on the Recall, Recall large and Filter panes (`--jev-recall`,
+`--jev-recall-large`, `--jev-filter`). The TUI copy is English.
+
+## Agents Strategy (plan-with-agents)
+
+`splinter run --strategy agents` (alias `splinter`) ports the plan-with-agents
+orchestration: PRD tasks are refined into **waves of briefs** (`agents/refiner.py`),
+each brief runs on the **model chain its effort picks** (`engines/routing.py`:
+brief effort → `effort_map` start tier → that tier's ordered models; the engine
+CLI comes from the model prefix) inside
+its own git worktree forked from a dedicated integration branch
+(`splinter/<slug>-int`); splinter commits, validates and merges each brief back
+with `--no-ff`. Flow per brief:
+
+1. **Refine** — LLM turns tasks into small briefs (goal, files, sketch,
+   acceptance, deps, effort — defaults to the task's effort) grouped into waves
+2. **Launch** — the first healthy model of the effort chain runs the brief in a
+   guarded worktree
+   (PATH shims block git write/build/test/lint; the workhorse only edits files)
+3. **Classify** — STALL/LIMIT/CRASH/EMPTY/MISSING (`engines/failures.py`);
+   infra failures trip that model's circuit breaker and reroute the same brief
+   to the next model of the chain **without burning attempts**
+4. **Acceptance** — per brief: `gate` | `gate+eval` (default) | `gate+orchestrator`
+   (`agents/acceptance.py`, config `agents.acceptance_check`); failures return a
+   fix brief to the same engine session (max 2 fix rounds)
+5. **Assume** — after 3 burned attempts the orchestrator takes the brief over
+   via the direct loop in the same worktree
+6. **Merge** — acceptance PASS → commit + `merge --no-ff` into the integration
+   branch; after all waves the final gate runs there and the branch lands in the
+   main tree
+
+### Config (`agents:` in `.splinter/config.yaml`)
+
+Only run knobs live here — the model is never configured per engine; edit the
+effort tiers (`models.tiers`) instead. Legacy `engines`/`engine_models`/
+`engine_efforts` keys are dropped on the next write.
+
+```yaml
+agents:
+  acceptance_check: gate+eval   # gate | gate+eval | gate+orchestrator
+  stall_min: 8                  # idle watchdog: minutes without output → STALL
+  max_attempts: 3               # burned attempts before the orchestrator assumes
+  probe_on_start: false         # live-probe the effort-chain models before wave 1
+```
+
+```bash
+splinter configure --no-interactive \
+  --agents-acceptance gate+eval \
+  --agents-stall-min 8 --agents-max-attempts 3 --agents-probe-on-start
+```
+
+mcode/kimi/agy catalog models show up in the configure model picker.
+
+### Engine catalog
+
+`splinter engines` lists the catalog (mcode, kimi, kimi-flash, mcode-flash,
+agy, sonnet, claude-plan, codex, glm, opencode-minimax + reviewers
+opus/fable/sonnet);
+`splinter engines --probe [--only mcode,agy] [--json]` live-probes health
+("Reply with the word ok only."; up = standalone `ok`). Reviewer availability is
+inferred from the sonnet ping. New provider CLIs: `mcode/…`, `kimi/…` and
+`agy/…` model prefixes route to `providers/mcode.py` / `providers/kimi.py` /
+`providers/agy.py`.
 
 ## Code Conventions
 

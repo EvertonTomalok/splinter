@@ -68,14 +68,23 @@ def _link_deps_from_main(main_dir: Path, wt_dir: Path) -> None:
             dst.symlink_to(src, target_is_directory=True)
 
 
-def create_worktree(task_id: str, base_dir: Path | None = None) -> WorktreeHandle:
-    """Create a git worktree for task_id; return its handle."""
+def create_worktree(
+    task_id: str, base_dir: Path | None = None, base_ref: str | None = None
+) -> WorktreeHandle:
+    """Create a git worktree for task_id; return its handle.
+
+    ``base_ref`` is the start-point the new branch forks from — the integration
+    branch for brief worktrees; default HEAD (the previous behaviour).
+    """
     cwd = base_dir or Path.cwd()
     path = _worktree_path(task_id, cwd)
     path.parent.mkdir(parents=True, exist_ok=True)
     branch = _branch_name(task_id)
+    cmd = ["git", "worktree", "add", str(path), "-b", branch]
+    if base_ref:
+        cmd.append(base_ref)
     subprocess.run(
-        ["git", "worktree", "add", str(path), "-b", branch],
+        cmd,
         cwd=cwd,
         check=True,
         capture_output=True,
@@ -83,6 +92,88 @@ def create_worktree(task_id: str, base_dir: Path | None = None) -> WorktreeHandl
     )
     _link_deps_from_main(cwd, path)
     return WorktreeHandle(path=path, branch=branch, task_id=task_id)
+
+
+def create_integration_worktree(
+    slug: str, base_dir: Path | None = None, base_ref: str | None = None
+) -> WorktreeHandle:
+    """Create the run's integration worktree (branch ``splinter/<slug>-int``).
+
+    Brief worktrees fork from this branch and merge back into it with ``--no-ff``,
+    so main history only ever sees one merge per run.
+    """
+    return create_worktree(f"{slug}-int", base_dir=base_dir, base_ref=base_ref)
+
+
+def merge_no_ff(
+    handle: WorktreeHandle, target_dir: Path, message: str = ""
+) -> bool:
+    """Merge ``handle.branch`` into the branch checked out at ``target_dir`` with --no-ff.
+
+    Serialised process-wide by ``_MERGE_SEMAPHORE``. Content conflicts are
+    resolved toward the brief branch (it passed acceptance in isolation); a
+    non-content failure rolls the tree back and raises
+    :class:`WorktreeMergeConflict`. Returns ``False`` when the branch carries
+    nothing to merge.
+    """
+    if not branch_has_unmerged_commits(handle, base_dir=target_dir):
+        return False
+    msg = message or f"merge: {handle.task_id}"
+    with _MERGE_SEMAPHORE:
+        result = subprocess.run(
+            ["git", "merge", "--no-ff", handle.branch, "-m", msg],
+            cwd=target_dir,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            conflicted = _unmerged_paths(target_dir)
+            if not conflicted:
+                raise WorktreeMergeConflict(
+                    f"no-ff merge of {handle.branch!r} into {target_dir} failed:\n"
+                    f"{result.stderr.strip()}"
+                )
+            for path in conflicted:
+                co = subprocess.run(
+                    ["git", "checkout", "--theirs", "--", path],
+                    cwd=target_dir,
+                    capture_output=True,
+                    text=True,
+                )
+                if co.returncode == 0:
+                    subprocess.run(
+                        ["git", "add", "--", path],
+                        cwd=target_dir,
+                        capture_output=True,
+                        text=True,
+                    )
+                else:
+                    subprocess.run(
+                        ["git", "rm", "--force", "--", path],
+                        cwd=target_dir,
+                        capture_output=True,
+                        text=True,
+                    )
+            still = _unmerged_paths(target_dir)
+            if still:
+                subprocess.run(
+                    ["git", "reset", "--hard", "HEAD"],
+                    cwd=target_dir,
+                    capture_output=True,
+                    text=True,
+                )
+                raise WorktreeMergeConflict(
+                    f"no-ff merge of {handle.branch!r} left unresolved paths: "
+                    f"{', '.join(still)}"
+                )
+            subprocess.run(
+                ["git", "commit", "--no-edit"],
+                cwd=target_dir,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+    return True
 
 
 def commit_worktree(handle: WorktreeHandle, message: str = "") -> bool:
@@ -179,11 +270,6 @@ def squash_merge(
         if result.returncode != 0:
             conflicted = _unmerged_paths(cwd)
             if not conflicted:
-                # Not a content conflict (dirty/locked index, unconcluded merge):
-                # restore the tree and surface it — nothing to auto-resolve.
-                subprocess.run(
-                    ["git", "reset", "--hard", "HEAD"], cwd=cwd, capture_output=True, text=True
-                )
                 raise WorktreeMergeConflict(
                     f"squash merge of {handle.branch!r} into {base_branch!r} failed:\n"
                     f"{result.stderr.strip()}"

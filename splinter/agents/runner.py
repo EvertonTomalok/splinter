@@ -101,15 +101,23 @@ def resolve_variant(
     effort_override: str | None,
     ladder: Ladder,
     tier_level: int | None = None,
+    *,
+    model: str | None = None,
 ) -> str:
     """Pick the reasoning variant.
 
-    Precedence: CLI override > task setting > per-tier config > ladder effort map.
+    Precedence: CLI override > task setting > the chosen model's pool variant
+    (``model@variant`` — the effort follows the fallback model) > per-tier
+    config > ladder effort map.
     """
     if effort_override and effort_override != Variant.AUTO:
         return effort_override
     if task.reasoning_effort and task.reasoning_effort != Variant.AUTO:
         return task.reasoning_effort
+    if tier_level is not None and model is not None:
+        pool_variant = ladder.model_variant(tier_level, model)
+        if pool_variant:
+            return pool_variant
     if tier_level is not None:
         configured = ladder.tier_variant(tier_level)
         if configured:
@@ -122,8 +130,18 @@ def resolve_variant(
 
 
 def resolve_model(tier_level: int, ladder: Ladder) -> tuple[str, str]:
-    """Map a ladder tier level to its primary model id and provider name."""
+    """Map a ladder tier level to its primary model id and provider name.
+
+    The tier's ``models`` list is a pool: the first model whose breaker is
+    closed wins, so a rate-limited engine is skipped instead of blocking the
+    tier. Falls back to the first model when every sibling is tripped.
+    """
+    from splinter.engines import runtime
+
     tier = ladder.tier_by_level(tier_level)
+    for model in tier.models:
+        if runtime.model_available(model):
+            return model, tier.provider
     return tier.models[0], tier.provider
 
 
@@ -168,6 +186,7 @@ def run_task(
     localization: str = "",
     corrections: str = "",
     opencode_session: str | None = None,
+    session_model: str | None = None,
     timeout: int | None = None,
     trace: object = None,
     iteration: int = 0,
@@ -175,13 +194,16 @@ def run_task(
     cwd: str | None = None,
 ) -> RunResult:
     model_id, _ = resolve_model(tier_level, ladder)
-    variant = resolve_variant(task, effort_override, ladder, tier_level)
+    if session_model is not None and session_model != model_id:
+        opencode_session = None
+    variant = resolve_variant(task, effort_override, ladder, tier_level, model=model_id)
     if timeout is None:
         timeout = ladder.tier_timeout(tier_level)
     prompt = _build_prompt(
         task, plan, localization, corrections, is_continuation=opencode_session is not None
     )
 
+    from splinter.engines import runtime
     from splinter.providers.dispatch import run_provider_session
 
     response = None
@@ -202,6 +224,7 @@ def run_task(
                 task_index=task_index,
                 role="run",
             )
+            runtime.report_model_success(model_id)
             break
         except Exception as exc:
             from splinter.providers.base import ProviderGapError
@@ -210,14 +233,34 @@ def run_task(
                 raise
             if attempt >= _MAX_GAP_RETRIES:
                 raise
-            wait = min(5 * (2**attempt), 60)
-            log.warning(
-                "provider gap (%s) on attempt %d/%d — retrying in %ds",
-                exc.kind,
-                attempt + 1,
-                _MAX_GAP_RETRIES,
-                wait,
-            )
+            runtime.report_model_failure(model_id)
+            rerouted, _provider = resolve_model(tier_level, ladder)
+            if rerouted != model_id:
+                log.warning(
+                    "provider gap (%s) on %s — rerouting tier %d to %s",
+                    exc.kind,
+                    model_id,
+                    tier_level,
+                    rerouted,
+                )
+                model_id = rerouted
+                opencode_session = None
+                prompt = _build_prompt(
+                    task, plan, localization, corrections, is_continuation=False
+                )
+                variant = resolve_variant(
+                    task, effort_override, ladder, tier_level, model=model_id
+                )
+                wait = 2
+            else:
+                wait = min(5 * (2**attempt), 60)
+                log.warning(
+                    "provider gap (%s) on attempt %d/%d — retrying in %ds",
+                    exc.kind,
+                    attempt + 1,
+                    _MAX_GAP_RETRIES,
+                    wait,
+                )
             time.sleep(wait)
     assert response is not None
     latency = time.monotonic() - _t0

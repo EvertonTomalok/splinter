@@ -46,6 +46,33 @@ class CompletedProcess:
     stderr: str
 
 
+class IdleTimeoutError(RuntimeError):
+    """Raised when a streaming child produces no output for ``idle_timeout``."""
+
+    def __init__(self, idle_seconds: float, cmd: list[str]) -> None:
+        self.idle_seconds = idle_seconds
+        self.cmd = cmd
+        super().__init__(f"no output for {idle_seconds:.0f}s: {' '.join(cmd[:3])}…")
+
+
+def build_child_env(
+    env: dict[str, str] | None = None,
+    unset: tuple[str, ...] | list[str] = (),
+) -> dict[str, str] | None:
+    """Compose the child environment: explicit ``env`` wins; else os.environ minus ``unset``.
+
+    Returns ``None`` (inherit the parent environment) unless an explicit env is
+    given or keys must be dropped — e.g. subscription-only claude launches strip
+    ``ANTHROPIC_API_KEY``/``ANTHROPIC_AUTH_TOKEN``.
+    """
+    if env is not None:
+        return {k: v for k, v in env.items() if k not in set(unset)}
+    if not unset:
+        return None
+    drop = set(unset)
+    return {k: v for k, v in os.environ.items() if k not in drop}
+
+
 def _kill(proc: subprocess.Popen[str]) -> None:
     try:
         os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
@@ -62,19 +89,34 @@ def run_subprocess(
     timeout: int,
     cwd: str | None = None,
     on_line: Callable[[str], None] | None = None,
+    env: dict[str, str] | None = None,
+    idle_timeout: float | None = None,
 ) -> CompletedProcess:
     """Run ``cmd`` capturing output, in its own process group, killable on shutdown.
 
     If ``on_line`` is given, stdout/stderr are read line-by-line and each line is
     handed to the callback as it arrives (live streaming) — used to surface the
-    model's tool-calls/text in the run pane while it works.
+    model's tool-calls/text in the run pane while it works. ``env`` replaces the
+    child environment (PATH shims for guarded engine runs). ``idle_timeout``
+    (seconds, streaming mode only) kills the group and raises
+    :class:`IdleTimeoutError` when no line arrives on either pipe in time — the
+    workhorse STALL watchdog.
     """
+    if env is not None and "SPLINTER_LAUNCH_PATH" in env:
+        import shutil
+
+        executable = shutil.which(cmd[0], path=env["SPLINTER_LAUNCH_PATH"])
+        if executable is None:
+            raise FileNotFoundError(cmd[0])
+        cmd = [executable, *cmd[1:]]
+        env = {key: value for key, value in env.items() if key != "SPLINTER_LAUNCH_PATH"}
     proc: subprocess.Popen[str] = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
         cwd=cwd,
+        env=env,
         start_new_session=True,  # own process group so killpg reaches subagents
     )
     with _lock:
@@ -83,8 +125,10 @@ def run_subprocess(
         if on_line is None:
             stdout, stderr = proc.communicate(timeout=timeout)
         else:
-            stdout, stderr = _stream(proc, cmd, timeout, on_line)
-    except subprocess.TimeoutExpired:
+            stdout, stderr = _stream(
+                proc, cmd, timeout, on_line, idle_timeout=idle_timeout
+            )
+    except (subprocess.TimeoutExpired, IdleTimeoutError):
         _kill(proc)
         if on_line is None:
             proc.communicate()
@@ -101,18 +145,25 @@ def run_subprocess(
 
 
 def _stream(
-    proc: subprocess.Popen[str], cmd: list[str], timeout: int, on_line: Callable[[str], None]
+    proc: subprocess.Popen[str],
+    cmd: list[str],
+    timeout: int,
+    on_line: Callable[[str], None],
+    *,
+    idle_timeout: float | None = None,
 ) -> tuple[str, str]:
     """Read stdout/stderr line-by-line, invoke ``on_line`` per line, enforce timeout."""
     deadline = time.monotonic() + timeout
     out: list[str] = []
     err: list[str] = []
+    last_activity = [time.monotonic()]
     assert proc.stdout is not None
     assert proc.stderr is not None
 
     def _drain(stream: Any, sink: list[str], ctx: contextvars.Context) -> None:
         for line in stream:
             sink.append(line)
+            last_activity[0] = time.monotonic()
             try:
                 # Run the callback inside the caller's context: threads start with
                 # an empty Context, so agentic_scope's ContextVar (task/iteration
@@ -132,8 +183,11 @@ def _stream(
     err_thread.start()
 
     while proc.poll() is None:
-        if time.monotonic() > deadline:
+        now = time.monotonic()
+        if now > deadline:
             raise subprocess.TimeoutExpired(cmd, timeout)
+        if idle_timeout is not None and now - last_activity[0] > idle_timeout:
+            raise IdleTimeoutError(idle_timeout, cmd)
         time.sleep(0.05)
 
     out_thread.join()

@@ -35,6 +35,101 @@ def setup() -> None:
 
 
 @app.command()
+def engines(
+    probe: Annotated[
+        bool,
+        typer.Option(
+            "--probe",
+            help="Live-probe installed engines (spends real quota, ~2 min per engine)",
+        ),
+    ] = False,
+    only: Annotated[
+        str, typer.Option("--only", help="Comma-separated engine keys to probe")
+    ] = "",
+    as_json: Annotated[bool, typer.Option("--json", help="Emit JSON instead of tables")] = False,
+) -> None:
+    """List the workhorse engine catalog, optionally probing engine health."""
+    import json as _json
+
+    from splinter.engines.catalog import CATALOG, engine_by_key
+    from splinter.engines.health import is_reviewer, probe_report
+    from splinter.engines.health import probe as probe_engine
+
+    if not probe:
+        if as_json:
+            rows = [
+                {
+                    "key": e.key,
+                    "label": e.label,
+                    "provider": e.provider,
+                    "model": e.model,
+                    "role": e.role,
+                }
+                for e in CATALOG
+            ]
+            typer.echo(_json.dumps({"engines": rows}, indent=2))
+        else:
+            typer.echo("Engine catalog (splinter run --strategy agents):\n")
+            typer.echo(engine_table())
+        raise typer.Exit(0)
+
+    keys = [k.strip() for k in only.split(",") if k.strip()] if only else [e.key for e in CATALOG]
+    unknown = [k for k in keys if engine_by_key(k) is None]
+    if unknown:
+        typer.echo(f"unknown engine(s): {', '.join(unknown)}", err=True)
+        raise typer.Exit(2)
+    from splinter.engines.health import EngineProbe
+
+    probes: list[EngineProbe] = []
+    sonnet_up: bool | None = None
+    for key in keys:
+        engine = engine_by_key(key)
+        assert engine is not None
+        if is_reviewer(key):
+            continue
+        result = probe_engine(engine)
+        probes.append(result)
+        if key == "sonnet":
+            sonnet_up = result.up
+    if any(is_reviewer(k) for k in keys):
+        for key in keys:
+            if not is_reviewer(key):
+                continue
+            probes.append(
+                EngineProbe(
+                    key=key,
+                    up=bool(sonnet_up),
+                    binary="claude-credit",
+                    detail="inferred from sonnet",
+                )
+            )
+    if as_json:
+        typer.echo(
+            _json.dumps(
+                {
+                    "engines": [
+                        {"key": p.key, "up": p.up, "binary": p.binary, "detail": p.detail}
+                        for p in probes
+                    ]
+                },
+                indent=2,
+            )
+        )
+    else:
+        typer.echo(probe_report(probes))
+    raise typer.Exit(0)
+
+
+def engine_table() -> str:
+    from splinter.engines.catalog import CATALOG
+
+    lines = ["| Key | Engine | Provider | Role |", "|---|---|---|---|"]
+    for e in CATALOG:
+        lines.append(f"| `{e.key}` | {e.label} | {e.provider} | {e.role} |")
+    return "\n".join(lines)
+
+
+@app.command()
 def prd(
     description: Annotated[str, typer.Argument(help="Feature/bug description")] = "",
     strategy: Annotated[str | None, typer.Option(help="Pre-select strategy")] = None,
@@ -92,7 +187,10 @@ def run(
         bool,
         typer.Option(
             "--cowabunga",
-            help="Full autonomy: skip the PRD Q&A and never wake the human on ASK_USER",
+            help=(
+                "Full autonomy: skip the PRD Q&A / task plan mode and never wake the "
+                "human on ASK_USER"
+            ),
         ),
     ] = False,
     no_ground: Annotated[
@@ -237,6 +335,13 @@ def run(
 
         raise typer.Exit(run_prd_interactive(run_kwargs))
 
+    # A task on a TTY opens plan mode: the planner asks, plans, the user edits, then
+    # it runs. --cowabunga skips the plan screen entirely.
+    if task and not cowabunga:
+        from splinter.tui_plan import run_plan_interactive
+
+        raise typer.Exit(run_plan_interactive(run_kwargs))
+
     from splinter.tui import run_with_tui
 
     raise typer.Exit(run_with_tui(run_kwargs))
@@ -333,6 +438,64 @@ def configure(
     sync_prices: Annotated[
         bool, typer.Option("--sync-prices", help="Fetch and save live model pricing")
     ] = False,
+    agents_acceptance: Annotated[
+        str | None,
+        typer.Option(
+            "--agents-acceptance",
+            help="Brief acceptance check: gate | gate+eval | gate+orchestrator",
+        ),
+    ] = None,
+    agents_stall_min: Annotated[
+        float | None,
+        typer.Option("--agents-stall-min", help="Idle watchdog minutes before STALL"),
+    ] = None,
+    agents_max_attempts: Annotated[
+        int | None,
+        typer.Option("--agents-max-attempts", help="Burned attempts before assuming a brief"),
+    ] = None,
+    agents_probe_on_start: Annotated[
+        bool | None,
+        typer.Option(
+            "--agents-probe-on-start/--no-agents-probe-on-start",
+            help="Live-probe the effort-chain models before wave 1 (spends quota)",
+        ),
+    ] = None,
+    decisions_provider: Annotated[
+        str | None,
+        typer.Option("--decisions-provider", help="Decision-model provider (openrouter)"),
+    ] = None,
+    decisions_model: Annotated[
+        str | None,
+        typer.Option(
+            "--decisions-model",
+            help="Decision model id (default typesafe/jev-1.14)",
+        ),
+    ] = None,
+    jev_recall: Annotated[
+        bool | None,
+        typer.Option(
+            "--jev-recall/--no-jev-recall",
+            help="Decision model ranks/filters recall anchors",
+        ),
+    ] = None,
+    jev_recall_large: Annotated[
+        bool | None,
+        typer.Option(
+            "--jev-recall-large/--no-jev-recall-large",
+            help="Decision model ranks recall-large anchors (big search outputs)",
+        ),
+    ] = None,
+    jev_filter: Annotated[
+        bool | None,
+        typer.Option(
+            "--jev-filter/--no-jev-filter",
+            help="Decision model ranks target files before the filter summary",
+        ),
+    ] = None,
+    decisions_threshold: Annotated[
+        float | None,
+        typer.Option("--decisions-threshold", help="Relevance cutoff for decision answers"),
+    ] = None,
 ) -> None:
     """Pick per-step models in a TUI (default), then write config.yaml."""
     from splinter.configure import run_configure
@@ -347,6 +510,16 @@ def configure(
             use_default=use_default,
             use_cc_only=use_cc_only,
             sync_prices_flag=sync_prices,
+            agents_acceptance=agents_acceptance,
+            agents_stall_min=agents_stall_min,
+            agents_max_attempts=agents_max_attempts,
+            agents_probe_on_start=agents_probe_on_start,
+            decisions_provider=decisions_provider,
+            decisions_model=decisions_model,
+            jev_recall=jev_recall,
+            jev_filter=jev_filter,
+            jev_recall_large=jev_recall_large,
+            decisions_threshold=decisions_threshold,
         )
     )
 

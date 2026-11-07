@@ -45,6 +45,7 @@ class IterationContext:
     localization: str = ""
     effort_override: str | None = None
     oc_session: str | None = None
+    session_model: str | None = None
     #: Evaluator's provider session — continued across same-runner retries.
     eval_session: str | None = None
     corrections: str = ""
@@ -170,7 +171,9 @@ class RunStage(Stage):
         ctx.flush_structure()
         mode = "fixing" if ctx.corrections else "implementing"
         model_id, _ = resolve_model(ctx.tier, ctx.ladder)
-        variant = resolve_variant(ctx.task, ctx.effort_override, ctx.ladder, ctx.tier)
+        variant = resolve_variant(
+            ctx.task, ctx.effort_override, ctx.ladder, ctx.tier, model=model_id
+        )
         log.info(
             "iter %d · T%d · %s with %s (variant=%s, %s)",
             ctx.iteration,
@@ -207,6 +210,7 @@ class RunStage(Stage):
                     localization=ctx.localization,
                     corrections=ctx.corrections,
                     opencode_session=ctx.oc_session,
+                    session_model=ctx.session_model,
                     trace=ctx.trace,
                     iteration=ctx.iteration,
                     task_index=ctx.task_index,
@@ -222,8 +226,8 @@ class RunStage(Stage):
             result.cost,
         )
         ctx.run_result = result
-        if ctx.oc_session is None and result.opencode_session:
-            ctx.oc_session = result.opencode_session
+        ctx.oc_session = result.opencode_session
+        ctx.session_model = result.model
 
         # Persist the runner's raw output so `analyze` can expand it per iteration.
         # Task-scoped name for tasks beyond the first: every task restarts its
