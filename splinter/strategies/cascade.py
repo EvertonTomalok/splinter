@@ -58,6 +58,7 @@ def _append_task_header_once(session: Session, task_no: int, header: str) -> Non
 class CascadeStrategy(DirectStrategy):
     name = "cascade"
     aliases = ["leonardo"]
+    summary = "multi-task, dependency-ordered, checkpointed"
 
     def execute(
         self,

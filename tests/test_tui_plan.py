@@ -82,7 +82,7 @@ def test_full_flow_questions_answer_plan_run(
             assert task_edit.border_title == "Task · hello.yaml"
             assert "Add a hello command" in task_edit.text
             assert app.title == "splinter · plan"
-            assert "chat" in app.sub_title
+            assert app.sub_title == "Questions"
             assert _buttons(app) == ["send", "write-plan", "cowabunga"]
 
             task_edit.text = "## Task\nAdd a hello command, edited\n\n## Acceptance Criteria\n- ok"
@@ -290,6 +290,54 @@ def test_buttons_are_clickable_labels(task_file: Path, planner: dict[str, Any]) 
         async with app.run_test(size=SIZE) as pilot:
             await _settle(app, pilot)
             labels = [str(b.label) for b in app.query("#actions Button").results(Button)]
-            assert labels == ["Send (Ctrl+S)", "Write plan", "Cowabunga"]
+            assert labels == ["Send", "Write plan", "Cowabunga"]
+
+    asyncio.run(drive())
+
+
+def test_plan_mode_question_form_stepper_and_busy_line(
+    task_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from textual.widgets import RadioButton
+
+    from splinter.tui_questions import QuestionForm
+    from splinter.tui_status import BusyStatus
+    from splinter.tui_stepper import PhaseStepper
+
+    sent: list[str] = []
+
+    def questions(*args: Any, **kw: Any) -> Turn:
+        return Turn(
+            text="1. Where should the flag live?\nA) cli.py  B) config.py\n\n"
+            "2. Default value?\nA) on  B) off",
+            session_id="sid-q",
+            model="sonnet",
+        )
+
+    def refine(*args: Any, **kw: Any) -> Turn:
+        sent.append(str(kw.get("answers") or (args[1] if len(args) > 1 else "")))
+        return Turn(text="## Decisions\n- cli.py", session_id="sid-q", model="sonnet")
+
+    monkeypatch.setattr(plan_session, "open_plan_questions", questions)
+    monkeypatch.setattr(plan_session, "refine_plan", refine)
+    app = _app(task_file)
+
+    async def drive() -> None:
+        async with app.run_test(size=SIZE) as pilot:
+            await _settle(app, pilot)
+            stepper = app.query_one("#stepper", PhaseStepper)
+            assert stepper.current_label == "Questions"
+            assert not app.query_one("#busy", BusyStatus).display
+            form = app.query_one("#question-form", QuestionForm)
+            assert form.display and len(form.questions) == 2
+            assert "Answer (e.g." not in _convo(app)
+            radios = list(form.query(RadioButton).results(RadioButton))
+            radios[0].value = True
+            await pilot.pause()
+            app.query_one("#entry", TextArea).text = "keep it small"
+            app.action_send()
+            await _settle(app, pilot)
+            assert sent and sent[0].startswith("1A"), sent
+            assert "keep it small" in sent[0]
 
     asyncio.run(drive())

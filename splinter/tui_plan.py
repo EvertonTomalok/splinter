@@ -35,6 +35,14 @@ from splinter.tui import (
     _find_shortcuts_cmd,
     _OrderedCommandsProvider,
 )
+from splinter.tui_questions import (
+    Question,
+    QuestionForm,
+    extract_open_questions,
+    parse_questions,
+)
+from splinter.tui_status import BusyStatus
+from splinter.tui_stepper import PLAN_STEPS, PhaseStepper
 
 DEFAULT_STRATEGY = "raphael"
 _PLAN_WORDS = {"fulfilled", "done", "plan", "write plan"}
@@ -42,6 +50,11 @@ _RUN_WORDS = {"accept", "run", "go"}
 _HINTS = {
     "chat": "your answers / write plan / cowabunga",
     "review": "describe changes / run / cowabunga",
+}
+_PHASE_STEPS = {"init": 0, "clarify": 1, "chat": 1, "review": 2, "run": 3}
+_COWABUNGA_TOOLTIPS = {
+    "chat": "Let the planner answer the open questions, write the plan and run it",
+    "review": "Run this plan now",
 }
 
 
@@ -57,7 +70,12 @@ class PlanSessionApp(App[int | None]):
     #draftpane { width: 50%; border-right: solid $primary; }
     #task-edit, #plan-edit { height: 1fr; border: round $primary; }
     #chatpane { width: 1fr; }
-    #convo { height: 1fr; padding: 0 1; }
+    #convo {
+        height: 1fr; padding: 0 1;
+        scrollbar-size-horizontal: 0; scrollbar-size-vertical: 1;
+    }
+    #questions-host { height: auto; }
+    #busy { height: 1; }
     #composer { dock: bottom; height: auto; }
     #entry { height: 8; border: round $primary; }
     #actions { height: 3; padding: 0 1; align: left middle; }
@@ -99,6 +117,8 @@ class PlanSessionApp(App[int | None]):
         self._failed = False
         self._last_job: tuple[Callable[..., None], dict[str, Any]] | None = None
         self._started_at = datetime.now(timezone.utc).isoformat()
+        self._questions: list[Question] = []
+        self._model_name = ""
 
     # --- layout ---
     def compose(self) -> ComposeResult:
@@ -114,10 +134,14 @@ class PlanSessionApp(App[int | None]):
                 plan_edit.display = False
                 yield plan_edit
             with Vertical(id="chatpane"):
+                yield PhaseStepper(PLAN_STEPS, id="stepper")
                 yield RichLog(id="convo", markup=True, wrap=True)
+                with Vertical(id="questions-host"):
+                    yield QuestionForm(id="question-form")
                 with Vertical(id="composer"):
+                    yield BusyStatus(id="busy")
                     entry = ComposerTextArea(id="entry", soft_wrap=True)
-                    entry.border_subtitle = "Ctrl+S send · ↵ newline"
+                    entry.border_subtitle = "↵ newline"
                     yield entry
                     with Horizontal(id="actions"):
                         yield from self._action_buttons("chat")
@@ -180,7 +204,7 @@ class PlanSessionApp(App[int | None]):
             self._set_phase("clarify")
             self._ask_questions()
         else:
-            self._enter_chat("[green]Continue: answer, 'Write plan', or 'cowabunga'.[/]")
+            self._enter_chat()
 
     def _read_saved_task(self, status: dict[str, Any]) -> dict[str, Any]:
         for raw in (self.session.dir / "task.yaml", status.get("task_path")):
@@ -215,7 +239,15 @@ class PlanSessionApp(App[int | None]):
     # --- state ---
     def _set_phase(self, phase: str) -> None:
         self.phase = phase
-        self.sub_title = phase
+        try:
+            stepper = self.query_one("#stepper", PhaseStepper)
+        except Exception:
+            self.sub_title = phase
+            return
+        stepper.set_current(_PHASE_STEPS.get(phase, 0))
+        self.sub_title = stepper.current_label
+        if phase != "chat":
+            self._set_questions([])
 
     def _task_md(self) -> str:
         return str(self.query_one("#task-edit", TextArea).text)
@@ -253,18 +285,73 @@ class PlanSessionApp(App[int | None]):
         entry.disabled = busy
         for btn in self.query("#actions Button"):
             btn.disabled = busy
-        if placeholder:
+        for radio in self.query("#question-form RadioSet"):
+            radio.disabled = busy
+        try:
+            status = self.query_one("#busy", BusyStatus)
+        except Exception:
+            status = None
+        if status is not None:
+            if busy:
+                status.start(placeholder.rstrip("…").strip(), self._busy_model())
+            else:
+                status.stop()
+        if placeholder and not busy:
             entry.border_title = placeholder
         if not busy:
             entry.focus()
 
+    def _busy_model(self) -> str:
+        if not self._model_name:
+            try:
+                from splinter.models.roster import load_ladder
+
+                self._model_name = str(load_ladder().planner_model)
+            except Exception:
+                self._model_name = ""
+        return self._model_name
+
+    def _set_questions(self, questions: list[Question]) -> None:
+        self._questions = list(questions)
+        if not self.is_running:
+            return
+        try:
+            form = self.query_one("#question-form", QuestionForm)
+        except Exception:
+            return
+
+        async def _swap() -> None:
+            await form.set_questions(self._questions)
+            form.display = bool(self._questions)
+
+        self.run_worker(_swap, name="questions")  # type: ignore[arg-type]
+
+    def _compile_answers(self, text: str) -> str:
+        stripped = text.strip()
+        words = _PLAN_WORDS | _RUN_WORDS | {"cowabunga"}
+        if not self._questions or self.phase != "chat" or stripped.lower() in words:
+            return stripped
+        try:
+            form = self.query_one("#question-form", QuestionForm)
+        except Exception:
+            return stripped
+        return form.compile_answer(stripped)
+
     def _action_buttons(self, phase: str) -> list[Button]:
-        btns = [Button("Send (Ctrl+S)", id="send", variant="primary")]
-        if phase == "review":
-            btns.append(Button("Run", id="run", variant="success"))
+        review = phase == "review"
+        btns = [Button("Send", id="send", variant="default" if review else "primary")]
+        if review:
+            btns.append(Button("Run", id="run", variant="primary"))
         else:
             btns.append(Button("Write plan", id="write-plan", variant="success"))
-        btns.append(Button("Cowabunga", id="cowabunga", variant="warning"))
+        btns.append(
+            Button(
+                "Cowabunga",
+                id="cowabunga",
+                variant="warning",
+                tooltip=_COWABUNGA_TOOLTIPS.get(phase, _COWABUNGA_TOOLTIPS["chat"]),
+            )
+        )
         if self._failed:
             btns.append(Button("Retry", id="retry", variant="error"))
         return btns
@@ -368,15 +455,12 @@ class PlanSessionApp(App[int | None]):
     def _after_questions(self, turn: Turn) -> None:
         self._take_session(turn)
         self._say(escape(turn.text))
-        self._enter_chat(
-            "[green]Answer (e.g. 1A,2C), click 'Write plan' when ready, "
-            "or 'cowabunga' to plan and run.[/]"
-        )
+        self._enter_chat(parse_questions(turn.text))
 
     def _after_refine(self, turn: Turn) -> None:
         self._take_session(turn)
         self._say(escape(turn.text))
-        self._enter_chat("[green]Updated. Answer what is open, 'Write plan', or 'cowabunga'.[/]")
+        self._enter_chat(extract_open_questions(turn.text))
 
     def _after_plan(self, turn: Turn) -> None:
         self._take_session(turn)
@@ -394,10 +478,11 @@ class PlanSessionApp(App[int | None]):
         plan_session.save_plan(self.session, plan)
         self._enter_review(plan, "[green]Plan revised. Run, or describe more changes.[/]")
 
-    def _enter_chat(self, hint: str) -> None:
+    def _enter_chat(self, questions: list[Question] | None = None) -> None:
         self._set_phase("chat")
         self._save_state()
-        self._say(hint)
+        if questions is not None:
+            self._set_questions(questions)
         self._render_actions("chat")
         self._set_busy(False, _HINTS["chat"])
 
@@ -417,7 +502,7 @@ class PlanSessionApp(App[int | None]):
 
     # --- input dispatch ---
     def action_send(self) -> None:
-        self._submit(self.query_one("#entry", TextArea).text)
+        self._submit(self._compile_answers(self.query_one("#entry", TextArea).text))
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         bid = event.button.id or ""

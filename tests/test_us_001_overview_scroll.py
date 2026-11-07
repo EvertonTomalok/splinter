@@ -223,6 +223,7 @@ def test_run_keybindings_not_shadowed(tmp_path: Path, monkeypatch: "pytest.Monke
 
     from splinter.memory.session import Session
     from splinter.tui import RunApp
+    from splinter.tui_run_stop import StopMenuModal
 
     monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
     session = Session("ses_us001_keybind")
@@ -235,16 +236,7 @@ def test_run_keybindings_not_shadowed(tmp_path: Path, monkeypatch: "pytest.Monke
 
     monkeypatch.setattr(RunApp, "_refresh", patched_refresh)
 
-    actions_called: list[str] = []
-
-    async def patched_pause_graceful(self: RunApp) -> None:
-        actions_called.append("pause_graceful")
-
-    async def patched_pause_kill(self: RunApp) -> None:
-        actions_called.append("pause_kill")
-
-    monkeypatch.setattr(RunApp, "action_pause_graceful", patched_pause_graceful)
-    monkeypatch.setattr(RunApp, "action_pause_kill", patched_pause_kill)
+    screens: list[object] = []
 
     def fake_pipeline(**kwargs: object) -> int:
         return 0
@@ -261,21 +253,23 @@ def test_run_keybindings_not_shadowed(tmp_path: Path, monkeypatch: "pytest.Monke
                     break
             await pilot.pause()
 
-            await pilot.press("p")
+            await pilot.press("s")
             await pilot.pause()
+            screens.append(app.screen)
 
             await pilot.press("escape")
             await pilot.pause()
+            screens.append(app.screen)
 
             await pilot.press("q")
 
     asyncio.run(drive())
 
-    assert "pause_graceful" in actions_called, (
-        f"p key did not trigger pause_graceful — got: {actions_called}"
+    assert screens and isinstance(screens[0], StopMenuModal), (
+        f"s key did not open the stop menu — got: {screens}"
     )
-    assert "pause_kill" in actions_called, (
-        f"k key did not trigger pause_kill — got: {actions_called}"
+    assert not isinstance(screens[1], StopMenuModal), (
+        f"escape did not close the stop menu — got: {screens}"
     )
 
 

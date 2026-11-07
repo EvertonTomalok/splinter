@@ -737,9 +737,13 @@ def format_run_completion(session: Session) -> str:
         else:
             done = task_index if task_index is not None else task_total
             parts.append(f"{done}/{task_total} tasks")
+    models = session.read_pre_run_usage().get("models", {})
+    pre_run = sum(
+        float(m.get("cost", 0.0) or 0.0) for m in (models or {}).values() if isinstance(m, dict)
+    )
     cost = metrics.get("cost")
-    if cost:
-        parts.append(f"${cost}")
+    if cost or pre_run:
+        parts.append(f"${float(cost or 0.0) + pre_run:.4f}")
     runs = metrics.get("runs")
     if runs:
         parts.append(f"{runs} runs")

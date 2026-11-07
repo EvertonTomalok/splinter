@@ -39,19 +39,19 @@ def test_ctrl_k_toggles_kowabunga_and_indicator(
 
             assert app._kowabunga == RunnerMode.KOWABUNGA_OFF
             ind = app.query_one("#kowabunga-ind", Static)
-            assert "KOWABUNGA: OFF" in str(ind.content)
+            assert "cowabunga · off" in str(ind.content)
 
             await pilot.press("ctrl+k")
             await pilot.pause()
 
             assert app._kowabunga == RunnerMode.KOWABUNGA_ON
-            assert "KOWABUNGA: ON" in str(ind.content)
+            assert "cowabunga · on" in str(ind.content)
 
             await pilot.press("ctrl+k")
             await pilot.pause()
 
             assert app._kowabunga == RunnerMode.KOWABUNGA_OFF
-            assert "KOWABUNGA: OFF" in str(ind.content)
+            assert "cowabunga · off" in str(ind.content)
 
             await pilot.press("q")
 
@@ -115,7 +115,7 @@ def test_kowabunga_indicator_reflects_persisted_state_on_mount(
 
             assert app._kowabunga == RunnerMode.KOWABUNGA_ON
             ind = app.query_one("#kowabunga-ind", Static)
-            assert "KOWABUNGA: ON" in str(ind.content)
+            assert "cowabunga · on" in str(ind.content)
 
             await pilot.press("q")
 

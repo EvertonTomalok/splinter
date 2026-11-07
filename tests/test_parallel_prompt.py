@@ -94,24 +94,23 @@ class TestBeginRunWiring:
     def test_accept_pushes_modal_and_choice_true(
         self, tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
     ) -> None:
-        from splinter.tui import _ParallelModal
+        from splinter.tui_run_setup import RunSetup, RunSetupModal
 
         app, pushed = self._prep(tmp_path, monkeypatch, worktree=True)
-        app._begin_run()
-        assert isinstance(pushed["screen"], _ParallelModal)
-        assert "finished" not in pushed  # deferred until the user answers
-        pushed["cb"](True)  # user picks Parallel
+        app._open_run_setup_modal()
+        assert isinstance(pushed["screen"], RunSetupModal)
+        assert "finished" not in pushed
+        pushed["cb"](RunSetup(strategy="cascade", parallel=True))
         assert app.run_kwargs["parallel"] is True
         assert pushed.get("finished") is True
 
-    def test_modal_escape_defaults_sequential(
+    def test_modal_escape_stays_in_review(
         self, tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
     ) -> None:
         app, pushed = self._prep(tmp_path, monkeypatch, worktree=True)
-        app._begin_run()
-        pushed["cb"](None)  # Escape / dismissed
-        assert app.run_kwargs["parallel"] is False
-        assert pushed.get("finished") is True
+        app._open_run_setup_modal()
+        pushed["cb"](None)  # Escape / Back to chat
+        assert "finished" not in pushed
 
     def test_cowabunga_skips_modal(
         self, tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"

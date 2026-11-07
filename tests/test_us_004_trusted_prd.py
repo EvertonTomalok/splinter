@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -9,8 +10,11 @@ from splinter.tui import PrdSessionApp
 
 
 @pytest.fixture
-def session() -> Session:
-    return Session(new_session_id())
+def session(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Session:
+    monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
+    s = Session(new_session_id())
+    s.dir.mkdir(parents=True, exist_ok=True)
+    return s
 
 
 @pytest.fixture
@@ -93,44 +97,28 @@ class TestOnReview:
                 assert mock_spawn.called
 
 
-class TestOnEdit:
-    """Unit tests for _on_edit functionality."""
+class TestReviewActions:
+    """Unit tests for review action bar and Run setup button."""
 
-    def test_on_edit_preserves_final_prd(self, session: Session, run_kwargs: dict) -> None:
+    def test_render_actions_review_phase_has_run_setup_and_cowabunga(
+        self, session: Session, run_kwargs: dict
+    ) -> None:
         app = PrdSessionApp(session, run_kwargs)
-        original_prd = "# Original PRD\nSome content"
-        app.final_prd = original_prd
         app.phase = "review"
+        buttons_created: list[dict[str, str]] = []
 
-        with patch.object(app, "_say"):
-            with patch.object(app, "_set_busy"):
-                with patch.object(app, "query_one"):
-                    app._on_edit()
+        def capture_button(label: str, id: str, variant: str, **_: object) -> MagicMock:
+            buttons_created.append({"label": label, "id": id, "variant": variant})
+            return MagicMock()
 
-        assert app.final_prd == original_prd
+        with patch("splinter.tui.Button", side_effect=capture_button):
+            with patch.object(app, "query_one"):
+                with patch.object(app, "run_worker"):
+                    app._render_actions("review")
 
-    def test_on_edit_stays_in_review_phase(self, session: Session, run_kwargs: dict) -> None:
-        app = PrdSessionApp(session, run_kwargs)
-        app.final_prd = "# PRD"
-        app.phase = "something_else"
-
-        with patch.object(app, "_say"):
-            with patch.object(app, "_set_busy"):
-                with patch.object(app, "query_one"):
-                    app._on_edit()
-
-        assert app.phase == "review"
-
-    def test_on_edit_calls_set_busy(self, session: Session, run_kwargs: dict) -> None:
-        app = PrdSessionApp(session, run_kwargs)
-        app.final_prd = "# PRD"
-
-        with patch.object(app, "_say"):
-            with patch.object(app, "_set_busy") as mock_busy:
-                with patch.object(app, "query_one"):
-                    app._on_edit()
-
-                mock_busy.assert_called_once_with(False, "describe changes / accept / cowabunga")
+        button_ids = [b["id"] for b in buttons_created]
+        assert button_ids == ["send", "run-setup", "cowabunga"]
+        assert "edit" not in button_ids
 
 
 class TestLiveDraftDispatch:
@@ -238,14 +226,14 @@ class TestAcceptButton:
             app.on_button_pressed(MagicMock(button=MagicMock(id="accept")))
             mock_submit.assert_called_once_with("accept")
 
-    def test_edit_button_calls_on_edit(self, session: Session, run_kwargs: dict) -> None:
+    def test_run_setup_button_opens_modal(self, session: Session, run_kwargs: dict) -> None:
         app = PrdSessionApp(session, run_kwargs)
         app.phase = "review"
         app.final_prd = "# Test PRD"
 
-        with patch.object(app, "_on_edit") as mock_edit:
-            app.on_button_pressed(MagicMock(button=MagicMock(id="edit")))
-            mock_edit.assert_called_once()
+        with patch.object(app, "_open_run_setup_modal") as mock_open:
+            app.on_button_pressed(MagicMock(button=MagicMock(id="run-setup")))
+            mock_open.assert_called_once()
 
     def test_submit_accept_routes_to_on_review(self, session: Session, run_kwargs: dict) -> None:
         app = PrdSessionApp(session, run_kwargs)
@@ -392,7 +380,7 @@ class TestTrustedPrd:
 
         buttons_created = []
 
-        def capture_button(label, id, variant):
+        def capture_button(label, id, variant, **kwargs):
             buttons_created.append({"label": label, "id": id, "variant": variant})
             return MagicMock()
 

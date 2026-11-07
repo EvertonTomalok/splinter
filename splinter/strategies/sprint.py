@@ -17,6 +17,7 @@ from splinter.strategies.registry import register
 class SprintStrategy(AdaptiveStrategy):
     name = "sprint"
     aliases = ["michelangelo"]
+    summary = "starts flash tier, escalates only on eval failure"
     _log_prefix: str = "sprint"
     _log_routing_detail = False
 

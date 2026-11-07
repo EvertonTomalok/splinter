@@ -21,12 +21,12 @@ def register(cls: type[Strategy]) -> type[Strategy]:
 
 
 def _ensure_registered() -> None:
-    if not _REGISTRY:
-        import splinter.strategies.adaptive  # noqa: F401
-        import splinter.strategies.agents  # noqa: F401
-        import splinter.strategies.cascade  # noqa: F401
-        import splinter.strategies.direct  # noqa: F401
-        import splinter.strategies.sprint  # noqa: F401
+    """Import every strategy module; one imported directly must not hide the others."""
+    import splinter.strategies.adaptive  # noqa: F401
+    import splinter.strategies.agents  # noqa: F401
+    import splinter.strategies.cascade  # noqa: F401
+    import splinter.strategies.direct  # noqa: F401
+    import splinter.strategies.sprint  # noqa: F401
 
 
 def get_strategy(name: str) -> Strategy:

@@ -273,6 +273,7 @@ def _pause_graceful(
 class DirectStrategy(Strategy):
     name = "direct"
     aliases = ["raphael"]
+    summary = "one task, implement → eval → escalate fast"
 
     def execute(
         self,

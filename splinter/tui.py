@@ -16,6 +16,7 @@ import logging
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -74,11 +75,20 @@ from splinter.analyze import (
     _trace_metrics,
     _verdict_glyph,
     format_run_completion,
-    render_overview,
 )
 from splinter.enums import DEFAULT_RUNNER_MODE, RunnerMode
 from splinter.memory.session import Session, delete_session, list_sessions
 from splinter.obs.events import events_path
+from splinter.run_overview import render_run_overview
+from splinter.tui_questions import (
+    Question,
+    QuestionForm,
+    extract_open_questions,
+    parse_questions,
+)
+from splinter.tui_run_stop import StopMenuModal
+from splinter.tui_status import BusyStatus
+from splinter.tui_stepper import PRD_STEPS, PhaseStepper
 
 REFRESH_SECONDS = 2.0
 AUTO_REFRESH_SECONDS = 2.0
@@ -101,6 +111,9 @@ _STATE_EMOJI = {
     "DONE": "🟢",
     "UNKNOWN": "⚪",
 }
+
+#: Matches the task number inside a log line ("planning task 3 with opus").
+_TASK_NO_RE = re.compile(r"\btask (\d+)\b")
 
 
 def _cap_payload(text: str, limit: int = 20_000) -> str:
@@ -666,6 +679,21 @@ _MAXIMIZE_CSS = """
         #draftpane { display: none; }
         #run-left { display: none; }
         #cmd-bar { display: none; }
+    }
+"""
+
+#: Thin scrollbars for the run screen: no horizontal bar on the log or the
+#: overview, a one-cell vertical bar.
+_RUN_PANE_CSS = """
+    #overview-scroll {
+        overflow-x: hidden;
+        scrollbar-size-horizontal: 0;
+        scrollbar-size-vertical: 1;
+    }
+    RichLog {
+        overflow-x: hidden;
+        scrollbar-size-horizontal: 0;
+        scrollbar-size-vertical: 1;
     }
 """
 
@@ -2905,23 +2933,22 @@ class RunApp(App[int]):
         align: left middle;
     }
     #user-cmd-input { width: 1fr; height: 3; }
-    #cmd-send { width: 10; height: 3; margin-left: 1; border: none; text-style: bold; }
     #footer-bar { height: 1; }
     #kowabunga-ind { width: auto; padding: 0 1; dock: right; }
     """
         + _PALETTE_CSS
         + _SCROLL_LEFT_PANE_CSS
         + _MAXIMIZE_CSS
+        + _RUN_PANE_CSS
     )
 
     COMMANDS = {_OrderedCommandsProvider}
 
     BINDINGS = [
-        ("q", "kill_exit", "Kill/Exit"),
-        ("ctrl+c", "quit", "Quit"),
-        ("p", "pause_graceful", "Pause/Chat"),
-        ("escape", "pause_kill", "Kill"),
-        ("ctrl+k", "toggle_kowabunga", "Kowabunga"),
+        Binding("s", "stop", "Stop"),
+        Binding("ctrl+k", "toggle_kowabunga", "Cowabunga"),
+        Binding("q", "quit_or_stop", "Quit"),
+        Binding("ctrl+c", "quit", "Quit", show=False),
     ]
 
     _maximized: reactive[bool] = reactive(False)
@@ -2938,6 +2965,7 @@ class RunApp(App[int]):
         self._prev_propagate: bool = True
         self._run_config: dict[str, str | None] = {}
         self._restart_after_kill = False
+        self._parallel = False
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -2945,13 +2973,12 @@ class RunApp(App[int]):
             with Vertical(id="run-left"):
                 yield VerticalScroll(Static(id="overview"), id="overview-scroll")
             with Vertical(id="run-right"):
-                yield RichLog(id="log", markup=True, wrap=True, highlight=True)
+                yield RichLog(id="log", markup=True, wrap=True, highlight=False)
                 with Horizontal(id="cmd-bar"):
                     yield Input(
-                        placeholder="Send command to runner…",
+                        placeholder="Guide the runner — applies on its next iteration (↵)",
                         id="user-cmd-input",
                     )
-                    yield Button("Send", id="cmd-send", variant="primary")
         with Horizontal(id="footer-bar"):
             yield Footer()
             yield Static(id="kowabunga-ind")
@@ -3025,7 +3052,8 @@ class RunApp(App[int]):
             if action == "answer":
                 if text:
                     self.query_one("#log", RichLog).write(
-                        f"[bold cyan]👤 User guidance:[/] [cyan]{escape(text)}[/]"
+                        self._log_prefix("")
+                        + f"[bold cyan]👤 User guidance:[/] [cyan]{escape(text)}[/]"
                     )
                     self.session.append("events.md", f"[USER GUIDANCE] {text}\n")
                 self.write_log("— continuing with your answer —", logging.WARNING)
@@ -3035,7 +3063,8 @@ class RunApp(App[int]):
             elif action == "jump_premium":
                 if text:
                     self.query_one("#log", RichLog).write(
-                        f"[bold cyan]👤 User guidance:[/] [cyan]{escape(text)}[/]"
+                        self._log_prefix("")
+                        + f"[bold cyan]👤 User guidance:[/] [cyan]{escape(text)}[/]"
                     )
                     self.session.append("events.md", f"[USER GUIDANCE] {text}\n")
                 self.write_log("— jumping to premium tier —", logging.WARNING)
@@ -3240,51 +3269,76 @@ class RunApp(App[int]):
         procreg.terminate_all()
         self.exit(self.rc)
 
+    async def action_quit_or_stop(self) -> None:
+        """q — quit an idle run, open the stop menu while the run is live."""
+        if _run_state(self.session) == "RUNNING":
+            self.action_stop()
+            return
+        await self.action_quit()
+
+    def action_stop(self) -> None:
+        """s — open the stop menu (pause / restart / kill)."""
+        self.push_screen(StopMenuModal(), callback=self._on_stop_choice)
+
+    def _on_stop_choice(self, result: str | None) -> None:
+        if result == "pause":
+            self._do_pause_graceful()
+        elif result == "restart":
+            self._do_pause_kill()
+        elif result == "kill_exit":
+            self._do_kill_exit()
+
     async def action_pause_graceful(self) -> None:
-        """p — finish current iteration then pause."""
+        """Finish the current iteration, then pause."""
 
         def _on_choice(result: str | None) -> None:
-            if result != "pause":
-                return
-            from splinter import procreg
-
-            procreg.request_stop()
-            self.write_log(
-                "— graceful pause requested — will stop after current iteration —",
-                logging.WARNING,
-            )
+            if result == "pause":
+                self._do_pause_graceful()
 
         self.push_screen(_ConfirmStopModal("pause"), callback=_on_choice)
 
     async def action_pause_kill(self) -> None:
-        """ESC — kill subprocesses immediately and restart from same checkpoint."""
+        """Kill subprocesses immediately and restart from the same checkpoint."""
 
         def _on_choice(result: str | None) -> None:
-            if result != "kill":
-                return
-            from splinter import procreg
-
-            procreg.terminate_all()
-            cur = self.session.read_status()
-            self.session.set_status(
-                "paused",
-                reason="user_kill_restart",
-                stage=str(cur.get("stage", "run")),
-            )
-            self._restart_after_kill = True
-            self.write_log(
-                "— killed by user — restarting from last checkpoint… —",
-                logging.WARNING,
-            )
+            if result == "kill":
+                self._do_pause_kill()
 
         self.push_screen(_ConfirmStopModal("kill"), callback=_on_choice)
 
     async def action_kill_exit(self) -> None:
-        """q — kill subprocesses immediately and exit (old ESC behavior)."""
+        """Kill subprocesses immediately and exit the run screen."""
         if _run_state(self.session) != "RUNNING":
             await self.action_quit()
             return
+        self._do_kill_exit()
 
+    def _do_pause_graceful(self) -> None:
+        from splinter import procreg
+
+        procreg.request_stop()
+        self.write_log(
+            "— graceful pause requested — will stop after current iteration —",
+            logging.WARNING,
+        )
+
+    def _do_pause_kill(self) -> None:
+        from splinter import procreg
+
+        procreg.terminate_all()
+        cur = self.session.read_status()
+        self.session.set_status(
+            "paused",
+            reason="user_kill_restart",
+            stage=str(cur.get("stage", "run")),
+        )
+        self._restart_after_kill = True
+        self.write_log(
+            "— killed by user — restarting from last checkpoint… —",
+            logging.WARNING,
+        )
+
+    def _do_kill_exit(self) -> None:
         from splinter import procreg
 
         procreg.terminate_all()
@@ -3306,7 +3360,17 @@ class RunApp(App[int]):
         # (e.g. "fix [bug]") doesn't raise MarkupError when the RichLog renders.
         safe = escape(msg)
         color = {logging.ERROR: "red", logging.WARNING: "yellow"}.get(level)
-        self.query_one("#log", RichLog).write(f"[{color}]{safe}[/]" if color else safe)
+        body = f"[{color}]{safe}[/]" if color else safe
+        self.query_one("#log", RichLog).write(self._log_prefix(msg) + body)
+
+    def _log_prefix(self, msg: str) -> str:
+        """Dim ``HH:MM:SS`` stamp, plus ``[T<n>]`` when the record names a task."""
+        stamp = datetime.now().strftime("%H:%M:%S")
+        prefix = f"[dim]{stamp}[/] "
+        task = _TASK_NO_RE.search(msg)
+        if self._parallel and task:
+            prefix += f"[dim][T{task.group(1)}][/] "
+        return prefix
 
     def _running_task_choices(self) -> list[tuple[int, str]]:
         """Currently-running parallel tasks as (task_no, title). Empty in
@@ -3326,9 +3390,14 @@ class RunApp(App[int]):
         """
         log = self.query_one("#log", RichLog)
         target = f"Task {task_no}" if task_no is not None else "runner"
-        log.write(f"[bold cyan]👤 User → {escape(target)}:[/] [cyan]{escape(text)}[/]")
+        log.write(
+            self._log_prefix("")
+            + f"[bold cyan]👤 User → {escape(target)}:[/] [cyan]{escape(text)}[/]"
+        )
         self.session.queue_live_command(text, task_no=task_no)
-        log.write("[dim]queued — applies on the target session's next iteration[/]")
+        log.write(
+            self._log_prefix("") + "[dim]queued — applies on the target session's next iteration[/]"
+        )
 
     def _send_live_command(self) -> None:
         inp = self.query_one("#user-cmd-input", Input)
@@ -3358,22 +3427,22 @@ class RunApp(App[int]):
         if event.input.id == "user-cmd-input":
             self._send_live_command()
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "cmd-send":
-            self._send_live_command()
-
     def _write_run_complete(self) -> None:
         summary = format_run_completion(self.session)
         log = self.query_one("#log", RichLog)
-        log.write(f"[bold green]✅ RUN COMPLETE[/] — {escape(summary)}")
-        log.write("[dim]press q to quit · uv run splinter analyze to inspect[/]")
+        log.write(self._log_prefix("") + f"[bold green]✅ RUN COMPLETE[/] — {escape(summary)}")
+        log.write(
+            self._log_prefix("")
+            + "[dim]press q to quit · uv run splinter analyze to inspect[/]"
+        )
         self.sub_title = f"🟢 COMPLETE · {summary}"
 
     def _refresh(self) -> None:
         state = _run_state(self.session)
         self.title = f"splinter run · {self.session.id}"
         self.sub_title = f"{_STATE_EMOJI.get(state, '⚪')} {state}"
-        self.query_one("#overview", Static).update(render_overview(self.session, state))
+        self._parallel = _is_parallel_mode(self.session.read("loop.md"))
+        self.query_one("#overview", Static).update(render_run_overview(self.session, state))
         # Re-sync the mode + read-error flag from the session each tick. The
         # pipeline can seed the mode ON from --cowabunga on the worker thread
         # *after* on_mount snapshots it, so the reactive would otherwise show a
@@ -3608,11 +3677,11 @@ class RunApp(App[int]):
     def _render_kowabunga_ind(self, val: RunnerMode, *, error: bool = False) -> None:
         ind = self.query_one("#kowabunga-ind", Static)
         if error:
-            ind.update("[b $error]⚠ KOWABUNGA STATE UNREADABLE — OFF[/]")
+            ind.update("[b $error]⚠ cowabunga · unreadable — off[/]")
         elif val == RunnerMode.KOWABUNGA_ON:
-            ind.update("[b $warning]KOWABUNGA: ON[/]")
+            ind.update("[b $warning]🤙 cowabunga · on[/]")
         else:
-            ind.update("KOWABUNGA: OFF")
+            ind.update("[dim]cowabunga · off[/]")
 
 
 def run_with_tui(run_kwargs: dict[str, Any], session: Session | None = None) -> int:
@@ -4037,53 +4106,6 @@ class ConfirmQuit(ModalScreen[bool]):
         self.dismiss(False)
 
 
-class _ParallelModal(ModalScreen[bool]):
-    """Ask, on the accept screen, whether independent tasks should run
-    concurrently in git worktrees. Only shown when the flag was not passed on
-    the CLI and the run can actually parallelize (multi-task strategy, 2+
-    stories). Escape / Sequential → run one task at a time."""
-
-    CSS = """
-    _ParallelModal { align: center middle; }
-    #box {
-        width: 80; max-width: 90%; height: auto; padding: 1 2;
-        border: thick $warning; background: $surface;
-    }
-    #box Static { width: 100%; height: auto; }
-    #hint { color: $text-muted; margin-top: 1; }
-    #qbuttons { height: 3; align-horizontal: center; margin-top: 1; }
-    #qbuttons Button { margin: 0 1; }
-    """
-
-    BINDINGS = [("escape", "sequential", "Sequential")]
-
-    def __init__(self, n_stories: int) -> None:
-        super().__init__()
-        self.n_stories = n_stories
-
-    def compose(self) -> ComposeResult:
-        with Vertical(id="box"):
-            yield Static("Run independent tasks in parallel?")
-            yield Static(
-                f"{self.n_stories} stories can run concurrently, each isolated in "
-                "its own git worktree and merged back on PASS."
-            )
-            yield Static(
-                "Dependencies (`Depends on US-NNN`) are always honored. "
-                "Sequential is safer; parallel is faster.",
-                id="hint",
-            )
-            with Horizontal(id="qbuttons"):
-                yield Button("Parallel", id="yes", variant="warning")
-                yield Button("Sequential", id="no", variant="primary")
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        self.dismiss(event.button.id == "yes")
-
-    def action_sequential(self) -> None:
-        self.dismiss(False)
-
-
 class ComposerTextArea(TextArea):
     """PRD composer box: Enter inserts a newline; Ctrl+S submits."""
 
@@ -4169,6 +4191,27 @@ class EditorPane(Static):
             pass
 
 
+#: Which step of the PRD stepper each conversation phase belongs to.
+_PHASE_STEPS: dict[str, int] = {
+    "init": 0,
+    "generate": 0,
+    "chat": 1,
+    "finalize": 2,
+    "trust": 2,
+    "strategy": 3,
+    "review": 3,
+    "run": 4,
+}
+
+#: What the Cowabunga button does in each phase.
+_COWABUNGA_TOOLTIPS: dict[str, str] = {
+    "chat": "Answer the open questions yourself and finalize",
+    "strategy": "Pick the recommended strategy and run",
+    "review": "Pick the recommended strategy and run",
+    "trust": "Accept the PRD as it stands and run it now",
+}
+
+
 class PrdSessionApp(App[int | None]):
     """Refine a PRD with the user, pick a strategy, then hand off to the runner.
 
@@ -4186,21 +4229,37 @@ class PrdSessionApp(App[int | None]):
     #instructions {
         height: 1fr;
         border: round $primary;
+        border-title-color: $text;
     }
     #chatpane {
         width: 1fr;
     }
+    #stepper {
+        height: 1;
+    }
     #convo {
         height: 1fr;
         padding: 0 1;
+        overflow-x: hidden;
+        scrollbar-size-horizontal: 0;
+        scrollbar-size-vertical: 1;
+    }
+    #questions-host {
+        height: auto;
     }
     #composer {
         dock: bottom;
         height: auto;
     }
+    #busy {
+        height: 1;
+    }
     #entry {
         height: 8;
         border: round $primary;
+    }
+    #draft-edit {
+        border-title-color: $text;
     }
     #actions {
         height: 3;
@@ -4224,7 +4283,7 @@ class PrdSessionApp(App[int | None]):
     BINDINGS = [
         ("ctrl+c", "abort", "Abort"),
         ("escape", "abort", "Abort"),
-        Binding("ctrl+s", "send", "Send", key_display="Ctrl+S"),
+        Binding("ctrl+s", "send", "Send"),
     ]
 
     _maximized: reactive[bool] = reactive(False)
@@ -4250,6 +4309,10 @@ class PrdSessionApp(App[int | None]):
         self._source_prd_path = str(run_kwargs.get("prd_path") or "")
         self._failed = False
         self._last_job: tuple[Any, dict[str, Any]] | None = None
+        self._prd_name = Path(self._source_prd_path).name if self._source_prd_path else "draft"
+        self._prd_base = ""
+        self._questions: list[Question] = []
+        self._model_name = ""
 
     def _save_state(self) -> None:
         """Persist enough to resume this refinement: conversation id, phase, strategy."""
@@ -4272,17 +4335,20 @@ class PrdSessionApp(App[int | None]):
             with Vertical(id="draftpane"):
                 entry = ComposerTextArea(id="instructions", soft_wrap=True)
                 entry.border_title = "Instructions"
-                entry.border_subtitle = "Ctrl+S generate · ↵ newline"
+                entry.border_subtitle = "↵ newline"
                 yield entry
             with Vertical(id="chatpane"):
+                yield PhaseStepper(PRD_STEPS, id="stepper")
                 yield RichLog(id="convo", markup=True, wrap=True)
+                with Vertical(id="questions-host"):
+                    yield QuestionForm(id="question-form")
                 with Vertical(id="composer"):
+                    yield BusyStatus(id="busy")
                     entry_reply = ComposerTextArea(id="entry", soft_wrap=True)
-                    entry_reply.border_subtitle = "Ctrl+S send · ↵ newline"
+                    entry_reply.border_subtitle = "↵ newline"
                     yield entry_reply
                     with Horizontal(id="actions"):
-                        yield Button("Send (Ctrl+S)", id="send", variant="primary")
-                        yield Button("Generate PRD", id="generate", variant="success")
+                        yield Button("Generate PRD", id="generate", variant="primary")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -4291,7 +4357,7 @@ class PrdSessionApp(App[int | None]):
         from splinter import prd_session
 
         self.title = "splinter · PRD"
-        self.sub_title = "🤙 cowabunga" if self.cowabunga else "refining"
+        self._update_stepper()
 
         if not self.resuming:
             from datetime import datetime, timezone
@@ -4318,20 +4384,55 @@ class PrdSessionApp(App[int | None]):
 
         route = prd_session.route_prd(self._initial_prd)
         if route == "generate":
-            self._generating = True
-            self._say("[dim]Write instructions on the left, then click 'Generate PRD'.[/]")
-            self._set_busy(False, "instructions")
-            self._focus_instructions()
+            self._enter_generate_phase()
         elif self.cowabunga:
+            self._set_phase("finalize")
             self._set_busy(True, "cowabunga — the model is deciding everything…")
             self._say("[magenta]🤙 cowabunga — no questions, finalizing the PRD myself.[/]")
             self._spawn(self._finalize_worker, autodecide=True)
         else:
             if self._initial_prd.strip():
                 self._mount_draft_editor(self._initial_prd)
+            self._set_phase("chat")
             self._set_busy(True, "reading the PRD, drafting questions…")
             self._say("[dim]reading the PRD, drafting clarifying questions…[/]")
             self._spawn(self._questions_worker)
+
+    def _enter_generate_phase(self) -> None:
+        """Instructions-only phase: one composer on the left, one action button."""
+        self._generating = True
+        self._set_phase("generate")
+        self._set_composer_visible(False)
+        self._render_actions("generate")
+        self._say("[dim]Write instructions on the left, then click 'Generate PRD'.[/]")
+        self._set_busy(False)
+        self._focus_instructions()
+
+    def _set_composer_visible(self, visible: bool) -> None:
+        """Show or hide the right-hand composer (hidden while generating)."""
+        try:
+            self.query_one("#entry", TextArea).display = visible
+        except Exception:
+            pass
+
+    def _set_phase(self, phase: str) -> None:
+        """Move to a phase and keep the stepper in sync."""
+        self.phase = phase
+        self._update_stepper()
+        if phase != "chat":
+            # The question form belongs to the questions phase only.
+            self._set_questions([])
+
+    def _update_stepper(self) -> None:
+        """Point the stepper (and the subtitle) at the current step."""
+        try:
+            stepper = self.query_one("#stepper", PhaseStepper)
+        except Exception:
+            return
+        stepper.set_current(_PHASE_STEPS.get(self.phase, 0))
+        label = stepper.current_label
+        if isinstance(label, str):
+            self.sub_title = label
 
     @staticmethod
     def _first_line(text: str) -> str:
@@ -4342,8 +4443,6 @@ class PrdSessionApp(App[int | None]):
 
     def _resume(self) -> None:
         """Re-enter a saved refinement at its last phase, reusing the conversation."""
-        from splinter.strategies.registry import available_strategies
-
         status = self.session.read_status()
         self.claude_session = str(status.get("claude_session", "") or "")
         saved = status.get("strategy")
@@ -4365,35 +4464,17 @@ class PrdSessionApp(App[int | None]):
             )
 
         if phase == "trust":
-            self.phase = "trust"
+            self._set_phase("trust")
             self.trusted = True
             self._enter_trusted()
-        elif phase == "review":
-            self.phase = "review"
+        elif phase in ("review", "strategy"):
+            self._set_phase("review")
             self._show_stories()
             self._show_final_eval_hint()
-            self._say(
-                "[green]Type 'accept' to run, 'cowabunga' to run as-is, or describe changes.[/]"
-            )
             self._render_actions("review")
-            self._set_busy(False, "accept / edit / gate: <cmds> / changes / cowabunga")
-        elif phase == "strategy":
-            self.phase = "strategy"
-            self._say(
-                "Pick a strategy "
-                f"({', '.join(available_strategies())}), or 'cowabunga' to let me decide."
-            )
-            self._say(
-                "[dim]  raphael      - direct:    one task, implement → eval → escalate fast\n"
-                "  leonardo     - cascade:   multi-task, dependency-ordered, checkpointed\n"
-                "  donatello    - adaptive:  routes each task to cheapest tier within budget\n"
-                "  michelangelo - sprint:    starts flash tier, escalates only on eval failure[/]"
-            )
-            self._render_actions("strategy")
-            self._set_busy(False, "strategy name / cowabunga")
+            self._set_busy(False, "accept / gate: <cmds> / changes / cowabunga")
         else:  # clarify / refine both live in the chat phase
-            self.phase = "chat"
-            self._say("[green]Continue: answer, 'fulfilled' to finalize, or 'cowabunga'.[/]")
+            self._set_phase("chat")
             self._render_actions("chat")
             self._set_busy(False, "your answers / fulfilled / cowabunga")
         self._save_state()
@@ -4402,12 +4483,12 @@ class PrdSessionApp(App[int | None]):
         """Load non-empty PRD as-is into editable left pane; no generation step."""
         from splinter import prd_session
 
-        self.phase = "trust"
+        self._set_phase("trust")
         self.final_prd = self._initial_prd
 
         def _complete_mount() -> None:
             prd_session.log_phase(self.session, "trust")
-            self._say("[green]PRD loaded. Edit on the left if needed, then Send PRD.[/]")
+            self._say("[green]PRD loaded — edit it on the left if needed.[/]")
             self._render_actions("trust")
             self._set_busy(False, "edit / send PRD / cowabunga")
             self._save_state()
@@ -4415,7 +4496,10 @@ class PrdSessionApp(App[int | None]):
         async def _mount_edit() -> None:
             draftpane = self.query_one("#draftpane", Vertical)
             await draftpane.remove_children()
+            self._prd_base = self._initial_prd
             edit = TextArea(id="draft-edit", soft_wrap=True, text=self._initial_prd)
+            edit.border_title = self._draft_title()
+            edit.border_subtitle = ""
             await draftpane.mount(edit)
             self.call_after_refresh(_complete_mount)
 
@@ -4432,24 +4516,15 @@ class PrdSessionApp(App[int | None]):
         return self._read_draft()
 
     def _to_strategy_phase(self) -> None:
-        """Transition to strategy selection phase (shared by multiple paths)."""
-        from splinter.strategies.registry import available_strategies
-
+        """Transition to review phase and open RunSetupModal."""
         self._say("[green]✅ PRD finalized.[/]")
-        self._say(
-            "Pick a strategy "
-            f"({', '.join(available_strategies())}), or 'cowabunga' to let me decide & run."
-        )
-        self._say(
-            "[dim]  raphael      - direct:    one task, implement → eval → escalate fast\n"
-            "  leonardo     - cascade:   multi-task, dependency-ordered, checkpointed\n"
-            "  donatello    - adaptive:  routes each task to cheapest tier within budget\n"
-            "  michelangelo - sprint:    starts flash tier, escalates only on eval failure[/]"
-        )
-        self.phase = "strategy"
+        self._set_phase("review")
         self._save_state()
-        self._render_actions("strategy")
-        self._set_busy(False, "strategy name / cowabunga")
+        self._show_stories()
+        self._show_final_eval_hint()
+        self._render_actions("review")
+        self._set_busy(False, "accept / gate: <cmds> / changes / cowabunga")
+        self._open_run_setup_modal()
 
     def _accept_trusted(self) -> None:
         """Accept edited PRD and proceed to strategy selection."""
@@ -4512,7 +4587,19 @@ class PrdSessionApp(App[int | None]):
         entry.disabled = busy
         for btn in self.query("#actions Button"):
             btn.disabled = busy
-        if placeholder:
+        for radio in self.query("#question-form RadioSet"):
+            radio.disabled = busy
+        try:
+            status = self.query_one("#busy", BusyStatus)
+        except Exception:
+            status = None
+        if status is not None:
+            if busy:
+                status.start(self._busy_action(placeholder), self._busy_model())
+            else:
+                status.stop()
+        if placeholder and not busy:
+            # The border title carries the phase hint; the busy line carries the action.
             if self._generating:
                 self.query_one("#instructions", TextArea).border_title = placeholder
             else:
@@ -4523,30 +4610,60 @@ class PrdSessionApp(App[int | None]):
             else:
                 entry.focus()
 
-    def _render_actions(self, phase: str) -> None:
-        """Swap the action buttons to match the phase (chat / strategy / review / trust)."""
-        from splinter.strategies.registry import registered_strategies
+    def _busy_action(self, placeholder: str) -> str:
+        """The action shown by the busy line (placeholder without the ellipsis)."""
+        return placeholder.rstrip("…").strip()
 
-        btns = [Button("Send (Ctrl+S)", id="send", variant="primary")]
-        if phase == "strategy":
-            for cls in registered_strategies():
-                alias = cls.aliases[0] if cls.aliases else cls.name
-                label = Text.from_markup(f"[b]{alias}[/]\n[dim]{cls.name}[/]")
-                btns.append(Button(label, id=f"strat-{cls.name}", variant="success"))
-            btns.append(Button("Cowabunga", id="cowabunga", variant="warning"))
-        elif phase == "review":
-            btns.append(Button("Accept", id="accept", variant="success"))
-            btns.append(Button("Edit", id="edit", variant="primary"))
-            btns.append(Button("Set Final Eval", id="set-final-eval", variant="default"))
-            btns.append(Button("Cowabunga", id="cowabunga", variant="warning"))
-        elif phase == "trust":
-            btns.append(Button("Send PRD", id="accept", variant="success"))
-            btns.append(Button("Cowabunga", id="cowabunga", variant="warning"))
-        elif phase == "generate":
-            btns.append(Button("Generate PRD", id="generate", variant="success"))
-        else:  # chat
-            btns.append(Button("Fulfilled", id="fulfilled", variant="success"))
-            btns.append(Button("Cowabunga", id="cowabunga", variant="warning"))
+    def _busy_model(self) -> str:
+        """The model doing the work, for the busy line."""
+        if self._model_name:
+            return self._model_name
+        try:
+            from splinter.models.roster import load_ladder
+
+            self._model_name = load_ladder().prd_model
+        except Exception:
+            self._model_name = ""
+        return self._model_name
+
+    def _draft_title(self) -> str:
+        """Title of the left pane: the PRD file name, or 'draft'."""
+        return f"PRD · {self._prd_name}"
+
+    def _set_questions(self, questions: list[Question]) -> None:
+        """Show the question form for these questions (empty list hides it)."""
+        self._questions = list(questions)
+        try:
+            form = self.query_one("#question-form", QuestionForm)
+        except Exception:
+            return
+        if not self.is_running:
+            return
+
+        async def _swap() -> None:
+            await form.set_questions(self._questions)
+            form.display = bool(self._questions)
+
+        self.run_worker(_swap, name="questions")  # type: ignore[arg-type]
+
+    def _render_actions(self, phase: str) -> None:
+        """Swap the action buttons to match the phase (chat / review / trust / generate)."""
+        if phase == "generate":
+            btns = [Button("Generate PRD", id="generate", variant="primary")]
+        elif phase in ("review", "strategy"):
+            btns = [
+                Button("Send", id="send", variant="default"),
+                Button("Run setup…", id="run-setup", variant="primary"),
+                self._cowabunga_button("review"),
+            ]
+        else:
+            btns = [Button("Send", id="send", variant="primary")]
+            if phase == "trust":
+                btns.append(Button("Send PRD", id="accept", variant="success"))
+                btns.append(self._cowabunga_button("trust"))
+            else:  # chat
+                btns.append(Button("Fulfilled", id="fulfilled", variant="success"))
+                btns.append(self._cowabunga_button("chat"))
         if self._failed:
             btns.append(Button("Retry", id="retry", variant="error"))
         bar = self.query_one("#actions", Horizontal)
@@ -4557,6 +4674,16 @@ class PrdSessionApp(App[int | None]):
             await bar.mount(*btns)
 
         self.run_worker(_swap, name="actions")  # type: ignore[arg-type]
+
+    @staticmethod
+    def _cowabunga_button(phase: str) -> Button:
+        """The Cowabunga button, with a tooltip that says what it does now."""
+        return Button(
+            "Cowabunga",
+            id="cowabunga",
+            variant="warning",
+            tooltip=_COWABUNGA_TOOLTIPS.get(phase, "Let the model decide"),
+        )
 
     def _commit_prd(self, md: str, *, label: str, detail: str = "") -> bool:
         """Write ``prd.md``, version the snapshot, and sync the editor preview."""
@@ -4576,9 +4703,12 @@ class PrdSessionApp(App[int | None]):
         self.session.write("prd.md", text if text.endswith("\n") else text + "\n")
         self._write_source_prd(text)
         try:
-            self.query_one("#draft-edit", TextArea).text = text
+            editor = self.query_one("#draft-edit", TextArea)
         except Exception:
-            pass
+            editor = None
+        if editor is not None:
+            self._prd_base = text
+            editor.text = text
         return True
 
     def _set_preview(self, md: str, *, label: str = "update", detail: str = "") -> None:
@@ -4725,29 +4855,25 @@ class PrdSessionApp(App[int | None]):
 
         self.claude_session = sid
         prd_session.log_phase(self.session, "clarify")
-        self.phase = "chat"
+        self._set_phase("chat")
         self._save_state()
         self._set_preview(self._initial_prd, label="initial")
         self._say(escape(questions))
-        self._say(
-            "[green]Answer (e.g. 1A,2C), or type 'fulfilled' to finalize, "
-            "or 'cowabunga' to let me decide.[/]"
-        )
-        self.phase = "chat"
+        self._set_questions(parse_questions(questions))
         self._render_actions("chat")
-        self._set_busy(False, "your answers / fulfilled / cowabunga")
+        self._set_busy(False, "answers · fulfilled · cowabunga")
 
     def _after_refine(self, draft: str, sid: str) -> None:
         from splinter import prd_session
 
         self.claude_session = sid
         prd_session.log_phase(self.session, "refine")
-        self.phase = "chat"
+        self._set_phase("chat")
         self._save_state()
         self._set_preview(prd_session.extract_working_draft(draft), label="refine")
-        self._say("[green]Updated. Answer remaining questions, 'fulfilled', or 'cowabunga'.[/]")
+        self._set_questions(extract_open_questions(draft))
         self._render_actions("chat")
-        self._set_busy(False, "your answers / fulfilled / cowabunga")
+        self._set_busy(False, "answers · fulfilled · cowabunga")
 
     def _after_finalize(self, prd: str, sid: str) -> None:
         from splinter import prd_session
@@ -4768,14 +4894,13 @@ class PrdSessionApp(App[int | None]):
         self.claude_session = sid
         self.final_prd = prd
         prd_session.log_phase(self.session, "revise")
-        self.phase = "review"
+        self._set_phase("review")
         self._save_state()
         self._set_preview(prd, label="revise")
         self._show_stories()
         self._show_final_eval_hint()
-        self._say("[green]Revised. Type 'accept' to run, or describe more changes.[/]")
         self._render_actions("review")
-        self._set_busy(False, "accept / edit / gate: <cmds> / changes / cowabunga")
+        self._set_busy(False, "accept / gate: <cmds> / changes / cowabunga")
 
     def _mount_draft_editor(self, content: str) -> None:
         """Replace left pane with editable PRD draft after generation."""
@@ -4783,12 +4908,20 @@ class PrdSessionApp(App[int | None]):
         async def _do() -> None:
             draftpane = self.query_one("#draftpane", Vertical)
             await draftpane.remove_children()
+            self._prd_base = content
             edit = TextArea(id="draft-edit", soft_wrap=True, text=content)
-            edit.border_title = "Generated PRD"
-            edit.border_subtitle = "editable"
+            edit.border_title = self._draft_title()
+            edit.border_subtitle = ""
             await draftpane.mount(edit)
 
         self.run_worker(_do(), name="mount-draft")
+
+    def on_text_area_changed(self, event: TextArea.Changed) -> None:
+        """Flag the PRD as edited once the user changes the draft."""
+        if event.text_area.id != "draft-edit":
+            return
+        edited = bool(self._prd_base) and event.text_area.text != self._prd_base
+        event.text_area.border_subtitle = "edited" if edited else ""
 
     def _after_generate(self, prd: str, sid: str) -> None:
         from splinter import prd_session
@@ -4802,6 +4935,9 @@ class PrdSessionApp(App[int | None]):
         self._mount_draft_editor(prd)
         # Enter Q&A phase on the generated PRD — user types "fulfilled" to proceed to strategy.
         self._initial_prd = prd
+        self._set_phase("chat")
+        self._set_composer_visible(True)
+        self._render_actions("chat")
         self._set_busy(True, "reading the generated PRD, drafting questions…")
         self._say("[dim]PRD generated. Drafting clarifying questions…[/]")
         self._spawn(self._questions_worker)
@@ -4837,7 +4973,7 @@ class PrdSessionApp(App[int | None]):
             for e in entries:
                 self._say(f"  [dim]• {escape(e.name)} ({e.kind})[/]")
         else:
-            self._say("[dim]No final eval set — click 'Set Final Eval' to configure.[/]")
+            self._say("[dim]No final eval set — click 'Run setup…' to configure.[/]")
 
     # --- input dispatch ---
     def _on_generate(self) -> None:
@@ -4861,7 +4997,31 @@ class PrdSessionApp(App[int | None]):
             self._accept_trusted()
             return
         entry = self.query_one("#entry", TextArea)
-        self._submit(entry.text)
+        self._submit(self._compile_answers(entry.text))
+
+    def _command_words(self) -> set[str]:
+        """Typed words that bypass the question form (they are commands, not answers)."""
+        from splinter import prd_session
+
+        words = {"cowabunga"}
+        words.update(
+            word for word in ("fulfilled", "done", "ready", "go", "ship", "lgtm")
+            if prd_session.is_done(word)
+        )
+        if self.phase == "review":
+            words.update({"accept", "run", "yes", "y", "edit"})
+        return words
+
+    def _compile_answers(self, text: str) -> str:
+        """Turn the radio selection plus the composer text into one answer."""
+        stripped = text.strip()
+        if not self._questions or stripped.lower() in self._command_words():
+            return stripped
+        try:
+            form = self.query_one("#question-form", QuestionForm)
+        except Exception:
+            return stripped
+        return form.compile_answer(stripped)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         bid = event.button.id or ""
@@ -4876,12 +5036,10 @@ class PrdSessionApp(App[int | None]):
                 self._accept_trusted()
             else:
                 self._submit("accept")
-        elif bid == "edit":
-            self._on_edit()
+        elif bid == "run-setup":
+            self._open_run_setup_modal()
         elif bid in ("fulfilled", "cowabunga", "run"):
             self._submit(bid)
-        elif bid.startswith("strat-"):
-            self._submit(bid[len("strat-") :])
         elif bid == "set-final-eval":
             self._open_final_eval_modal()
 
@@ -4895,7 +5053,7 @@ class PrdSessionApp(App[int | None]):
         self._say(f"[cyan]> {escape(text)}[/]")
         handler = {
             "chat": self._on_chat,
-            "strategy": self._on_strategy,
+            "strategy": self._on_review,
             "review": self._on_review,
             "trust": self._on_trust,
         }.get(self.phase)
@@ -4907,43 +5065,20 @@ class PrdSessionApp(App[int | None]):
 
         draft = self._read_draft()
         if prd_session.is_cowabunga(text):
+            self._set_phase("finalize")
             self._set_busy(True, "cowabunga — finalizing…")
             self._spawn(self._finalize_worker, autodecide=True, draft=draft)
         elif prd_session.is_done(text):
+            self._set_phase("finalize")
             self._set_busy(True, "finalizing the PRD…")
             self._spawn(self._finalize_worker, autodecide=False, draft=draft)
         else:
             self._set_busy(True, "incorporating your answers…")
             self._spawn(self._refine_worker, answers=text, draft=draft)
 
-    def _on_strategy(self, text: str) -> None:
-        from splinter import prd_session
-        from splinter.strategies.registry import available_strategies
-
-        if prd_session.is_cowabunga(text):
-            self._begin_run(autopick=True)
-            return
-        if text.lower() not in available_strategies():
-            self._say(f"[yellow]Unknown strategy. Pick: {', '.join(available_strategies())}[/]")
-            return
-        self.strategy = text.lower()
-        prd_session.log_phase(self.session, "strategy", self.strategy)
-        self.final_prd = _set_fm_strategy(self._read_draft(), self.strategy)
-        self.phase = "review"
-        self._save_state()
-        self._set_preview(self.final_prd, label="strategy", detail=self.strategy or "")
-        self._show_stories()
-        self._show_final_eval_hint()
-        self._say("[green]Type 'accept' to run, 'cowabunga' to run as-is, or describe changes.[/]")
-        self._say(
-            "[dim]Gate auto-detected at run; set it yourself with "
-            "`gate: <cmd1>; <cmd2>` (or `gate: none`).[/]"
-        )
-        self._render_actions("review")
-        self._set_busy(False, "accept / edit / gate: <cmds> / changes / cowabunga")
-
     def _on_review(self, text: str) -> None:
         from splinter import prd_session
+        from splinter.strategy_pick import canonical_strategy_name
 
         # Let the user set the mechanical gate for this run, e.g.
         #   gate: npm run lint; npm test
@@ -4957,7 +5092,7 @@ class PrdSessionApp(App[int | None]):
                 self._say("[green]Gate set:[/] " + ", ".join(c["cmd"] for c in checks))
             else:
                 self._say("[yellow]Gate disabled — no mechanical checks this run.[/]")
-            msg = "accept / edit / gate: <cmds> / final_eval: ask_user|<cmd>|none / cowabunga"
+            msg = "accept / gate: <cmds> / final_eval: ask_user|<cmd>|none / cowabunga"
             self._set_busy(False, msg)
             return
 
@@ -4985,7 +5120,7 @@ class PrdSessionApp(App[int | None]):
                     )
                 )
                 self._say(f"[green]Final eval set:[/] {spec}")
-            msg = "accept / edit / gate: <cmds> / final_eval: ask_user|<cmd>|none / cowabunga"
+            msg = "accept / gate: <cmds> / final_eval: ask_user|<cmd>|none / cowabunga"
             self._set_busy(False, msg)
             return
 
@@ -4995,84 +5130,85 @@ class PrdSessionApp(App[int | None]):
         if text.lower() in {"accept", "run", "yes", "go", "y"}:
             self._begin_run()
             return
-        if text.lower() == "edit":
-            self._on_edit()
+        canonical = canonical_strategy_name(text)
+        if canonical is not None:
+            self.strategy = canonical
+            prd_session.log_phase(self.session, "strategy", self.strategy)
+            self.final_prd = _set_fm_strategy(self._read_draft(), self.strategy)
+            self.phase = "review"
+            self._save_state()
+            self._set_preview(self.final_prd, label="strategy", detail=self.strategy)
+            self._say(f"[green]Strategy set:[/] {self.strategy}")
+            self._set_busy(False, "accept / gate: <cmds> / changes / cowabunga")
             return
         self._set_busy(True, "applying your changes…")
         self._spawn(self._revise_worker, instructions=text, draft=self._read_draft())
 
     def _open_final_eval_modal(self) -> None:
         """Open the Set Final Eval modal and persist the user's choice."""
+        from splinter.tui_run_setup import save_final_eval_choice
 
         def _on_result(result: dict[str, str | None] | None) -> None:
             if result is None:
                 return
-            import yaml as _yaml
-
-            fe_path = self.session.dir / "final_eval.yaml"
-            entry: dict[str, str | None] = {"name": result["name"], "kind": result["kind"]}
-            for key in ("cmd", "skill", "provider", "model", "effort"):
-                if result.get(key):
-                    entry[key] = result[key]
-            fe_path.write_text(_yaml.dump({"final_eval": [entry]}, default_flow_style=False))
-            kind = result["kind"] or ""
-            kind_label = {
-                "ask_user": "User Review (manual review after run)",
-                "skill": f"Run Skill: {result.get('skill', '')}",
-                "command": f"Run Command: {result.get('cmd', '')}",
-            }.get(kind, kind)
+            kind_label = save_final_eval_choice(self.session.dir, result)
             self._say(f"[green]Final eval set:[/] {kind_label}")
             self._show_final_eval_hint()
 
         self.push_screen(_FinalEvalModal(), _on_result)
 
-    def _on_edit(self) -> None:
-        """Edit button — return to revising instructions while preserving final_prd."""
-        self._set_busy(False, "describe changes / accept / cowabunga")
-        self._say("[green]Edit mode — describe changes; PRD kept.[/]")
-        self.phase = "review"
-        self._save_state()
-        self.query_one("#entry", TextArea).focus()
+    def _open_run_setup_modal(self) -> None:
+        """Open RunSetupModal for strategy, parallel, gate, and final-eval selection."""
+        from splinter import prd_session
+        from splinter.tui_run_setup import RunSetup, RunSetupModal
+
+        draft = self._read_draft()
+        if self.strategy:
+            draft = _set_fm_strategy(draft, self.strategy)
+        modal = RunSetupModal(
+            draft,
+            self.session,
+            parallel=self.run_kwargs.get("parallel"),
+            on_note=self._say,
+        )
+
+        def _after(setup: RunSetup | None) -> None:
+            if setup is None:
+                try:
+                    self.query_one("#entry", TextArea).focus()
+                except Exception:
+                    pass
+                return
+            self.strategy = setup.strategy
+            prd_session.log_phase(self.session, "strategy", self.strategy)
+            self.final_prd = _set_fm_strategy(self._read_draft(), self.strategy)
+            self.run_kwargs["parallel"] = bool(setup.parallel)
+            self._finish_run()
+
+        self.push_screen(modal, _after)
 
     # --- finish ---
     def _should_ask_parallel(self) -> bool:
         """Prompt for parallel only when it was left unspecified on the CLI and the
         run can actually parallelize: a multi-task strategy, 2+ stories, and git
         worktree support. `--parallel`/`--no-parallel` and cowabunga skip the ask."""
-        from splinter import prd_session
+        from splinter.tui_run_setup import should_ask_parallel
 
-        if self.run_kwargs.get("parallel") is not None:
-            return False
-        if (self.strategy or "cascade").lower() in ("direct", "raphael"):
-            return False
-        if len(prd_session.user_story_titles(self.final_prd)) < 2:
-            return False
-        from splinter.vcs.worktree import worktree_supported
-
-        return worktree_supported()
+        return should_ask_parallel(
+            self.final_prd,
+            self.strategy,
+            self.run_kwargs.get("parallel"),
+        )
 
     def _begin_run(self, autopick: bool = False, auto: bool = False) -> None:
+        from splinter.strategy_pick import canonical_strategy_name, recommend_strategy
+
         draft = self._read_draft()
         if autopick or not self.strategy:
-            fm, _ = _fm_block(draft)
-            self.strategy = self.strategy or str(fm.get("strategy") or "") or "cascade"
+            rec, _ = recommend_strategy(draft)
+            self.strategy = canonical_strategy_name(self.strategy or "") or rec
             draft = _set_fm_strategy(draft, self.strategy)
         self.final_prd = draft
-
-        # Cowabunga/auto never prompts; otherwise ask on the accept screen when the
-        # parallel flag was not passed explicitly and the run can parallelize.
-        if not (auto or autopick) and self._should_ask_parallel():
-            from splinter import prd_session
-
-            n = len(prd_session.user_story_titles(self.final_prd))
-
-            def _after(choice: bool | None) -> None:
-                self.run_kwargs["parallel"] = bool(choice)
-                self._finish_run()
-
-            self.push_screen(_ParallelModal(n), _after)
-            return
-
         if self.run_kwargs.get("parallel") is None:
             self.run_kwargs["parallel"] = False
         self._finish_run()
@@ -5087,7 +5223,7 @@ class PrdSessionApp(App[int | None]):
         )
         mode = " · parallel" if self.run_kwargs.get("parallel") else ""
         self._say(f"[green]▶ running with strategy '{self.strategy}'{mode}…[/]")
-        self.phase = "run"
+        self._set_phase("run")
         self._save_state()
         self.exit(0)
 

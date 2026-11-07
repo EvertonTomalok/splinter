@@ -67,6 +67,7 @@ class Strategy(ABC):
 
     name: str
     aliases: list[str] = []
+    summary: str = ""
 
     @abstractmethod
     def execute(

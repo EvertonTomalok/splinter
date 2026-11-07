@@ -123,6 +123,10 @@ class AgentsStrategy(DirectStrategy):
 
     name = "agents"
     aliases = ["splinter"]
+    summary = (
+        "multi-story: refines briefs into waves, runs each on cheap "
+        "engines in its own worktree, merges back"
+    )
 
     def execute(
         self,

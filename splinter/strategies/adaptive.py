@@ -43,6 +43,7 @@ def _effort_weight(effort: str) -> int:
 class AdaptiveStrategy(CascadeStrategy):
     name = "adaptive"
     aliases = ["donatello"]
+    summary = "routes each task to cheapest tier within budget"
     _log_prefix: str = "adaptive"
     _log_routing_detail: bool = True
 
