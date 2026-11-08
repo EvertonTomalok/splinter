@@ -4741,6 +4741,9 @@ _PHASE_STEPS: dict[str, int] = {
     "run": 4,
 }
 
+#: The last questions the writer asked, kept so a resumed session can show them again.
+_QUESTIONS_FILE = "questions.md"
+
 #: The stepper step the questions live on (clickable to go back to them).
 _QUESTIONS_STEP = 1
 
@@ -5225,8 +5228,26 @@ class PrdSessionApp(App[int | None]):
         else:  # clarify / refine both live in the chat phase
             self._set_phase("chat")
             self._render_actions("chat")
+            self._set_questions(self._saved_questions())
             self._set_busy(False, "your answers / fulfilled / cowabunga")
         self._save_state()
+
+    def _saved_questions(self) -> list[Question]:
+        """The last questions of this session: ``questions.md``, else the conversation log.
+
+        Sessions written before ``questions.md`` existed only keep the questions in
+        ``convo.md``; the newest record that parses into questions wins.
+        """
+        saved = self.session.read(_QUESTIONS_FILE)
+        if saved.strip():
+            return extract_open_questions(saved)
+        prior = self.session.read("convo.md")
+        records = prior.split("\x00") if "\x00" in prior else [prior]
+        for record in reversed(records):
+            questions = extract_open_questions(record.replace("\\[", "["))
+            if questions:
+                return questions
+        return []
 
     def _enter_trusted(self) -> None:
         """Load non-empty PRD as-is into editable left pane; no generation step."""
@@ -5907,6 +5928,7 @@ class PrdSessionApp(App[int | None]):
         self._save_state()
         self._set_preview(self._initial_prd, label="initial")
         self._say(escape(questions))
+        self.session.write(_QUESTIONS_FILE, questions)
         self._set_questions(parse_questions(questions))
         self._render_actions("chat")
         self._set_busy(False, "answers · fulfilled · cowabunga")
@@ -5919,6 +5941,7 @@ class PrdSessionApp(App[int | None]):
         self._set_phase("chat")
         self._save_state()
         self._set_preview(prd_session.extract_working_draft(draft), label="refine")
+        self.session.write(_QUESTIONS_FILE, draft)
         self._set_questions(extract_open_questions(draft))
         self._render_actions("chat")
         self._set_busy(False, "answers · fulfilled · cowabunga")
