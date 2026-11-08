@@ -150,7 +150,7 @@ def test_question_form_renders_and_send_submits_answers(
 
             assert spawned, "the answer was not sent"
             answers = [call["answers"] for call in spawned if "answers" in call]
-            assert answers == ["1A, 3B + notes"]
+            assert answers == ["1A, 3B + Q1: notes"]
 
     asyncio.run(drive())
 

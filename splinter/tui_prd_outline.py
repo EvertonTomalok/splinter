@@ -114,6 +114,7 @@ def context_markup(
     error: str = "",
     model: str = "",
     waiting: str = "",
+    idle: bool = False,
 ) -> str:
     """Where the PRD talks about the question, then the plain-words explanation."""
     lines = [f"[b {INK}]{question.number} {escape(question_label(question))}[/]"]
@@ -135,6 +136,12 @@ def context_markup(
         lines.append(f"[{MUTED}]in plain words[/]")
         lines.append(f"[{RED}]couldn't explain: {escape(error)}[/]")
         lines.append(f"[@click=app.explain_again()][{FAINT}]x to try again[/][/]")
+    elif idle:
+        lines.append(f"[{MUTED}]in plain words[/]")
+        lines.append(
+            f"[@click=app.question_context()][b {LIME}]?[/] [{INK}]explains this one[/][/]"
+            f" [{FAINT}]· {escape(model)}[/]"
+        )
     else:
         lines.append(f"[{MUTED}]in plain words[/]")
         spinner = f"[b {LIME}]{escape(waiting)}[/] " if waiting else ""

@@ -56,6 +56,10 @@ QUESTIONS = (
     "Why: a seção 4 trava US-002 até G0 ser aprovado.\n"
     "A) Aprovar todas as fórmulas — piloto e pós-piloto juntos\n"
     "B) Só fórmulas do piloto — o resto ganha novo gate\n"
+    "\n"
+    "2. Quem vê a lista de pacientes?\n"
+    "A) Todos\n"
+    "B) Só quem tem patients.view\n"
 )
 
 
@@ -218,3 +222,92 @@ def test_context_pane_shows_the_loader_while_waiting() -> None:
     assert "haiku is reading the question" in waiting
     done = context_markup(_question(), [], explanation=Explanation(text="ok", model="haiku"))
     assert "reading the question" not in done
+
+
+def _app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, asked: list[str]) -> PrdSessionApp:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SPLINTER_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(
+        prd_session,
+        "_ask",
+        lambda prompt, *, resume, session=None: Turn(text=QUESTIONS, session_id="s", model="m"),
+    )
+
+    def fake_explain(question: Any, sections: Any, title: str) -> Explanation:
+        asked.append(question.text)
+        return Explanation(text="Explicado.", model="cheap")
+
+    monkeypatch.setattr("splinter.tui.explain", fake_explain)
+    monkeypatch.setattr("splinter.tui.explain_model", lambda: ("cheap", ["cheap"]))
+    src = tmp_path / "ins-322-prd.md"
+    src.write_text(PRD)
+    kwargs: dict[str, Any] = {"strategy": "cascade", "prd_path": str(src), "no_ground": True}
+    return PrdSessionApp(Session(new_session_id()), kwargs)
+
+
+async def _settle(app: Any, pilot: Any) -> None:
+    for _ in range(3):
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+
+
+def test_moving_on_with_the_pane_open_does_not_call_the_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    asked: list[str] = []
+    app = _app(tmp_path, monkeypatch, asked)
+
+    async def drive() -> None:
+        async with app.run_test(size=(160, 44)) as pilot:
+            await _settle(app, pilot)
+            await pilot.press("question_mark")
+            await _settle(app, pilot)
+            assert len(asked) == 1
+            await pilot.press("right")
+            await _settle(app, pilot)
+            assert len(asked) == 1
+            body = str(app.query_one("#context-body", Static).render())
+            assert "? explains this one" in body
+            await pilot.press("question_mark")
+            await _settle(app, pilot)
+            assert asked[-1] == "Quem vê a lista de pacientes?"
+            assert app.has_class("-context")
+
+    asyncio.run(drive())
+
+
+def test_a_note_stays_with_its_question(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from textual.widgets import TextArea
+
+    from splinter.tui_questions import QuestionForm
+
+    asked: list[str] = []
+    app = _app(tmp_path, monkeypatch, asked)
+    spawned: list[dict[str, Any]] = []
+
+    async def drive() -> None:
+        async with app.run_test(size=(160, 44)) as pilot:
+            await _settle(app, pilot)
+            app._spawn = lambda fn, **kw: spawned.append(kw)  # type: ignore[method-assign]
+            entry = app.query_one("#entry", TextArea)
+            form = app.query_one("#question-form", QuestionForm)
+            entry.text = "Não existe isso!"
+            await pilot.pause()
+            answered = str(app.query_one("#answered", Static).render())
+            assert "1 Não existe isso!" in answered
+            form.action_next_question()
+            await pilot.pause()
+            assert entry.text == ""
+            assert "1 Não existe isso!" in str(app.query_one("#answered", Static).render())
+            form.action_prev_question()
+            await pilot.pause()
+            assert entry.text == "Não existe isso!"
+            form.action_next_question()
+            await pilot.pause()
+            entry.text = "só gestores"
+            app.action_send()
+            await pilot.pause()
+            answers = [call["answers"] for call in spawned if "answers" in call]
+            assert answers == ["Q1: Não existe isso!; Q2: só gestores"]
+
+    asyncio.run(drive())

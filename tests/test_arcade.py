@@ -142,3 +142,18 @@ def test_scaled_sprites_use_fractional_positions(kind: str) -> None:
     assert game.pixels(2) != large_before
     assert len(large_before) == HEIGHT * 2
     assert all(len(row) == WIDTH * 2 for row in large_before)
+
+
+def test_dino_jump_rises_fast_and_falls_faster_than_it_rises() -> None:
+    game = Arcade("dino")
+    game.objects = [(80, 0)]
+    game.key("space")
+    heights = []
+    for _ in range(30):
+        game.tick()
+        heights.append(game.jump)
+    apex = heights.index(max(heights))
+    landing = heights.index(0)
+    assert landing - apex < apex + 1
+    assert landing <= 17
+    assert sum(1 for h in heights if h >= 4) >= 11

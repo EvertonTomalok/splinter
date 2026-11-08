@@ -6,6 +6,12 @@ from dataclasses import dataclass, field
 GAMES = {"pong": "Pong", "dino": "Dino", "ship": "Star patrol", "naval": "Battleship"}
 WIDTH = 64
 HEIGHT = 24
+#: Dino jump, in pixels per tick (20 ticks a second): a quick takeoff, a short
+#: hang at the top and a faster fall, like a runner, not a balloon.
+JUMP_SPEED = 2.2
+RISE_GRAVITY = 0.22
+FALL_GRAVITY = 0.40
+RUN_SPEED = 1.0
 
 
 @dataclass
@@ -97,7 +103,7 @@ class Arcade:
                 20, max(3, self.player + ({"up": -2, "w": -2, "down": 2, "s": 2}.get(key, 0)))
             )
         elif self.kind == "dino" and key in {"space", "up", "w"} and self.jump == 0:
-            self.jump_speed = 1.5
+            self.jump_speed = JUMP_SPEED
         elif self.kind == "ship":
             self.player = min(
                 59, max(4, self.player + ({"left": -2, "a": -2, "right": 2, "d": 2}.get(key, 0)))
@@ -159,9 +165,12 @@ class Arcade:
             self.over = self.score >= 7 or self.cpu_score >= 7
 
     def _dino(self, step: float) -> None:
-        self.jump = max(0, self.jump + self.jump_speed * step)
-        self.jump_speed = self.jump_speed - 0.13 * step if self.jump else 0
-        speed = 0.65 + min(0.5, self.score * 0.03)
+        gravity = RISE_GRAVITY if self.jump_speed > 0 else FALL_GRAVITY
+        self.jump_speed -= gravity * step
+        self.jump = max(0.0, self.jump + self.jump_speed * step)
+        if self.jump == 0:
+            self.jump_speed = 0
+        speed = RUN_SPEED + min(0.5, self.score * 0.03)
         moved = [(x - speed * step, y) for x, y in self.objects]
         self.score += sum(1 for (old, _), (new, _) in zip(self.objects, moved) if old >= 5 > new)
         self.objects = [(x, y) for x, y in moved if x > -3]

@@ -259,7 +259,7 @@ def test_prd_one_mode_answers_reach_send_path(
             app.action_send()
             await _settle(app, pilot)
             sent = next(p for p in prompts if "User answers:" in p)
-            assert "1A, 2A, 3B + notes" in sent
+            assert "1A, 2A, 3B + Q3: notes" in sent
 
     asyncio.run(drive())
 

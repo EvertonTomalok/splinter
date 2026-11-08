@@ -120,3 +120,21 @@ def test_small_terminals_keep_activity_and_cancel_visible(
             assert app._busy and room.active
 
     asyncio.run(drive())
+
+
+
+@pytest.mark.parametrize(
+    ("size", "expected"),
+    [
+        ((184, 33), (2, True)),
+        ((250, 50), (3, True)),
+        ((150, 37), (1, True)),
+        ((100, 35), (1, False)),
+    ],
+)
+def test_board_layout_puts_the_log_beside_the_biggest_board_that_fits(
+    size: tuple[int, int], expected: tuple[int, bool]
+) -> None:
+    from splinter.tui_waiting import board_layout
+
+    assert board_layout(*size) == expected

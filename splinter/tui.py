@@ -4982,6 +4982,8 @@ class PrdSessionApp(App[int | None]):
         self._explaining: dict[str, float] = {}
         self._explain_ticker: Any = None
         self._explain_frame = 0
+        self._notes: dict[int, str] = {}
+        self._note_on = 0
 
     def _save_state(self) -> None:
         """Persist enough to resume this refinement: conversation id, phase, strategy."""
@@ -5475,9 +5477,18 @@ class PrdSessionApp(App[int | None]):
             answered = self.query_one("#answered", AnsweredList)
         except Exception:
             return
-        index.refresh_from(self._questions, self._last_answers)
-        answered.refresh_from(self._questions, self._last_answers)
+        shown = self._shown_answers()
+        index.refresh_from(self._questions, shown)
+        answered.refresh_from(self._questions, shown)
         self._refresh_nav()
+
+    def _shown_answers(self) -> dict[int, str]:
+        """Picked letters, and the typed note of a question that has no pick."""
+        shown = {n: a for n, a in self._last_answers.items() if a}
+        for number, note in self._notes.items():
+            if number and note and number not in shown:
+                shown[number] = note
+        return shown
 
     def _refresh_outline(self) -> None:
         """The right-pane outline of the draft (file, title, a few stories)."""
@@ -5505,7 +5516,8 @@ class PrdSessionApp(App[int | None]):
         letters = "".join(
             sorted({option.letter for q in self._questions for option in q.options})
         )
-        answered = sum(1 for q in self._questions if self._last_answers.get(q.number))
+        shown = self._shown_answers()
+        answered = sum(1 for q in self._questions if shown.get(q.number))
         keys.update(
             nav_markup(
                 mode=form.mode,
@@ -5521,19 +5533,68 @@ class PrdSessionApp(App[int | None]):
         self._refresh_question_index()
 
     def on_question_form_page_changed(self, event: QuestionForm.PageChanged) -> None:
+        self._swap_note()
         self._refresh_nav()
         if self.has_class("-context"):
-            self._refresh_context()
+            self._refresh_context(explain_now=False)
+
+    def _note_key(self) -> int:
+        """The question the composer note belongs to (0: the whole form, all mode)."""
+        try:
+            form = self.query_one("#question-form", QuestionForm)
+        except Exception:
+            return 0
+        question = form.current_question if form.mode == "one" else None
+        return question.number if question is not None else 0
+
+    def _swap_note(self) -> None:
+        """Keep the composer text with its question and show the new question's own."""
+        try:
+            entry = self.query_one("#entry", TextArea)
+        except Exception:
+            return
+        key = self._note_key()
+        if key == self._note_on:
+            return
+        text = entry.text.strip()
+        if text:
+            self._notes[self._note_on] = text
+        else:
+            self._notes.pop(self._note_on, None)
+        self._note_on = key
+        entry.text = self._notes.get(key, "")
+
+    def _all_notes(self, text: str) -> str:
+        """Every note typed so far, each tied to its question: ``Q3: …; Q5: …``."""
+        notes = dict(self._notes)
+        if text.strip():
+            notes[self._note_on] = text.strip()
+        else:
+            notes.pop(self._note_on, None)
+        parts = [notes[0]] if notes.get(0) else []
+        parts += [f"Q{key}: {notes[key]}" for key in sorted(notes) if key]
+        return "; ".join(parts)
 
     def action_question_context(self) -> None:
-        """``?``: the PRD sections behind the question and a plain-words explanation."""
+        """``?``: open the question's context and explain it; ``?`` again closes it.
+
+        Moving to another question keeps the pane open without calling the model;
+        ``?`` on a question not explained yet explains it instead of closing.
+        """
         if not self.has_class("-asking"):
             return
+        question = self._context_question()
+        if self.has_class("-context") and question is not None:
+            key = question.text
+            if key not in self._explanations and key not in self._explaining:
+                self._explain_errors.pop(key, None)
+                self._refresh_context(explain_now=True)
+                return
         opening = not self.has_class("-context")
         self.remove_class("-editing")
         self.set_class(opening, "-context")
         if opening:
-            self._refresh_context()
+            self._refresh_context(explain_now=True)
             return
         self.query_one("#draft-cap", Ink).update(cap_markup(False))
 
@@ -5544,7 +5605,7 @@ class PrdSessionApp(App[int | None]):
             return
         self._explanations.pop(question.text, None)
         self._explain_errors.pop(question.text, None)
-        self._refresh_context()
+        self._refresh_context(explain_now=True)
 
     def _context_question(self) -> Question | None:
         try:
@@ -5552,8 +5613,11 @@ class PrdSessionApp(App[int | None]):
         except Exception:
             return None
 
-    def _refresh_context(self) -> None:
-        """Render the context pane for the question on screen; explain it once."""
+    def _refresh_context(self, *, explain_now: bool = False) -> None:
+        """Render the context pane for the question on screen.
+
+        The model is called only with ``explain_now`` (the ``?`` / ``x`` keys).
+        """
         question = self._context_question()
         if question is None:
             return
@@ -5573,8 +5637,11 @@ class PrdSessionApp(App[int | None]):
                 error=self._explain_errors.get(key, ""),
                 model=model,
                 waiting=self._waiting_label(key),
+                idle=not explain_now and key not in self._explaining,
             )
         )
+        if not explain_now:
+            return
         if key in self._explanations or key in self._explain_errors or key in self._explaining:
             return
         self._explaining[key] = time.monotonic()
@@ -5626,7 +5693,7 @@ class PrdSessionApp(App[int | None]):
         if self.has_class("-context"):
             question = self._context_question()
             if question is not None and question.text in self._explaining:
-                self._refresh_context()
+                self._refresh_context(explain_now=False)
 
     def _explained(self, key: str, result: Explanation | None, error: str) -> None:
         self._explaining.pop(key, None)
@@ -5636,7 +5703,7 @@ class PrdSessionApp(App[int | None]):
             self._explain_errors[key] = error[:200]
         self._refresh_spend()
         if self.has_class("-context"):
-            self._refresh_context()
+            self._refresh_context(explain_now=False)
 
     def on_question_form_finish_requested(self, event: QuestionForm.FinishRequested) -> None:
         self.action_finish_questions()
@@ -5678,6 +5745,7 @@ class PrdSessionApp(App[int | None]):
         entry = self.query_one("#entry", TextArea)
         answers = self._compile_answers(entry.text)
         entry.text = ""
+        self._notes.clear()
         if answers:
             self._say(f"[cyan]> {escape(answers)}[/]")
         draft = self._read_draft()
@@ -6020,7 +6088,15 @@ class PrdSessionApp(App[int | None]):
         self.run_worker(_do(), name="mount-draft")
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
-        """Flag the PRD as edited once the user changes the draft."""
+        """Flag the PRD as edited; a note typed for a question counts as its answer."""
+        if event.text_area.id == "entry" and self.has_class("-asking"):
+            note = event.text_area.text.strip()
+            if note:
+                self._notes[self._note_on] = note
+            else:
+                self._notes.pop(self._note_on, None)
+            self._refresh_question_index()
+            return
         if event.text_area.id != "draft-edit":
             return
         edited = bool(self._prd_base) and event.text_area.text != self._prd_base
@@ -6106,6 +6182,7 @@ class PrdSessionApp(App[int | None]):
             return
         entry = self.query_one("#entry", TextArea)
         self._submit(self._compile_answers(entry.text))
+        self._notes.clear()
 
     def _command_words(self) -> set[str]:
         """Typed words that bypass the question form (they are commands, not answers)."""
@@ -6129,7 +6206,7 @@ class PrdSessionApp(App[int | None]):
             form = self.query_one("#question-form", QuestionForm)
         except Exception:
             return stripped
-        return form.compile_answer(stripped)
+        return form.compile_answer(self._all_notes(stripped))
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         bid = event.button.id or ""

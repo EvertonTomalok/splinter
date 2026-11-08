@@ -130,6 +130,29 @@ class ArcadeBoard(Widget):
         self._target(event, fire=False)
 
 
+#: Rows the game column needs around the board: tabs, heading, controls, actions.
+_GAME_CHROME_ROWS = 8
+#: Narrowest log column worth putting beside the game.
+_SIDE_LOG_MIN = 44
+
+
+def board_layout(width: int, height: int) -> tuple[int, bool]:
+    """The board scale and whether the log goes beside the game.
+
+    Beside, the game takes the largest scale whose board fits the height and
+    still leaves ``_SIDE_LOG_MIN`` columns of log. Too narrow for that, the log
+    goes under the game as before.
+    """
+    for scale in (3, 2, 1):
+        board_width, board_height = WIDTH * scale, HEIGHT * scale // 2
+        if (
+            width >= board_width + _SIDE_LOG_MIN + 8
+            and height >= board_height + _GAME_CHROME_ROWS
+        ):
+            return scale, True
+    return (2 if width >= 134 and height >= 39 else 1), False
+
+
 class WaitingRoom(Vertical, can_focus=True):
     DEFAULT_CSS = """
     WaitingRoom { height: 1fr; padding: 1 2 0 2; background: #0a0a09;
@@ -149,8 +172,14 @@ class WaitingRoom(Vertical, can_focus=True):
     WaitingRoom Button:hover { background: #34412a; color: #ffffff; }
     WaitingRoom Button:focus { color: #c6f432; text-style: bold reverse; }
     WaitingRoom #wait-play { background: #c6f432; color: #0a0a09; text-style: bold; }
+    WaitingRoom #wait-body { height: 1fr; align-horizontal: center; }
+    WaitingRoom #wait-game { width: auto; height: auto; }
     WaitingRoom #wait-activity { width: 128; max-width: 100%; height: 1fr;
         min-height: 5; border-top: solid #3a3a35; }
+    WaitingRoom.-side #wait-body { layout: horizontal; align-horizontal: left; }
+    WaitingRoom.-side #wait-game { height: 100%; }
+    WaitingRoom.-side #wait-activity { width: 1fr; max-width: 100%; height: 100%;
+        border-top: none; border-left: solid #3a3a35; padding: 0 0 0 2; margin-left: 2; }
     WaitingRoom #wait-title { height: auto; color: #ecebe4; text-style: bold; }
     WaitingRoom #wait-meta { height: auto; color: #a6a59c; }
     WaitingRoom #wait-size { height: auto; color: #a6a59c; }
@@ -187,6 +216,23 @@ class WaitingRoom(Vertical, can_focus=True):
         self._hud_key: tuple[object, ...] = ()
 
     def compose(self) -> ComposeResult:
+        with Vertical(id="wait-body"):
+            with Vertical(id="wait-game"):
+                yield from self._game_widgets()
+            with Vertical(id="wait-activity"):
+                yield Static(id="wait-title")
+                yield Static(id="wait-meta")
+                yield Static(id="wait-latest")
+                yield RichLog(
+                    id="wait-log",
+                    wrap=True,
+                    markup=False,
+                    max_lines=300,
+                    auto_scroll=True,
+                    min_width=1,
+                )
+
+    def _game_widgets(self) -> ComposeResult:
         with Vertical(id="arcade"):
             with Horizontal(id="game-nav"):
                 for index, (kind, name) in enumerate(GAMES.items(), 1):
@@ -206,13 +252,6 @@ class WaitingRoom(Vertical, can_focus=True):
         size_hint = Static("Game needs a larger terminal · showing activity", id="wait-size")
         size_hint.display = False
         yield size_hint
-        with Vertical(id="wait-activity"):
-            yield Static(id="wait-title")
-            yield Static(id="wait-meta")
-            yield Static(id="wait-latest")
-            yield RichLog(
-                id="wait-log", wrap=True, markup=False, max_lines=300, auto_scroll=True, min_width=1
-            )
 
     def on_mount(self) -> None:
         for button in self.query(Button):
@@ -391,15 +430,17 @@ class WaitingRoom(Vertical, can_focus=True):
         self.query_one("#arcade").display = not tiny and not self.logs_only
         self.query_one("#wait-play").display = not tiny and not self.logs_only
         self.query_one("#wait-size").display = tiny
-        scale = 2 if event.size.width >= 134 and event.size.height >= 39 else 1
+        scale, side = board_layout(event.size.width, event.size.height)
+        self.set_class(side and not tiny, "-side")
         board = self.query_one("#game-board", ArcadeBoard)
         board.scale = scale
         board.styles.width = WIDTH * scale
         board.styles.height = HEIGHT * scale // 2
         self.query_one("#game-board-wrap").styles.height = HEIGHT * scale // 2
         frame_width = WIDTH * scale
-        for selector in ("#arcade", "#wait-actions", "#wait-activity"):
+        for selector in ("#arcade", "#wait-actions"):
             self.query_one(selector).styles.width = frame_width
+        self.query_one("#wait-activity").styles.width = "1fr" if side else frame_width
         self._draw()
         if tiny:
             self._pause()
