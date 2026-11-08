@@ -269,3 +269,30 @@ class TestClassifyKinds:
         assert failure is not None
         assert failure.kind is FailureKind.EMPTY
         assert failure.exit_code is None
+
+
+class TestLimitFalsePositives:
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "insufficient test coverage on greet()",
+            "the quota module now exports QuotaError",
+            "AGENT_RESULT: DONE q1\ninsufficient context in the brief",
+        ],
+    )
+    def test_ordinary_prose_is_not_a_limit(self, text: str) -> None:
+        assert find_limit(text, "") is None
+        assert classify(returncode=0, stdout=text, stderr="", has_result=True) is None
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "Error: insufficient credits",
+            "insufficient balance to run this request",
+            "quota exceeded for model x",
+            "You have exceeded your quota",
+            "quota reached, try later",
+        ],
+    )
+    def test_real_limit_lines_still_match(self, text: str) -> None:
+        assert find_limit(text, "") is not None

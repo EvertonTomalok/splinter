@@ -78,8 +78,8 @@ class BriefCtx:
         shared = session.pop_live_commands(None)
         per_story = {
             story: text
-            for story in range(1, self.story_count + 1)
-            if session.directive_pending(story) and (text := session.pop_live_commands(story))
+            for story in sorted(session.pending_directive_stories())
+            if 1 <= story <= self.story_count and (text := session.pop_live_commands(story))
         }
         with self.session_lock:
             for text in (note.strip(), shared.strip()):

@@ -18,6 +18,7 @@ from pathlib import Path
 from splinter.agents.acceptance import AcceptanceMode, check_acceptance
 from splinter.agents.brief_io import (
     engine_prompt,
+    fix_prompt,
     read_report,
     worktree_diff,
     write_engine_log,
@@ -36,7 +37,7 @@ from splinter.enums import Effort
 from splinter.memory.session import Session
 from splinter.models.roster import Ladder
 from splinter.obs.trace import Trace, log_run
-from splinter.procreg import IdleTimeoutError
+from splinter.procreg import IdleTimeoutError, ShuttingDownError, stop_requested
 from splinter.strategies.agents_ctx import BriefCtx
 from splinter.templating import load_standards
 from splinter.vcs.guard import guarded_env
@@ -46,6 +47,8 @@ log = logging.getLogger("splinter.loop")
 
 _sleep = time.sleep
 _MIN_WAIT_S = 5.0
+_MAX_FLOOR_S = 120.0
+STOP_REASON = "the run was stopped"
 
 
 @dataclass(frozen=True)
@@ -65,6 +68,7 @@ class _State:
     engine_session: str | None = None
     last_engine: str = ""
     started: float = 0.0
+    sent: int = 0
     exclude: set[str] = field(default_factory=set)
 
 
@@ -92,19 +96,21 @@ def run_brief(
     contract = workhorse_contract(laws=load_standards(), plan_ref=str(ctx.run_dir))
     state = _State()
     while True:
+        if stop_requested():
+            return BriefOutcome(False, reason=STOP_REASON)
         engine = _pick(ctx, chain, state)
         if engine is None:
             state.infra_rounds += 1
             if state.infra_rounds > ctx.max_attempts:
                 return BriefOutcome(False, reason="every engine of the chain kept failing")
-            _wait_for_chain(ctx, chain, brief.id)
+            _wait_for_chain(ctx, chain, brief.id, state.infra_rounds)
             state.exclude.clear()
             continue
         _add_guidance(session, ctx, job)
         n = ctx.attempts.start(job.story, brief.id, engine.key, job.tier)
         with ctx.session_lock:
             session.set_status("running", stage="run", task_index=job.story - 1)
-        launch = _launch(ctx, session, job, engine, state, contract, n)
+        launch = _launch(ctx, session, trace, job, engine, state, contract, n)
         if launch is None:
             continue
         outcome = _judge(session, ladder, trace, ctx, job, engine, launch, n, state)
@@ -119,8 +125,11 @@ def _pick(ctx: BriefCtx, chain: tuple[Engine, ...], state: _State) -> Engine | N
         return None
 
 
-def _wait_for_chain(ctx: BriefCtx, chain: tuple[Engine, ...], brief_id: str) -> None:
-    wait = max(ctx.pool.wait_s(chain), _MIN_WAIT_S)
+def _wait_for_chain(
+    ctx: BriefCtx, chain: tuple[Engine, ...], brief_id: str, infra_round: int
+) -> None:
+    floor = min(_MIN_WAIT_S * 2 ** (infra_round - 1), _MAX_FLOOR_S)
+    wait = max(ctx.pool.wait_s(chain), floor)
     log.warning("agents: every engine for %s is cooling down — waiting %.0fs", brief_id, wait)
     _sleep(wait)
 
@@ -128,6 +137,7 @@ def _wait_for_chain(ctx: BriefCtx, chain: tuple[Engine, ...], brief_id: str) -> 
 def _launch(
     ctx: BriefCtx,
     session: Session,
+    trace: Trace,
     job: _Brief,
     engine: Engine,
     state: _State,
@@ -140,10 +150,36 @@ def _launch(
         if engine.key == state.last_engine and engine.supports_continue
         else None
     )
-    prompt = engine_prompt(job.brief.id, job.doc.read_text(), contract)
-    failure = ""
-    launch: EngineLaunch | None = None
+    document = job.doc.read_text()
+    prompt = (
+        engine_prompt(job.brief.id, document, contract)
+        if resume is None
+        else fix_prompt(job.brief.id, document[state.sent :])
+    )
     state.started = time.monotonic()
+    launch, failure = _call_engine(ctx, job, engine, prompt, resume)
+    if launch is None:
+        write_engine_log(ctx.run_dir, job.brief.id, n, engine.key, f"infra failure: {failure}")
+    else:
+        write_engine_log(ctx.run_dir, job.brief.id, n, engine.key, launch.text)
+        failure = _launch_failure(trace, job, engine, launch, n, state)
+    if failure or launch is None:
+        ctx.attempts.end(job.story, n, RETRY, failure)
+        _reroute(ctx, session, job.brief.id, engine, failure)
+        state.exclude.add(engine.key)
+        return None
+    ctx.pool.report_success(engine.key)
+    kept = state.engine_session if engine.key == state.last_engine else None
+    state.engine_session = launch.session_id or kept
+    state.last_engine = engine.key
+    state.sent = len(document)
+    return launch
+
+
+def _call_engine(
+    ctx: BriefCtx, job: _Brief, engine: Engine, prompt: str, resume: str | None
+) -> tuple[EngineLaunch | None, str]:
+    """The engine's launch, or ``None`` and why it never returned one."""
     try:
         launch = run_engine(
             engine,
@@ -156,31 +192,44 @@ def _launch(
             effort=engine.default_effort,
         )
     except IdleTimeoutError:
-        failure = "STALL: idle watchdog"
+        return None, "STALL: idle watchdog"
     except FileNotFoundError:
-        failure = "MISSING: engine binary absent"
+        return None, "MISSING: engine binary absent"
+    except ShuttingDownError:
+        raise
     except RuntimeError as exc:
-        failure = f"{'LIMIT' if find_limit('', str(exc)) else 'CRASH'}: {exc}"
-    if launch is not None:
-        write_engine_log(ctx.run_dir, job.brief.id, n, engine.key, launch.text)
-        kind = classify(
-            returncode=None,
-            stdout=launch.text,
-            stderr="",
-            has_result=find_result(launch.text) is not None,
-        )
-        failure = f"{kind.kind.value}: {kind.detail}" if kind is not None else ""
-    if failure:
-        ctx.attempts.end(job.story, n, RETRY, failure)
-        _reroute(ctx, session, job.brief.id, engine, failure)
-        state.exclude.add(engine.key)
-        return None
-    ctx.pool.report_success(engine.key)
-    state.engine_session = launch.session_id if launch and launch.session_id else (
-        state.engine_session
+        return None, f"{'LIMIT' if find_limit('', str(exc)) else 'CRASH'}: {exc}"
+    return launch, ""
+
+
+def _launch_failure(
+    trace: Trace, job: _Brief, engine: Engine, launch: EngineLaunch, n: int, state: _State
+) -> str:
+    """The failure of a launch that returned; its tokens were spent, so it is traced."""
+    kind = classify(
+        returncode=None,
+        stdout=launch.text,
+        stderr="",
+        has_result=find_result(launch.text) is not None,
     )
-    state.last_engine = engine.key
-    return launch
+    if kind is None:
+        return ""
+    log_run(trace, _result(launch, job, engine, state), iteration=n, task=job.story - 1)
+    return f"{kind.kind.value}: {kind.detail}"
+
+
+def _result(launch: EngineLaunch, job: _Brief, engine: Engine, state: _State) -> RunResult:
+    return RunResult(
+        text=launch.text,
+        model=launch.model,
+        tier=job.tier,
+        tokens=launch.tokens or {},
+        cost=launch.cost,
+        raw={"engine": engine.key, "brief": job.brief.id},
+        opencode_session=state.engine_session,
+        cost_indeterminate=launch.cost_indeterminate,
+        latency_s=time.monotonic() - state.started,
+    )
 
 
 def _judge(
@@ -195,17 +244,7 @@ def _judge(
     state: _State,
 ) -> BriefOutcome | None:
     """Blocked, generated, accepted — or a fix round (``None`` loops again)."""
-    result = RunResult(
-        text=launch.text,
-        model=launch.model,
-        tier=job.tier,
-        tokens=launch.tokens or {},
-        cost=launch.cost,
-        raw={"engine": engine.key, "brief": job.brief.id},
-        opencode_session=state.engine_session,
-        cost_indeterminate=launch.cost_indeterminate,
-        latency_s=time.monotonic() - state.started,
-    )
+    result = _result(launch, job, engine, state)
     log_run(trace, result, iteration=n, task=job.story - 1)
     status = (find_result(launch.text) or ("DONE", ""))[0].upper()
     if status == "BLOCKED":
@@ -220,7 +259,7 @@ def _judge(
             mode=ctx.mode,
             project_dir=str(job.wt.path),
             ladder=ladder,
-            diff=worktree_diff(job.wt.path),
+            diff_source=lambda: worktree_diff(job.wt.path),
             trace=trace,
             task_index=job.story - 1,
             orchestrator_notes=(

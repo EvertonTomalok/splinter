@@ -128,3 +128,60 @@ class TestMergeNoFF:
                 merge_no_ff(handle, tmp_path)
         cmds = [c[0][0] for c in mock.call_args_list]
         assert ["git", "reset", "--hard", "HEAD"] not in cmds
+
+
+class TestCreateWorktreeReusesBranch:
+    def test_existing_branch_is_checked_out_without_dash_b(self, tmp_path: Path) -> None:
+        mock = _fake_git(
+            {
+                ("git", "worktree"): [
+                    _fail("fatal: a branch named 'splinter/run-q1' already exists"),
+                    _ok(),
+                ]
+            }
+        )
+        with patch("subprocess.run", mock):
+            handle = create_worktree("run-q1", base_dir=tmp_path, base_ref="splinter/run-int")
+        cmds = [c[0][0] for c in mock.call_args_list if c[0][0][:2] == ["git", "worktree"]]
+        assert len(cmds) == 2
+        assert "-b" not in cmds[1]
+        assert cmds[1][-1] == "splinter/run-q1"
+        assert handle.branch == "splinter/run-q1"
+
+    def test_other_failure_raises(self, tmp_path: Path) -> None:
+        import subprocess
+
+        mock = _fake_git({("git", "worktree"): [_fail("fatal: not a git repository")]})
+        with patch("subprocess.run", mock), pytest.raises(subprocess.CalledProcessError):
+            create_worktree("run-q1", base_dir=tmp_path)
+
+
+class TestMergeNoFFRecovery:
+    def test_non_content_failure_aborts_the_merge(self, tmp_path: Path) -> None:
+        handle = _handle(tmp=tmp_path)
+        mock = _fake_git(
+            {
+                ("git", "rev-list"): [_ok("1\n")],
+                ("git", "merge"): [_fail("index locked")],
+                ("git", "diff"): [_ok("")],
+            }
+        )
+        with patch("subprocess.run", mock), pytest.raises(WorktreeMergeConflict):
+            merge_no_ff(handle, tmp_path)
+        cmds = [c[0][0] for c in mock.call_args_list]
+        assert ["git", "merge", "--abort"] in cmds
+
+    def test_commit_failure_after_resolution_raises_and_resets(self, tmp_path: Path) -> None:
+        handle = _handle(tmp=tmp_path)
+        mock = _fake_git(
+            {
+                ("git", "rev-list"): [_ok("1\n")],
+                ("git", "merge"): [_fail("conflict")],
+                ("git", "diff"): [_ok("src/a.py\n"), _ok("")],
+                ("git", "commit"): [_fail("hook rejected")],
+            }
+        )
+        with patch("subprocess.run", mock), pytest.raises(WorktreeMergeConflict, match="committed"):
+            merge_no_ff(handle, tmp_path)
+        cmds = [c[0][0] for c in mock.call_args_list]
+        assert ["git", "reset", "--hard", "HEAD"] in cmds

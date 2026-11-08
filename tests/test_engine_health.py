@@ -397,3 +397,23 @@ def test_probe_report_lists_all_catalog_rows() -> None:
     report = probe_report([])
     assert report.count("\n") == 17
     assert report.count("| absent |") == 13
+
+
+def test_engine_health_is_safe_under_concurrent_trips() -> None:
+    import threading
+
+    registry = EngineHealth()
+    barrier = threading.Barrier(8)
+
+    def trip() -> None:
+        barrier.wait()
+        for _ in range(50):
+            registry.trip("mcode")
+
+    threads = [threading.Thread(target=trip) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert registry.snapshot()["mcode"] is BreakerState.OPEN
+    assert registry._breakers["mcode"].failures == 400

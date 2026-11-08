@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
+from splinter import configure
 from splinter.agents import refiner
 from splinter.agents.refiner import (
     Brief,
@@ -455,3 +457,49 @@ def test_resume_reuses_stories_a_killed_refine_already_split(
 
     assert [b.goal for b in briefs] == ["kept", "new"]
     assert len(calls) == 1
+
+
+class _RecordingExecutor(ThreadPoolExecutor):
+    sizes: list[int] = []
+
+    def __init__(self, max_workers: int) -> None:
+        type(self).sizes.append(max_workers)
+        super().__init__(max_workers=max_workers)
+
+
+@pytest.mark.parametrize(
+    ("pool", "kwargs", "expected"),
+    [
+        ([], {}, 2),
+        (["sonnet"], {}, 2),
+        (["a", "b", "c"], {}, 4),
+        (["a", "b", "c"], {"max_workers": 6}, 6),
+        (["a", "b", "c"], {"max_workers": 1}, 1),
+    ],
+)
+def test_refine_workers_follow_the_planner_pool(
+    monkeypatch: pytest.MonkeyPatch,
+    pool: list[str],
+    kwargs: dict[str, int],
+    expected: int,
+) -> None:
+    _RecordingExecutor.sizes = []
+    ladder = _ladder()
+    ladder.step_pools["planner"] = pool
+    monkeypatch.setattr(refiner, "ThreadPoolExecutor", _RecordingExecutor)
+    monkeypatch.setattr(refiner, "run_text", lambda *a, **k: "not json")
+    tasks = [_task(tid=f"US-{n:03d}") for n in range(10)]
+    refine_briefs(tasks, ladder, **kwargs)
+    assert _RecordingExecutor.sizes == [expected]
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [({"refine_workers": 2}, 2), ({"refine_workers": 0}, 1), ({"refine_workers": "x"}, 4),
+     ({"refine_workers": None}, 4), ({}, 4)],
+)
+def test_refine_workers_config(
+    monkeypatch: pytest.MonkeyPatch, raw: dict[str, object], expected: int
+) -> None:
+    monkeypatch.setattr(configure, "load_config", lambda: {"agents": raw})
+    assert configure.configured_agents_options().refine_workers == expected

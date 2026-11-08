@@ -25,18 +25,26 @@ def slug_from(tasks: list[Task]) -> str:
     return slug or "run"
 
 
-def engine_prompt(ident: str, brief_text: str, contract: str) -> str:
-    report_rule = (
+def _report_rule(ident: str) -> str:
+    return (
         "Nobody answers questions. Write .agent/report.md at the root of the worktree, "
         f"then print exactly one final line: AGENT_RESULT: DONE {ident} "
         f"(or AGENT_RESULT: BLOCKED {ident} when the brief cannot be done by editing files, "
         "with the reason in the report)."
     )
+
+
+def fix_prompt(ident: str, new_text: str) -> str:
+    """What a resumed engine session has not seen yet: it already holds the brief."""
+    return f"Acceptance failed, fix and finish. {_report_rule(ident)}\n\n{new_text.strip()}\n"
+
+
+def engine_prompt(ident: str, brief_text: str, contract: str) -> str:
     return (
         "You are a fast workhorse implementer. "
         f"{_FAST_INSTRUCTION}"
         "Follow the workhorse contract below. "
-        f"{report_rule}\n\n--- BRIEF ---\n{brief_text}\n\n"
+        f"{_report_rule(ident)}\n\n--- BRIEF ---\n{brief_text}\n\n"
         f"--- WORKHORSE CONTRACT ---\n{contract}\n"
     )
 
@@ -62,14 +70,21 @@ def worktree_diff(path: Path) -> str:
         file = path / name
         if not name or not file.is_file() or file.is_symlink():
             continue
-        content = file.read_text(errors="replace")
-        if len(content) > NEW_FILE_LIMIT:
-            content = content[:NEW_FILE_LIMIT] + f"\n… ({len(content)} characters in all)"
-        additions.append(f"diff --git a/{name} b/{name}\nnew file\n{content}")
+        additions.append(f"diff --git a/{name} b/{name}\nnew file\n{_new_file_head(file)}")
     body = f"{status}\n\n{diff}\n" + "\n".join(additions)
     if len(body) <= DIFF_LIMIT:
         return body
     return body[:DIFF_LIMIT] + "\n… (diff cut; the file list above is complete)"
+
+
+def _new_file_head(file: Path) -> str:
+    """The first ``NEW_FILE_LIMIT`` characters of a new file, without reading all of it."""
+    size = file.stat().st_size
+    with file.open(encoding="utf-8", errors="replace") as handle:
+        content = handle.read(NEW_FILE_LIMIT + 1)
+    if len(content) <= NEW_FILE_LIMIT:
+        return content
+    return content[:NEW_FILE_LIMIT] + f"\n… ({size} bytes in all)"
 
 
 def read_report(worktree: Path) -> str:

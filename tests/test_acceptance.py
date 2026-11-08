@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -299,3 +300,31 @@ class TestGateOrchestrator:
         assert result.passed is False
         assert result.verdict is not None
         assert result.verdict.decision == Decision.RETRY
+
+
+class TestLazyDiff:
+    def _check(self, mode: AcceptanceMode, source: MagicMock) -> AcceptanceResult:
+        return check_acceptance(
+            goal="g", acceptance=["a"], mode=mode, ladder=_ladder(), diff_source=source
+        )
+
+    def test_failed_gate_never_builds_the_diff(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _mock_gate(monkeypatch, passed=False)
+        source = MagicMock(return_value="DIFF")
+        assert not self._check(AcceptanceMode.GATE_EVAL, source).passed
+        source.assert_not_called()
+
+    def test_gate_mode_never_builds_the_diff(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _mock_gate(monkeypatch)
+        source = MagicMock(return_value="DIFF")
+        assert self._check(AcceptanceMode.GATE, source).passed
+        source.assert_not_called()
+
+    def test_eval_builds_it_once_and_sends_it(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _mock_gate(monkeypatch)
+        run_text = MagicMock(return_value="fine\nVERDICT: PASS")
+        monkeypatch.setattr(acceptance, "run_text", run_text)
+        source = MagicMock(return_value="UNIQUE-DIFF-TEXT")
+        assert self._check(AcceptanceMode.GATE_EVAL, source).passed
+        source.assert_called_once_with()
+        assert "UNIQUE-DIFF-TEXT" in run_text.call_args.args[0]

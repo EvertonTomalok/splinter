@@ -15,7 +15,13 @@ from __future__ import annotations
 
 import json
 import logging
-from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from concurrent.futures import (
+    FIRST_COMPLETED,
+    Future,
+    ThreadPoolExecutor,
+    as_completed,
+    wait,
+)
 from dataclasses import asdict, replace
 from pathlib import Path
 
@@ -44,6 +50,7 @@ from splinter.memory.orchestrator_notes import notes_for
 from splinter.memory.session import Session
 from splinter.models.roster import Ladder
 from splinter.obs.trace import Trace
+from splinter.procreg import stop_requested
 from splinter.scheduling import BudgetPool, DagScheduler, TaskState
 from splinter.strategies.agents_brief import BriefOutcome, merge_failed, run_brief
 from splinter.strategies.agents_ctx import BriefCtx, DirectLoopSettings
@@ -58,6 +65,7 @@ from splinter.vcs.worktree import (
     create_integration_worktree,
     create_worktree,
     merge_no_ff,
+    reattach_worktree,
     teardown_worktree,
     worktree_supported,
 )
@@ -65,6 +73,7 @@ from splinter.vcs.worktree import (
 log = logging.getLogger("splinter.loop")
 
 _MIN_ENGINE_TIMEOUT_S = 2700
+_PROBE_WORKERS = 4
 
 _BriefFuture = Future[tuple[RunResult | None, bool]]
 
@@ -179,6 +188,7 @@ class AgentsStrategy(DirectStrategy):
             trace=trace,
             orchestrator_notes=notes_for(session, "refine", "agents"),
             reuse_progress=resume,
+            max_workers=configured_agents_options().refine_workers,
         )
         session.write("agents-run/briefs.json", json.dumps([asdict(b) for b in briefs]))
         return briefs
@@ -192,12 +202,8 @@ class AgentsStrategy(DirectStrategy):
     def _integration(
         self, session: Session, slug: str, saved: dict[str, dict[str, str]]
     ) -> WorktreeHandle:
-        record = saved.get(f"{slug}-int")
-        integration = (
-            WorktreeHandle(Path(record["path"]), record["branch"], f"{slug}-int")
-            if record and Path(record["path"]).exists()
-            else create_integration_worktree(slug)
-        )
+        attached = reattach_worktree(f"{slug}-int") if saved.get(f"{slug}-int") else None
+        integration = attached or create_integration_worktree(slug)
         session.set_worktree(f"{slug}-int", str(integration.path), integration.branch)
         return integration
 
@@ -252,7 +258,7 @@ class AgentsStrategy(DirectStrategy):
         with ThreadPoolExecutor(max_workers=cap) as executor:
             while not scheduler.is_done() or futures:
                 ctx.take_guidance(session)
-                stop = stop or budget_pool.exhausted(trace.total_cost)
+                stop = stop or budget_pool.exhausted(trace.total_cost) or stop_requested()
                 for task in [] if stop else scheduler.ready():
                     if len(futures) >= cap or budget_pool.exhausted(trace.total_cost):
                         break
@@ -315,6 +321,9 @@ class AgentsStrategy(DirectStrategy):
         wt = self._worktree(brief, session, ctx)
         outcome = run_brief(brief, wt, session, ladder, trace, ctx)
         if not outcome.accepted:
+            if stop_requested():
+                log.info("agents: brief %s left for the next run — stop requested", brief.id)
+                return outcome.result, False
             return self._assume(brief, outcome, session, ladder, trace, knowledge, wt, ctx)
         report = keep_report(wt.path, ctx.run_dir / "reports" / f"{brief.id}.md")
         result = outcome.result
@@ -324,12 +333,9 @@ class AgentsStrategy(DirectStrategy):
 
     def _worktree(self, brief: Brief, session: Session, ctx: BriefCtx) -> WorktreeHandle:
         with ctx.git_lock:
-            record = ctx.worktrees.get(brief.id)
-            wt = (
-                WorktreeHandle(Path(record["path"]), record["branch"], brief.id)
-                if record and Path(record["path"]).exists()
-                else create_worktree(f"{ctx.slug}-{brief.id}", base_ref=ctx.integration.branch)
-            )
+            task_id = f"{ctx.slug}-{brief.id}"
+            attached = reattach_worktree(task_id) if ctx.worktrees.get(brief.id) else None
+            wt = attached or create_worktree(task_id, base_ref=ctx.integration.branch)
         session.set_worktree(brief.id, str(wt.path), wt.branch)
         return wt
 
@@ -414,19 +420,19 @@ class AgentsStrategy(DirectStrategy):
         return merged
 
     def _probe_into(self, health: EngineHealth, ladder: Ladder) -> None:
-        seen: set[str] = set()
-        for engine in (e for effort in Effort for e in chain_for_effort(ladder, effort)):
-            if engine.key in seen:
-                continue
-            seen.add(engine.key)
-            try:
-                result = probe(engine)
-            except Exception as exc:
-                log.warning("agents: probe of %s crashed: %s", engine.key, exc)
-                continue
-            if not result.up:
-                log.warning("agents: engine %s down (%s) — breaker open", engine.key, result.detail)
-                health.trip(engine.key)
+        engines = {e.key: e for effort in Effort for e in chain_for_effort(ladder, effort)}
+        with ThreadPoolExecutor(max_workers=_PROBE_WORKERS) as pool:
+            probes = {pool.submit(probe, engine): engine.key for engine in engines.values()}
+            for future in as_completed(probes):
+                key = probes[future]
+                try:
+                    result = future.result()
+                except Exception as exc:
+                    log.warning("agents: probe of %s crashed: %s", key, exc)
+                    continue
+                if not result.up:
+                    log.warning("agents: engine %s down (%s) — breaker open", key, result.detail)
+                    health.trip(key)
 
     def _write_plan_doc(self, run_dir: Path, slug: str, waves: list[list[Brief]]) -> None:
         lines = [f"# Plan — {slug}", "", "## Waves & Briefs", ""]

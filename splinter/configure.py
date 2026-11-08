@@ -244,6 +244,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "stall_min": 8,
         "max_attempts": 3,
         "probe_on_start": False,
+        "refine_workers": 4,
     },
 }
 
@@ -443,6 +444,7 @@ class AgentsOptions:
     max_attempts: int = 3
     probe_on_start: bool = False
     codegen: tuple[CodegenStep, ...] = ()
+    refine_workers: int = 4
 
 
 def _codegen_steps(raw: object) -> tuple[CodegenStep, ...]:
@@ -486,12 +488,17 @@ def configured_agents_options() -> AgentsOptions:
         max_attempts = max(int(raw.get("max_attempts", 3)), 1)
     except (ValueError, TypeError):
         max_attempts = 3
+    try:
+        refine_workers = max(int(raw.get("refine_workers", 4)), 1)
+    except (ValueError, TypeError):
+        refine_workers = 4
     return AgentsOptions(
         acceptance_check=acceptance,
         stall_min=stall_min,
         max_attempts=max_attempts,
         probe_on_start=bool(raw.get("probe_on_start", False)),
         codegen=_codegen_steps(raw.get("codegen")),
+        refine_workers=refine_workers,
     )
 
 

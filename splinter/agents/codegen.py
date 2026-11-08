@@ -28,10 +28,18 @@ class CodegenResult:
 
 def changed_files(worktree: Path) -> list[str]:
     out = subprocess.run(
-        ["git", "status", "--porcelain", "--untracked-files=all"],
+        ["git", "status", "--porcelain", "-z", "--untracked-files=all"],
         cwd=worktree, capture_output=True, text=True, check=False,
     ).stdout
-    return [line[3:].split(" -> ")[-1] for line in out.splitlines() if len(line) > 3]
+    found: list[str] = []
+    fields = iter(out.split("\0"))
+    for entry in fields:
+        if len(entry) <= 3:
+            continue
+        found.append(entry[3:])
+        if {"R", "C"} & set(entry[:2]):
+            next(fields, None)
+    return found
 
 
 def run_codegen(worktree: Path, steps: tuple[CodegenStep, ...]) -> CodegenResult:

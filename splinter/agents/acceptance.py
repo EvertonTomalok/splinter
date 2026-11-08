@@ -20,7 +20,7 @@ from splinter.strategies.base import EvalVerdict
 from splinter.templating import render
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
 
     from splinter.models.roster import Ladder
     from splinter.obs.trace import Trace
@@ -119,6 +119,7 @@ def check_acceptance(
     languages: set[str] | None = None,
     ladder: Ladder | None = None,
     diff: str = "",
+    diff_source: Callable[[], str] | None = None,
     trace: Trace | None = None,
     task_index: int = 0,
     orchestrator_notes: str = "",
@@ -128,6 +129,7 @@ def check_acceptance(
 
     ``gate+eval`` routes to the ladder's eval model at low effort; ``gate+orchestrator``
     routes to the planner model at its effort under the ``orchestrator`` role.
+    ``diff_source`` builds the diff only once the LLM check really needs it.
     """
     gate = run_gate(project_dir=project_dir, languages=languages)
     if not gate.passed:
@@ -153,7 +155,7 @@ def check_acceptance(
         "acceptance_eval",
         goal=goal,
         acceptance=_acceptance_text(acceptance),
-        diff=diff,
+        diff=diff_source() if diff_source else diff,
         orchestrator_notes_section=orchestrator_notes,
     )
     try:

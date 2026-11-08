@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import shutil
 import tempfile
+import threading
 import time
 from dataclasses import dataclass
 from enum import StrEnum
@@ -75,6 +76,7 @@ class EngineHealth:
 
     def __init__(self) -> None:
         self._breakers: dict[str, CircuitBreaker] = {}
+        self._lock = threading.Lock()
 
     def _breaker(self, key: str) -> CircuitBreaker:
         breaker = self._breakers.get(key)
@@ -85,23 +87,28 @@ class EngineHealth:
 
     def allow(self, key: str, now: float | None = None) -> bool:
         """Whether an engine may be launched right now."""
-        return self._breaker(key).allow(now)
+        with self._lock:
+            return self._breaker(key).allow(now)
 
     def wait_s(self, key: str, now: float | None = None) -> float:
         """Seconds until ``key`` may be launched again."""
-        return self._breaker(key).wait_s(now)
+        with self._lock:
+            return self._breaker(key).wait_s(now)
 
     def trip(self, key: str) -> None:
         """Record an infra failure against the engine's breaker."""
-        self._breaker(key).record_failure()
+        with self._lock:
+            self._breaker(key).record_failure()
 
     def reset(self, key: str) -> None:
         """Record a success, closing the engine's breaker."""
-        self._breaker(key).record_success()
+        with self._lock:
+            self._breaker(key).record_success()
 
     def snapshot(self) -> dict[str, BreakerState]:
         """Current breaker state for every known engine key."""
-        return {key: breaker.state() for key, breaker in self._breakers.items()}
+        with self._lock:
+            return {key: breaker.state() for key, breaker in self._breakers.items()}
 
 
 @dataclass(frozen=True)

@@ -436,6 +436,14 @@ class Session:
                 continue
         return False
 
+    def pending_directive_stories(self) -> set[int]:
+        """The stories with a scoped directive queued, from one directory listing."""
+        numbers = (
+            path.name.removeprefix("pending_directive.task-").removesuffix(".txt")
+            for path in self.dir.glob("pending_directive.task-*.txt")
+        )
+        return {int(number) for number in numbers if number.isdigit()}
+
     def pop_live_commands(self, task_no: int | None = None) -> str:
         """Read and clear pending live directives for ``task_no`` plus the shared
         queue. Returns empty string if none.

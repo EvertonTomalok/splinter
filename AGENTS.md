@@ -314,6 +314,7 @@ agents:
   stall_min: 8                  # idle watchdog: minutes without output → STALL
   max_attempts: 3               # burned attempts before the orchestrator assumes
   probe_on_start: false         # live-probe the effort-chain models before wave 1
+  refine_workers: 4             # stories refined at once, at most 2 per planner-pool model
   codegen:                      # generators splinter runs before acceptance
     - {cmd: make gen, paths: ["api/"], timeout: 600}
 ```

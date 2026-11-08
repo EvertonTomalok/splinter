@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 import io
-from typing import Any
+import subprocess
+import threading
+import time
+from collections.abc import Iterator
+from typing import Any, cast
+from unittest.mock import patch
 
 import pytest
 
@@ -115,3 +120,101 @@ class TestIdleTimeoutErrorAttrs:
         assert err.idle_seconds == 480.0
         assert err.cmd == ["agy", "-p"]
         assert "no output for 480s" in str(err)
+
+
+class _OpenPipe:
+    """A pipe with no output yet: iterating blocks until it closes."""
+
+    def __init__(self) -> None:
+        self.closed = threading.Event()
+
+    def __iter__(self) -> Iterator[str]:
+        self.closed.wait(5)
+        return iter(())
+
+
+class _LiveProc:
+    returncode = 0
+
+    def __init__(self) -> None:
+        self.stdout = _OpenPipe()
+        self.stderr = _OpenPipe()
+        self.polls = 0
+        self.exited = False
+
+    def poll(self) -> int | None:
+        self.polls += 1
+        return 0 if self.exited else None
+
+    def wait(self, timeout: float | None = None) -> int:
+        return 0
+
+    def close(self) -> None:
+        self.exited = True
+        self.stdout.closed.set()
+        self.stderr.closed.set()
+
+
+class TestStreamWakeups:
+    def test_idle_watchdog_blocks_instead_of_polling(self) -> None:
+        proc = _LiveProc()
+        try:
+            with (
+                patch.object(procreg.time, "sleep", side_effect=AssertionError("polled")),
+                pytest.raises(IdleTimeoutError),
+            ):
+                procreg._stream(
+                    cast(Any, proc), ["x"], timeout=30, on_line=lambda _: None, idle_timeout=0.05
+                )
+        finally:
+            proc.close()
+        assert proc.polls <= 4
+
+    def test_deadline_blocks_instead_of_polling(self) -> None:
+        proc = _LiveProc()
+        try:
+            with (
+                patch.object(procreg.time, "sleep", side_effect=AssertionError("polled")),
+                patch.object(procreg, "_WATCHDOG_TICK_S", 0.02),
+                pytest.raises(subprocess.TimeoutExpired),
+            ):
+                procreg._stream(cast(Any, proc), ["x"], timeout=0, on_line=lambda _: None)
+        finally:
+            proc.close()
+
+    def test_exit_wakes_the_watchdog_before_the_tick(self) -> None:
+        proc = _LiveProc()
+        timer = threading.Timer(0.05, proc.close)
+        timer.start()
+        started = time.monotonic()
+        with patch.object(procreg, "_WATCHDOG_TICK_S", 3.0):
+            procreg._stream(cast(Any, proc), ["x"], timeout=30, on_line=lambda _: None)
+        timer.join()
+        assert time.monotonic() - started < 1.0
+        assert proc.polls <= 3
+
+    def test_child_that_closed_its_pipes_is_waited_with_a_tick(self) -> None:
+        proc = _FakeProc(poll_result=None)
+        results: list[subprocess.TimeoutExpired | int] = [
+            subprocess.TimeoutExpired(["x"], 1),
+            subprocess.TimeoutExpired(["x"], 1),
+            subprocess.TimeoutExpired(["x"], 1),
+            0,
+        ]
+        waits: list[float | None] = []
+
+        def fake_wait(timeout: float | None = None) -> int:
+            waits.append(timeout)
+            result = results.pop(0)
+            if isinstance(result, subprocess.TimeoutExpired):
+                raise result
+            proc._poll_result = 0
+            return result
+
+        with patch.object(proc, "wait", side_effect=fake_wait):
+            out, err = procreg._stream(
+                cast(Any, proc), ["x"], timeout=30, on_line=lambda _: None
+            )
+        assert (out, err) == ("", "")
+        assert len(waits) == 4
+        assert all(step is not None and 0 < step <= 1.0 for step in waits)

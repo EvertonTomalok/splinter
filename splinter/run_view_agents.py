@@ -21,9 +21,9 @@ from splinter.run_snapshot import TaskRow
 Groups = list[tuple[int, str, list[tuple[int, str, str]]]]
 
 
-def agents_groups(stories_text: str, attempts_text: str) -> Groups:
+def agents_groups(stories_text: str, attempts: str | list[Attempt]) -> Groups:
     stories, _ = read_stories(stories_text)
-    by_story = _attempts_by_story(read_attempts(attempts_text))
+    by_story = _attempts_by_story(_folded(attempts))
     return [
         (
             story.number,
@@ -34,9 +34,11 @@ def agents_groups(stories_text: str, attempts_text: str) -> Groups:
     ]
 
 
-def agents_rows(stories_text: str, attempts_text: str, checkpoint_text: str) -> list[TaskRow]:
+def agents_rows(
+    stories_text: str, attempts: str | list[Attempt], checkpoint_text: str
+) -> list[TaskRow]:
     stories, briefs = read_stories(stories_text)
-    by_story = _attempts_by_story(read_attempts(attempts_text))
+    by_story = _attempts_by_story(_folded(attempts))
     done = read_done(checkpoint_text)
     rows: list[TaskRow] = []
     for story in stories:
@@ -55,6 +57,10 @@ def agents_rows(stories_text: str, attempts_text: str, checkpoint_text: str) -> 
             )
         )
     return rows
+
+
+def _folded(attempts: str | list[Attempt]) -> list[Attempt]:
+    return read_attempts(attempts) if isinstance(attempts, str) else attempts
 
 
 def _status(attempts: list[Attempt], own: list[str], done: set[str]) -> str:

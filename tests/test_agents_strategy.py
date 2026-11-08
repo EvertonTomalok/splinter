@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import threading
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import Any, Iterator
@@ -20,7 +22,9 @@ from splinter.agents.refiner import Brief
 from splinter.agents.runner import RunResult, Task
 from splinter.configure import AgentsOptions
 from splinter.engines.catalog import Engine, engine_by_key
+from splinter.engines.health import EngineProbe
 from splinter.engines.launch import EngineLaunch
+from splinter.engines.pool import EnginePool
 from splinter.memory.session import Session
 from splinter.models.roster import Ladder
 from splinter.procreg import IdleTimeoutError
@@ -127,6 +131,7 @@ def _mocked(
         "run_engine": run_engine or MagicMock(return_value=_LAUNCH),
         "check_acceptance": check_acceptance or MagicMock(return_value=_ACCEPT),
         "worktree_diff": MagicMock(return_value="diff --git a/x b/x"),
+        "reattach_worktree": MagicMock(return_value=None),
         "run_codegen": MagicMock(return_value=CodegenResult()),
         "read_report": MagicMock(return_value=""),
         "_sleep": MagicMock(return_value=None),
@@ -366,6 +371,9 @@ def test_resume_reuses_integration_and_pending_worktree(tmp_path: Path) -> None:
         path.mkdir()
         session.set_worktree(ident, str(path), f"splinter/{ident}")
     with _mocked(tmp_path) as mocks:
+        mocks["reattach_worktree"].side_effect = lambda ident: WorktreeHandle(
+            tmp_path / ident, f"splinter/{ident}", ident
+        )
         AgentsStrategy().execute(_tasks(), session, _ladder(), resume=True)
         mocks["create_integration_worktree"].assert_not_called()
         mocks["create_worktree"].assert_not_called()
@@ -491,3 +499,283 @@ def test_attempts_are_logged_per_story_with_their_tier(tmp_path: Path) -> None:
     assert (tmp_path / "agents-run" / "logs" / "q1-1.log").exists()
     stories = (tmp_path / "agents-run" / "stories.json").read_text()
     assert '"q1": 1' in stories and "add greeting module" in stories
+
+
+class TestStopRequested:
+    def test_stop_before_dispatch_submits_nothing(self, tmp_path: Path) -> None:
+        from splinter import procreg
+
+        procreg.request_stop()
+        try:
+            with _mocked(tmp_path) as mocks:
+                with pytest.raises(RuntimeError, match="incomplete briefs"):
+                    AgentsStrategy().execute(_tasks(), _session(tmp_path), _ladder())
+        finally:
+            procreg.clear_stop()
+        assert mocks["run_engine"].call_count == 0
+
+    def test_stop_after_launch_skips_the_orchestrator(self, tmp_path: Path) -> None:
+        from splinter import procreg
+
+        def fake_run(engine: Any, prompt: str, **kw: Any) -> EngineLaunch:
+            procreg.request_stop()
+            return _LAUNCH
+
+        loop = MagicMock(return_value=None)
+        try:
+            with _mocked(
+                tmp_path,
+                run_engine=MagicMock(side_effect=fake_run),
+                check_acceptance=MagicMock(return_value=_FAIL),
+                task_loop=loop,
+            ):
+                with pytest.raises(RuntimeError, match="incomplete briefs"):
+                    AgentsStrategy().execute(_tasks(), _session(tmp_path), _ladder())
+        finally:
+            procreg.clear_stop()
+        assert loop.call_count == 0
+
+    def test_shutting_down_propagates_instead_of_rerouting(self, tmp_path: Path) -> None:
+        from splinter.procreg import ShuttingDownError
+
+        def fake_run(engine: Any, prompt: str, **kw: Any) -> EngineLaunch:
+            raise ShuttingDownError("splinter is exiting")
+
+        with _mocked(tmp_path, run_engine=MagicMock(side_effect=fake_run)) as mocks:
+            with pytest.raises(RuntimeError, match="incomplete briefs"):
+                AgentsStrategy().execute(_tasks(), _session(tmp_path), _ladder())
+        assert mocks["run_engine"].call_count == 1
+
+
+def test_infra_failure_writes_an_engine_log(tmp_path: Path) -> None:
+    calls: list[str] = []
+
+    def fake_run(engine: Any, prompt: str, **kw: Any) -> EngineLaunch:
+        calls.append(engine.key)
+        if len(calls) == 1:
+            raise IdleTimeoutError(480.0, ["mcode"])
+        return _LAUNCH
+
+    with _mocked(tmp_path, run_engine=MagicMock(side_effect=fake_run)):
+        AgentsStrategy().execute(_tasks(), _session(tmp_path), _ladder())
+    first = (tmp_path / "agents-run" / "logs" / "q1-1.log").read_text()
+    assert "STALL" in first
+
+
+def test_failed_gate_builds_no_diff(tmp_path: Path) -> None:
+    with _mocked(tmp_path, check_acceptance=MagicMock(side_effect=[_FAIL, _ACCEPT])) as mocks:
+        AgentsStrategy().execute(_tasks(), _session(tmp_path), _ladder())
+    assert mocks["worktree_diff"].call_count == 0
+    assert "diff" not in mocks["check_acceptance"].call_args.kwargs
+
+
+class TestFixRoundDelta:
+    def _prompts(self, mocks: dict[str, MagicMock]) -> list[str]:
+        return [call.args[1] for call in mocks["run_engine"].call_args_list]
+
+    def test_resumed_session_gets_only_the_fix_round(self, tmp_path: Path) -> None:
+        with _mocked(tmp_path, check_acceptance=MagicMock(side_effect=[_FAIL, _ACCEPT])) as mocks:
+            AgentsStrategy().execute(_tasks(), _session(tmp_path), _ladder())
+        first, second = self._prompts(mocks)
+        assert "--- WORKHORSE CONTRACT ---" in first
+        assert "--- WORKHORSE CONTRACT ---" not in second
+        assert "add greeting module" not in second
+        assert "Fix round 1" in second
+        assert "AGENT_RESULT: DONE q1" in second
+        assert mocks["run_engine"].call_args.kwargs["session"] == "sess-1"
+
+    def test_engine_without_continue_gets_the_whole_document(self, tmp_path: Path) -> None:
+        agy = engine_by_key("agy")
+        assert agy is not None and not agy.supports_continue
+        with _mocked(tmp_path, check_acceptance=MagicMock(side_effect=[_FAIL, _ACCEPT])) as mocks:
+            mocks["chain_for_effort"].return_value = (agy,)
+            AgentsStrategy().execute(_tasks(), _session(tmp_path), _ladder())
+        second = self._prompts(mocks)[1]
+        assert "--- WORKHORSE CONTRACT ---" in second
+        assert "Fix round 1" in second
+
+    def test_guidance_sent_between_rounds_reaches_the_resumed_session(
+        self, tmp_path: Path
+    ) -> None:
+        session = _session(tmp_path)
+
+        def fake_run(engine: Any, prompt: str, **kw: Any) -> EngineLaunch:
+            session.queue_live_command("keep the public API", task_no=1)
+            return _LAUNCH
+
+        with _mocked(
+            tmp_path,
+            run_engine=MagicMock(side_effect=fake_run),
+            check_acceptance=MagicMock(side_effect=[_FAIL, _ACCEPT]),
+        ) as mocks:
+            AgentsStrategy().execute(_tasks(), session, _ladder())
+        second = self._prompts(mocks)[1]
+        assert "keep the public API" in second
+        assert "--- WORKHORSE CONTRACT ---" not in second
+
+    def test_fix_not_delivered_by_a_failed_launch_is_sent_again(self, tmp_path: Path) -> None:
+        calls: list[str] = []
+
+        def fake_run(engine: Any, prompt: str, **kw: Any) -> EngineLaunch:
+            calls.append(prompt)
+            if len(calls) == 2:
+                raise RuntimeError("mcode exited 1: boom")
+            return _LAUNCH
+
+        only = engine_by_key("mcode")
+        with _mocked(
+            tmp_path,
+            run_engine=MagicMock(side_effect=fake_run),
+            check_acceptance=MagicMock(side_effect=[_FAIL, _ACCEPT]),
+        ) as mocks:
+            mocks["chain_for_effort"].return_value = (only,)
+            AgentsStrategy().execute(_tasks(), _session(tmp_path), _ladder())
+        assert len(calls) == 3
+        assert "Fix round 1" in calls[2]
+        assert "--- WORKHORSE CONTRACT ---" not in calls[2]
+
+    def test_reroute_never_resumes_the_previous_engine_session(self, tmp_path: Path) -> None:
+        sessions: list[str | None] = []
+
+        def fake_run(engine: Any, prompt: str, **kw: Any) -> EngineLaunch:
+            sessions.append(kw["session"])
+            if len(sessions) == 2:
+                raise RuntimeError("mcode exited 1: boom")
+            if engine.key == "kimi":
+                return EngineLaunch(text="AGENT_RESULT: DONE q1", model="kimi")
+            return _LAUNCH
+
+        chain = tuple(e for e in (engine_by_key("mcode"), engine_by_key("kimi")) if e)
+        with _mocked(
+            tmp_path,
+            run_engine=MagicMock(side_effect=fake_run),
+            check_acceptance=MagicMock(side_effect=[_FAIL, _FAIL, _ACCEPT]),
+        ) as mocks:
+            mocks["chain_for_effort"].return_value = chain
+            AgentsStrategy().execute(_tasks(), _session(tmp_path), _ladder())
+        assert sessions[-1] is None
+
+
+def _run_entries(tmp_path: Path) -> list[dict[str, Any]]:
+    lines = (tmp_path / "events.jsonl").read_text().splitlines()
+    return [e for e in map(json.loads, lines) if e.get("type") == "run"]
+
+
+def test_failed_launch_that_spent_tokens_is_traced(tmp_path: Path) -> None:
+    silent = EngineLaunch(
+        text="no result line", model="m", tokens={"input": 7, "output": 3}, cost=0.002
+    )
+    with _mocked(tmp_path, run_engine=MagicMock(side_effect=[silent, _LAUNCH])):
+        AgentsStrategy().execute(_tasks(), _session(tmp_path), _ladder())
+    assert len(_run_entries(tmp_path)) == 2
+
+
+def test_chain_with_no_open_breaker_backs_off(tmp_path: Path) -> None:
+    calls: list[str] = []
+
+    def flaky(engine: Any, prompt: str, **kw: Any) -> EngineLaunch:
+        calls.append(engine.key)
+        if len(calls) <= 6:
+            raise RuntimeError(f"{engine.key} exited 1: boom")
+        return _LAUNCH
+
+    with (
+        _mocked(tmp_path, run_engine=MagicMock(side_effect=flaky)) as mocks,
+        patch.object(EnginePool, "report_infra_failure"),
+    ):
+        AgentsStrategy().execute(_tasks(), _session(tmp_path), _ladder())
+    assert [call.args[0] for call in mocks["_sleep"].call_args_list] == [5.0, 10.0]
+
+
+def test_open_breaker_wait_is_not_capped_by_the_floor(tmp_path: Path) -> None:
+    only = engine_by_key("mcode")
+    assert only is not None
+    pool = MagicMock()
+    pool.wait_s.return_value = 300.0
+    ctx = MagicMock(pool=pool)
+    with patch.object(brief_mod, "_sleep") as sleep:
+        brief_mod._wait_for_chain(ctx, (only,), "q1", 1)
+        pool.wait_s.return_value = 0.0
+        brief_mod._wait_for_chain(ctx, (only,), "q1", 12)
+    assert [call.args[0] for call in sleep.call_args_list] == [300.0, 120.0]
+
+
+def test_probes_run_at_once_and_trip_the_down_engines() -> None:
+    keys = ("mcode", "agy", "sonnet", "codex")
+    engines = tuple(e for e in map(engine_by_key, keys) if e is not None)
+    assert len(engines) == 4
+    barrier = threading.Barrier(4, timeout=5)
+    threads: set[str] = set()
+
+    def fake_probe(engine: Engine) -> EngineProbe:
+        threads.add(threading.current_thread().name)
+        barrier.wait()
+        return EngineProbe(key=engine.key, up=engine.key != "agy", binary="x", detail="d")
+
+    health = MagicMock()
+    with (
+        patch.object(agents_mod, "chain_for_effort", return_value=engines),
+        patch.object(agents_mod, "probe", side_effect=fake_probe) as probe,
+    ):
+        AgentsStrategy()._probe_into(health, _ladder())
+    assert len(threads) == 4
+    assert probe.call_count == 4
+    health.trip.assert_called_once_with("agy")
+
+
+def test_crashing_probe_does_not_stop_the_others() -> None:
+    keys = ("mcode", "agy")
+    engines = tuple(e for e in map(engine_by_key, keys) if e is not None)
+
+    def fake_probe(engine: Engine) -> EngineProbe:
+        if engine.key == "mcode":
+            raise OSError("no pty")
+        return EngineProbe(key=engine.key, up=False, binary="x", detail="d")
+
+    health = MagicMock()
+    with (
+        patch.object(agents_mod, "chain_for_effort", return_value=engines),
+        patch.object(agents_mod, "probe", side_effect=fake_probe),
+    ):
+        AgentsStrategy()._probe_into(health, _ladder())
+    health.trip.assert_called_once_with("agy")
+
+
+class TestResumeByBranch:
+    def _save(self, session: Session, tmp_path: Path) -> None:
+        session.set_worktree("us-101-int", str(tmp_path / "gone-int"), "splinter/us-101-int")
+        session.set_worktree("q1", str(tmp_path / "gone-q1"), "splinter/us-101-q1")
+
+    def test_record_with_a_lost_path_recreates_on_the_same_task_id(self, tmp_path: Path) -> None:
+        session = _session(tmp_path)
+        self._save(session, tmp_path)
+        with _mocked(tmp_path) as mocks:
+            AgentsStrategy().execute(_tasks(), session, _ladder(), resume=True)
+        mocks["create_worktree"].assert_called_once_with(
+            "us-101-q1", base_ref="splinter/us-101-int"
+        )
+        mocks["create_integration_worktree"].assert_called_once_with("us-101")
+        reattached = [call.args[0] for call in mocks["reattach_worktree"].call_args_list]
+        assert reattached == ["us-101-int", "us-101-q1"]
+
+    def test_reattached_worktree_is_not_created_again(self, tmp_path: Path) -> None:
+        session = _session(tmp_path)
+        self._save(session, tmp_path)
+        with _mocked(tmp_path) as mocks:
+            mocks["reattach_worktree"].side_effect = lambda ident: WorktreeHandle(
+                tmp_path / ident, f"splinter/{ident}", ident
+            )
+            AgentsStrategy().execute(_tasks(), session, _ladder(), resume=True)
+        mocks["create_worktree"].assert_not_called()
+        mocks["create_integration_worktree"].assert_not_called()
+
+    def test_fresh_run_never_adopts_a_stale_worktree(self, tmp_path: Path) -> None:
+        with _mocked(tmp_path) as mocks:
+            AgentsStrategy().execute(_tasks(), _session(tmp_path), _ladder())
+        mocks["reattach_worktree"].assert_not_called()
+
+
+def test_refine_workers_reach_the_refiner(tmp_path: Path) -> None:
+    with _mocked(tmp_path, opts=_opts(refine_workers=7)) as mocks:
+        AgentsStrategy().execute(_tasks(), _session(tmp_path), _ladder())
+    assert mocks["refine_briefs"].call_args.kwargs["max_workers"] == 7

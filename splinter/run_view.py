@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
-from splinter.agents.progress import ATTEMPTS, CHECKPOINT, STORIES
+from splinter.agents.progress import ATTEMPTS, CHECKPOINT, STORIES, Attempt, AttemptsTail
 from splinter.memory.session import Session
 from splinter.models.roster import Ladder, load_ladder
 from splinter.obs.event_reader import RunEntryReader
@@ -105,6 +105,7 @@ class RunViewBuilder:
 
     def __init__(self) -> None:
         self._cache = FileCache()
+        self._attempts_tail: AttemptsTail | None = None
         self._reader = RunEntryReader()
         self._entries: list[RunEntry] = []
         self._json_keys: dict[Path, tuple[int, ...]] = {}
@@ -135,7 +136,7 @@ class RunViewBuilder:
             key = (
                 session.dir, state, snap.status, snap.loop_md, snap.pre_run_models,
                 self._files, self._reader.revision, _ladder_key(active_ladder),
-                self._agents_texts(session),
+                self._agents_key(session),
             )
             if self._view is not None and key == self._view_key:
                 if state.upper() != "RUNNING" or parse_time(
@@ -285,9 +286,11 @@ class RunViewBuilder:
     def _groups_for(self, snap: Snapshot) -> list[tuple[int, str, list[tuple[int, str, str]]]]:
         key = self._groups_key_for(snap.session)
         if key != self._groups_key:
-            stories, attempts, _ = self._agents_texts(snap.session)
+            stories = self._text(snap.session.dir / STORIES)
             self._groups = (
-                agents_groups(stories, attempts) if stories else groups(snap, self._cache.read)
+                agents_groups(stories, self._attempts_at(snap.session.dir / ATTEMPTS))
+                if stories
+                else groups(snap, self._cache.read)
             )
             self._groups_key = key
         return self._groups
@@ -295,10 +298,13 @@ class RunViewBuilder:
     def _rows_for(self, snap: Snapshot) -> list[TaskRow]:
         key = (self._groups_key, snap.status, snap.state)
         if key != self._rows_key:
-            stories, attempts, checkpoint = self._agents_texts(snap.session)
+            stories = self._text(snap.session.dir / STORIES)
+            checkpoint = self._text(snap.session.dir / CHECKPOINT)
             try:
                 self._rows = (
-                    agents_rows(stories, attempts, checkpoint)
+                    agents_rows(
+                        stories, self._attempts_at(snap.session.dir / ATTEMPTS), checkpoint
+                    )
                     if stories
                     else task_rows(snap, self._groups)
                 )
@@ -310,16 +316,19 @@ class RunViewBuilder:
     def _groups_key_for(self, session: Session) -> tuple[object, ...]:
         return (
             session.dir, self._text(session.dir / "loop.md"), self._files,
-            self._agents_texts(session),
+            self._agents_key(session),
         )
 
-    def _agents_texts(self, session: Session) -> tuple[str, str, str]:
-        """The agents run's stories, attempts and checkpoint ("" for other strategies)."""
-        return (
-            self._text(session.dir / STORIES),
-            self._text(session.dir / ATTEMPTS),
-            self._text(session.dir / CHECKPOINT),
+    def _agents_key(self, session: Session) -> tuple[int, ...]:
+        """Changes when an agents run's progress files change, without reading them."""
+        return self._cache.mtime_key(
+            (session.dir / STORIES, session.dir / ATTEMPTS, session.dir / CHECKPOINT)
         )
+
+    def _attempts_at(self, path: Path) -> list[Attempt]:
+        if self._attempts_tail is None or self._attempts_tail.path != path:
+            self._attempts_tail = AttemptsTail(path)
+        return self._attempts_tail.read()
 
     def _iterations(
         self,

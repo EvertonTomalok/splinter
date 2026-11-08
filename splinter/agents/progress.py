@@ -14,6 +14,8 @@ import json
 import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
+from typing import BinaryIO
 
 from splinter.agents.refiner import Brief
 from splinter.agents.runner import Task
@@ -26,6 +28,8 @@ CHECKPOINT = "agents-run/checkpoint.json"
 PASS = "PASS"
 RETRY = "RETRY"
 FAIL = "FAIL"
+
+_MARK_BYTES = 64
 
 
 @dataclass(frozen=True)
@@ -44,6 +48,9 @@ class Attempt:
     tier: int
     verdict: str = ""
     note: str = ""
+
+
+_Started = dict[tuple[int, int], Attempt]
 
 
 def stories_of(tasks: list[Task]) -> list[Story]:
@@ -118,26 +125,69 @@ class AttemptLog:
 
 def read_attempts(text: str) -> list[Attempt]:
     """Fold start/end lines into attempts, in start order; an open one has no verdict."""
-    started: dict[tuple[int, int], Attempt] = {}
+    started: _Started = {}
     for line in text.splitlines():
-        try:
-            record = json.loads(line)
-            key = (int(record["story"]), int(record["n"]))
-        except (ValueError, KeyError, TypeError):
-            continue
-        if record.get("event") == "start":
-            started[key] = Attempt(
-                story=key[0], n=key[1], brief=str(record.get("brief", "")),
-                engine=str(record.get("engine", "")), tier=int(record.get("tier") or 0),
-            )
-        elif key in started:
-            begun = started[key]
-            started[key] = Attempt(
-                begun.story, begun.n, begun.brief, begun.engine, begun.tier,
-                verdict=str(record.get("verdict", "")) or RETRY,
-                note=str(record.get("note", "")),
-            )
+        _fold(started, line)
     return list(started.values())
+
+
+def _fold(started: _Started, line: str) -> None:
+    try:
+        record = json.loads(line)
+        key = (int(record["story"]), int(record["n"]))
+    except (ValueError, KeyError, TypeError):
+        return
+    if record.get("event") == "start":
+        started[key] = Attempt(
+            story=key[0], n=key[1], brief=str(record.get("brief", "")),
+            engine=str(record.get("engine", "")), tier=int(record.get("tier") or 0),
+        )
+    elif key in started:
+        begun = started[key]
+        started[key] = Attempt(
+            begun.story, begun.n, begun.brief, begun.engine, begun.tier,
+            verdict=str(record.get("verdict", "")) or RETRY,
+            note=str(record.get("note", "")),
+        )
+
+
+class AttemptsTail:
+    """Folds a growing ``attempts.jsonl``; a read takes only the new bytes off the disk.
+
+    A line counts once its newline landed. A file that shrank, or whose bytes
+    before the offset changed, is parsed from zero.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self._started: _Started = {}
+        self._offset = 0
+        self._mark = b""
+
+    def read(self) -> list[Attempt]:
+        try:
+            with self.path.open("rb") as handle:
+                self._advance(handle)
+        except OSError:
+            self._reset()
+        return list(self._started.values())
+
+    def _reset(self) -> None:
+        self._started, self._offset, self._mark = {}, 0, b""
+
+    def _advance(self, handle: BinaryIO) -> None:
+        handle.seek(self._offset - len(self._mark))
+        if handle.read(len(self._mark)) != self._mark:
+            self._reset()
+            handle.seek(0)
+        chunk = handle.read()
+        end = chunk.rfind(b"\n") + 1
+        if not end:
+            return
+        for line in chunk[:end].decode("utf-8", errors="replace").splitlines():
+            _fold(self._started, line)
+        self._offset += end
+        self._mark = (self._mark + chunk[:end])[-_MARK_BYTES:]
 
 
 def read_stories(text: str) -> tuple[list[Story], dict[str, int]]:

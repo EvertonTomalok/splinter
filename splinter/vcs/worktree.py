@@ -134,13 +134,18 @@ def create_worktree(
     cmd = ["git", "worktree", "add", str(path), "-b", branch]
     if base_ref:
         cmd.append(base_ref)
-    subprocess.run(
-        cmd,
-        cwd=cwd,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+    if result.returncode != 0 and "already exists" in result.stderr:
+        result = subprocess.run(
+            ["git", "worktree", "add", str(path), branch],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+        )
+    if result.returncode != 0:
+        raise subprocess.CalledProcessError(
+            result.returncode, cmd, output=result.stdout, stderr=result.stderr
+        )
     _link_deps_from_main(cwd, path)
     return WorktreeHandle(path=path, branch=branch, task_id=task_id)
 
@@ -180,6 +185,12 @@ def merge_no_ff(
         if result.returncode != 0:
             conflicted = _unmerged_paths(target_dir)
             if not conflicted:
+                subprocess.run(
+                    ["git", "merge", "--abort"],
+                    cwd=target_dir,
+                    capture_output=True,
+                    text=True,
+                )
                 raise WorktreeMergeConflict(
                     f"no-ff merge of {handle.branch!r} into {target_dir} failed:\n"
                     f"{result.stderr.strip()}"
@@ -217,13 +228,23 @@ def merge_no_ff(
                     f"no-ff merge of {handle.branch!r} left unresolved paths: "
                     f"{', '.join(still)}"
                 )
-            subprocess.run(
+            commit = subprocess.run(
                 ["git", "commit", "--no-edit"],
                 cwd=target_dir,
                 capture_output=True,
                 text=True,
-                check=True,
             )
+            if commit.returncode != 0:
+                subprocess.run(
+                    ["git", "reset", "--hard", "HEAD"],
+                    cwd=target_dir,
+                    capture_output=True,
+                    text=True,
+                )
+                raise WorktreeMergeConflict(
+                    f"no-ff merge of {handle.branch!r} could not be committed:\n"
+                    f"{commit.stderr.strip()}"
+                )
     return True
 
 

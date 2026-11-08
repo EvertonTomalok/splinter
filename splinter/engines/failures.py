@@ -18,8 +18,9 @@ from enum import StrEnum
 
 LIMIT_TAIL_BYTES = 6000
 LIMIT_PATTERN = re.compile(
-    r"(?i)usage limit|rate.?limit|limit reached|credit balance|quota|"
-    r"insufficient|too many requests|"
+    r"(?i)usage limit|rate.?limit|limit reached|credit balance|"
+    r"quota (?:exceeded|reached|exhausted)|exceeded (?:your |the )?quota|"
+    r"insufficient (?:credit|balance|quota|funds)|too many requests|"
     r'"status":429| 429 '
 )
 RESULT_PATTERN = re.compile(r"AGENT_RESULT: ([A-Z]+) ([A-Za-z0-9-]+)")

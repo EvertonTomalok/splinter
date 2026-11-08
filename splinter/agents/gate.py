@@ -8,8 +8,10 @@ resort — the Python defaults below.
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import logging
+import os
 import re
 import subprocess
 from dataclasses import dataclass, field
@@ -149,64 +151,90 @@ def _load_gate_checks(
     return configured if configured is not None else []
 
 
-def _should_run(check: dict[str, str], project_dir: str) -> bool:
+_PROTO_GEN_PATTERNS = (
+    "*.pb.go",
+    "*_grpc.pb.go",
+    "*.twirp.go",
+    "wire_gen.go",
+    "*_pb2.py",
+    "*_pb2_grpc.py",
+    "*.pb.py",
+    "*.pb.js",
+    "*.pb.ts",
+    "*.grpc.pb.js",
+    "*.grpc.pb.ts",
+    "*_pb.rb",
+    "*_services_pb.rb",
+    "*.pb.cc",
+    "*.pb.h",
+    "*.grpc.pb.cc",
+    "*.grpc.pb.h",
+    "*.pb.swift",
+    "*.grpc.swift",
+    "*.g.cs",
+    "*_grpc.php",
+    "*.java",
+)
+
+_PROTO_GEN_RE = re.compile("|".join(fnmatch.translate(p) for p in _PROTO_GEN_PATTERNS))
+_PROTO_PRUNE_DIRS = frozenset({"node_modules", ".git", "target", "dist"})
+_RUST_GEN_DIRS = frozenset({"gen", "generated", "proto_gen"})
+
+
+def _proto_changed(project_dir: str, memo: dict[tuple[str, float], bool]) -> bool:
+    try:
+        key = (project_dir, os.stat(project_dir).st_mtime)
+    except OSError:
+        return False
+    cached = memo.get(key)
+    if cached is not None:
+        return cached
+    newest_proto: float | None = None
+    oldest_gen: float | None = None
+    for dirpath, dirnames, filenames in os.walk(project_dir, topdown=True, followlinks=False):
+        if dirpath != project_dir and os.path.basename(dirpath) == "build":
+            dirnames[:] = [d for d in dirnames if d == "generated"]
+        else:
+            dirnames[:] = [d for d in dirnames if d not in _PROTO_PRUNE_DIRS]
+        rel_parts = Path(os.path.relpath(dirpath, project_dir)).parts
+        in_rust_gen = any(part in _RUST_GEN_DIRS for part in rel_parts)
+        for name in filenames:
+            is_proto = name.endswith(".proto")
+            is_gen = not is_proto and (
+                _PROTO_GEN_RE.match(name) is not None or (in_rust_gen and name.endswith(".rs"))
+            )
+            if not (is_proto or is_gen):
+                continue
+            try:
+                mtime = os.stat(os.path.join(dirpath, name)).st_mtime
+            except OSError:
+                continue
+            if is_proto:
+                newest_proto = mtime if newest_proto is None else max(newest_proto, mtime)
+            else:
+                oldest_gen = mtime if oldest_gen is None else min(oldest_gen, mtime)
+    if newest_proto is None:
+        decision = False
+    elif oldest_gen is None:
+        decision = True
+    else:
+        decision = newest_proto > oldest_gen
+    memo[key] = decision
+    return decision
+
+
+def _should_run(
+    check: dict[str, str],
+    project_dir: str,
+    memo: dict[tuple[str, float], bool] | None = None,
+) -> bool:
     when = check.get("when", "always")
     if when == "always":
         return True
     if when == "tests_exist":
         return _tests_exist(project_dir)
     if when == "proto_changed":
-        proto_files = list(Path(project_dir).rglob("*.proto"))
-        if not proto_files:
-            return False
-        gen_patterns = [
-            # Go
-            "*.pb.go",
-            "*_grpc.pb.go",
-            "*.twirp.go",
-            "wire_gen.go",
-            # Python
-            "*_pb2.py",
-            "*_pb2_grpc.py",
-            "*.pb.py",
-            # JS/TS
-            "*.pb.js",
-            "*.pb.ts",
-            "*.grpc.pb.js",
-            "*.grpc.pb.ts",
-            # Ruby
-            "*_pb.rb",
-            "*_services_pb.rb",
-            # C++
-            "*.pb.cc",
-            "*.pb.h",
-            "*.grpc.pb.cc",
-            "*.grpc.pb.h",
-            # Swift
-            "*.pb.swift",
-            "*.grpc.swift",
-            # C#
-            "*.g.cs",
-            # PHP
-            "*_grpc.php",
-            # Java/Kotlin (generated sources land in build/generated)
-            "*.java",
-        ]
-        # Rust: tonic/prost output has no distinctive extension — scan known gen dirs
-        _GEN_DIRS = {"gen", "generated", "proto_gen", "src/gen", "src/proto"}
-        root = Path(project_dir)
-        gen_files = [f for pat in gen_patterns for f in root.rglob(pat) if "target" not in f.parts]
-        # Rust .rs files inside known gen directories
-        for f in root.rglob("*.rs"):
-            if "target" not in f.parts and any(
-                part in _GEN_DIRS or part in {"gen", "generated", "proto_gen"} for part in f.parts
-            ):
-                gen_files.append(f)
-        if not gen_files:
-            return True  # protos exist but nothing generated yet
-        newest_proto = max(f.stat().st_mtime for f in proto_files)
-        oldest_gen = min(f.stat().st_mtime for f in gen_files)
-        return newest_proto > oldest_gen
+        return _proto_changed(project_dir, {} if memo is None else memo)
     return True
 
 
@@ -275,9 +303,10 @@ def run_gate(
     active_langs = languages or set()
     results: list[tuple[str, bool, str]] = []
     all_passed = True
+    proto_memo: dict[tuple[str, float], bool] = {}
 
     for check in checks:
-        if not _should_run(check, project_dir):
+        if not _should_run(check, project_dir, proto_memo):
             continue
         if not _lang_match(check, active_langs):
             continue

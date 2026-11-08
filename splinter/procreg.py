@@ -22,6 +22,7 @@ from typing import Any
 _lock = threading.Lock()
 _active: set[subprocess.Popen[str]] = set()
 _stop_event = threading.Event()
+_WATCHDOG_TICK_S = 1.0
 
 
 def request_stop() -> None:
@@ -185,16 +186,51 @@ def _stream(
     err_thread.start()
 
     while proc.poll() is None:
-        now = time.monotonic()
-        if now > deadline:
-            raise subprocess.TimeoutExpired(cmd, timeout)
-        if idle_timeout is not None and now - last_activity[0] > idle_timeout:
-            raise IdleTimeoutError(idle_timeout, cmd)
-        time.sleep(0.05)
+        step = _watchdog_step(cmd, timeout, deadline, idle_timeout, last_activity[0])
+        _block_for_exit(proc, (out_thread, err_thread), step)
 
     out_thread.join()
     err_thread.join()
     return "".join(out), "".join(err)
+
+
+def _watchdog_step(
+    cmd: list[str],
+    timeout: int,
+    deadline: float,
+    idle_timeout: float | None,
+    last_activity: float,
+) -> float:
+    """Seconds the watchdog may block for; raises once a limit has passed."""
+    now = time.monotonic()
+    if now > deadline:
+        raise subprocess.TimeoutExpired(cmd, timeout)
+    step = min(_WATCHDOG_TICK_S, deadline - now)
+    if idle_timeout is None:
+        return step
+    idle = now - last_activity
+    if idle > idle_timeout:
+        raise IdleTimeoutError(idle_timeout, cmd)
+    return min(step, idle_timeout - idle)
+
+
+def _block_for_exit(
+    proc: subprocess.Popen[str], drains: tuple[threading.Thread, ...], step: float
+) -> None:
+    """Sleep up to ``step``; a pipe closing wakes it at once.
+
+    ``Popen.wait(timeout=...)`` polls every 50 ms at best, so a live pipe is
+    waited on through its drain thread. Only a child that closed both pipes
+    and kept running falls back to it.
+    """
+    for drain in drains:
+        if drain.is_alive():
+            drain.join(step)
+            return
+    try:
+        proc.wait(timeout=step)
+    except subprocess.TimeoutExpired:
+        pass
 
 
 _shutting_down = threading.Event()

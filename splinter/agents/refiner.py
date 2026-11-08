@@ -261,6 +261,10 @@ def _refine_via_llm(
     return briefs
 
 
+#: Stories refined at once unless ``agents.refine_workers`` says otherwise.
+_REFINE_WORKERS = 4
+
+
 def refine_briefs(
     tasks: list[Task],
     ladder: Ladder,
@@ -271,6 +275,7 @@ def refine_briefs(
     task_index: int = 0,
     orchestrator_notes: str = "",
     reuse_progress: bool = False,
+    max_workers: int = _REFINE_WORKERS,
 ) -> list[Brief]:
     """Refine PRD tasks into workhorse briefs through the refine template.
 
@@ -341,7 +346,8 @@ def refine_briefs(
         report(n, briefs)
         return briefs
 
-    workers = max(1, min(len(tasks), _REFINE_WORKERS))
+    planners = len(ladder.step_pool("planner")) or 1
+    workers = max(1, min(len(tasks), max_workers, 2 * planners))
     with ThreadPoolExecutor(max_workers=workers) as pool:
         per_task = list(pool.map(one, range(len(tasks)), tasks))
     briefs = _join_story_briefs(tasks, per_task)
@@ -356,8 +362,6 @@ def refine_briefs(
 
 #: Briefs of the stories refined so far, for the run screen while refine runs.
 PROGRESS_FILE = "agents-run/briefs-partial.json"
-#: Stories refined at once; each is its own model call.
-_REFINE_WORKERS = 6
 #: PRD text sent with each story: its opening (goals, scope, rules), not all of it.
 _PRD_HEAD = 6000
 
