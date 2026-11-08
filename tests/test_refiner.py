@@ -157,11 +157,11 @@ class TestRefineBriefs:
         assert briefs[1].deps == ["q1"]
         assert len(calls) == 1
         call = calls[0]
-        assert call["model"] == "opus"
+        assert call["model"] == "sonnet"
         assert call["variant"] == "high"
         assert call["output_format"] == "json"
         assert call["timeout"] == 3600
-        assert call["role"] == "prd"
+        assert call["role"] == "refine"
         assert call["task_index"] == 3
         assert "US-001" in str(call["prompt"])
         assert "prd body" in str(call["prompt"])
@@ -366,3 +366,68 @@ class TestBriefToTask:
     def test_empty_acceptance_joins_to_empty_string(self) -> None:
         task = brief_to_task(Brief(id="q3", goal="g"))
         assert task.acceptance == ""
+
+
+def test_refine_prompt_carries_the_filtered_code_and_forbids_rereading() -> None:
+    from splinter.templating import render
+
+    tasks = [
+        Task(
+            id="US-001",
+            description="first",
+            acceptance="ok",
+            target_files=["internal/rollup/subject.go"],
+            filtered_context="subject.go declares Key and Contribution." + "x" * 4000,
+        )
+    ]
+    block = refiner._tasks_block(tasks)
+    assert "  code_context: |" in block
+    assert "    subject.go declares Key and Contribution." in block
+    assert len(block) < 3000
+    prompt = render("refine", tasks=block, prd="PRD", orchestrator_notes_section="")
+    assert "Do not open the PRD" in prompt
+
+
+
+def test_each_story_is_refined_on_its_own_and_deps_carry_over(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prompts: list[str] = []
+
+    def fake(prompt: str, model: str, **kwargs: object) -> str:
+        prompts.append(prompt)
+        story = "US-002" if "- US-002" in prompt else "US-001"
+        return json.dumps(
+            {
+                "briefs": [
+                    {"id": "a", "task": story, "goal": f"{story} first", "deps": []},
+                    {"id": "b", "task": story, "goal": f"{story} second", "deps": ["a"]},
+                ]
+            }
+        )
+
+    monkeypatch.setattr(refiner, "run_text", fake)
+    first = _task("US-001")
+    second = Task(description="two", acceptance="ok", id="US-002", deps=["US-001"])
+    briefs = refine_briefs([first, second], _ladder(), prd_text="P" * 9000)
+
+    assert len(prompts) == 2
+    assert all("- US-001" not in p or "- US-002" not in p for p in prompts)
+    assert all(len(p) < 9000 for p in prompts)
+    by_id = {b.id: b for b in briefs}
+    assert set(by_id) == {"us-001-a", "us-001-b", "us-002-a", "us-002-b"}
+    assert by_id["us-001-b"].deps == ["us-001-a"]
+    assert by_id["us-002-a"].deps == ["us-001-a", "us-001-b"]
+    assert by_id["us-002-b"].deps == ["us-002-a"]
+
+
+def test_one_failing_story_keeps_the_others(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake(prompt: str, model: str, **kwargs: object) -> str:
+        if "- US-002" in prompt:
+            raise RuntimeError("down")
+        return json.dumps({"briefs": [{"id": "x1", "task": "US-001", "goal": "g"}]})
+
+    monkeypatch.setattr(refiner, "run_text", fake)
+    briefs = refine_briefs([_task("US-001"), _task("US-002", "two")], _ladder())
+    assert [b.id for b in briefs] == ["x1", "us-002"]
+    assert briefs[1].goal == "two"

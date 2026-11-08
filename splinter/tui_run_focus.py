@@ -19,7 +19,7 @@ from splinter.tui_run_text import cell_len, pad, story_id
 _STAGES = ("plan", "run", "gate", "eval", "merge")
 #: Sub-topics of each stage, in order; the first one opens when the stage is clicked.
 TOPICS: dict[str, tuple[tuple[str, str], ...]] = {
-    "plan": (("plan", "steps"), ("files", "files")),
+    "plan": (("plan", "steps"), ("files", "files"), ("filter", "filters")),
     "run": (("logs", "logs"), ("act", "activity"), ("diff", "diff")),
     "gate": (("gate", "checks"),),
     "eval": (("eval", "verdict"),),
@@ -33,6 +33,7 @@ VIEW_STAGE: dict[str, str] = {
 _VIEW_WORD = {
     "plan": "PLAN",
     "files": "PLAN",
+    "filter": "PLAN",
     "logs": "LOG",
     "gate": "GATE",
     "eval": "EVAL",

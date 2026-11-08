@@ -318,7 +318,10 @@ VIEWS: dict[str, ViewFactory] = {
 
 
 def view_registry() -> dict[str, ViewFactory]:
+    from splinter.tui_run_views_plan import PLAN_VIEWS
+
     registry = dict(VIEWS)
+    registry.update(PLAN_VIEWS)
     try:
         from splinter.tui_run_views_more import MORE_VIEWS
     except ImportError:
@@ -328,6 +331,12 @@ def view_registry() -> dict[str, ViewFactory]:
 
 
 def relevant_paths(ctx: ViewContext, name: str) -> tuple[Path, ...]:
+    if name in ("plan", "files", "filter") and ctx.story is None:
+        from splinter.tui_run_views_plan import overview_paths
+
+        return overview_paths(ctx)
+    if name == "filter":
+        return (ctx.session.dir / "knowledge" / f"filter-{ctx.story}.md",)
     if ctx.story is None:
         return ()
     if name == "act":
