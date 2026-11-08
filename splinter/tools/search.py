@@ -14,10 +14,13 @@ on large monorepos.
 
 from __future__ import annotations
 
+import fnmatch
 import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+
+from splinter.tools.project_files import project_paths, walk_project_files
 
 # Timeouts tuned for large monorepos.
 _GREP_TIMEOUT = 120
@@ -165,11 +168,11 @@ def file_list(path: str = ".", pattern: str = "*", *, timeout: int = _GIT_TIMEOU
                 cwd=path,
             )
             if proc.returncode == 0:
-                files = sorted(proc.stdout.splitlines())
+                files = project_paths(sorted(proc.stdout.splitlines()))
                 return SearchResult(output="\n".join(files), tool="file-list", exit_code=0)
-            # fall through to rglob on git failure
+            # fall through to the walk on git failure
 
-        files = sorted(str(f.relative_to(p)) for f in p.rglob(pattern) if f.is_file())
+        files = [f for f in walk_project_files(p) if fnmatch.fnmatch(Path(f).name, pattern)]
         return SearchResult(output="\n".join(files), tool="file-list", exit_code=0)
     except Exception as exc:
         return _error("file-list", exc)

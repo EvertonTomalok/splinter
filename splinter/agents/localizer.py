@@ -6,9 +6,11 @@ import json
 import logging
 import re
 import shutil
+import subprocess
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Any
 
 from splinter.memory.knowledge import KnowledgeStore
@@ -19,6 +21,12 @@ from splinter.providers.base import ProviderGapError
 from splinter.providers.dispatch import run_text
 from splinter.scheduling import default_max_concurrency
 from splinter.tools import search as search_tools
+from splinter.tools.project_files import (
+    is_project_path,
+    looks_binary,
+    project_paths,
+    walk_project_files,
+)
 
 log = logging.getLogger("splinter.localizer")
 
@@ -174,8 +182,34 @@ _META_SKILL_GLOBS = ("skills/*/SKILL.md", "splinter/skills/*/SKILL.md")
 _META_FILE_MAX_CHARS = 800  # per meta file snippet shown to recall LLM
 
 
+def _tracked_meta_files(root: Path) -> list[str] | None:
+    """Tracked AGENTS.md/CLAUDE.md paths via ``git ls-files``; None when not a git repo."""
+    if not (root / ".git").exists():
+        return None
+    specs = [f":(glob)**/{name}" for name in _META_FILE_NAMES]
+    try:
+        proc = subprocess.run(
+            ["git", "ls-files", "-z", "--", *specs],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    tracked = [p for p in proc.stdout.split("\0") if p and (root / p).is_file()]
+    return sorted(project_paths(tracked))
+
+
 def _find_meta_files(repo_path: str = ".") -> list[str]:
-    """Return paths to AGENTS.md, CLAUDE.md, and skill SKILL.md files under repo_path."""
+    """Return paths to AGENTS.md, CLAUDE.md, and skill SKILL.md files under repo_path.
+
+    In a git repo only tracked files count (``node_modules``, gitignored worktree
+    copies and vendored packages carry their own AGENTS.md that is noise here);
+    elsewhere the walk prunes hidden and dependency dirs.
+    """
     from pathlib import Path as _Path
 
     root = _Path(repo_path)
@@ -191,10 +225,9 @@ def _find_meta_files(repo_path: str = ".") -> list[str]:
             seen.add(rel)
             found.append(rel)
 
-    for name in _META_FILE_NAMES:
-        for p in sorted(root.rglob(name)):
-            if p.is_file():
-                _add(p)
+    tracked = _tracked_meta_files(root)
+    for rel in tracked if tracked is not None else walk_project_files(root, _META_FILE_NAMES):
+        _add(root / rel)
 
     for pattern in _META_SKILL_GLOBS:
         for p in sorted(root.glob(pattern)):
@@ -347,9 +380,11 @@ def _read_candidate_files(paths: list[str]) -> str:
             if remaining:
                 parts.append(f"*({remaining} more file(s) omitted — context cap)*")
             break
+        if not is_project_path(path_str) or looks_binary(path_str):
+            continue
         try:
             raw = _Path(path_str).read_text()
-        except OSError:
+        except (OSError, UnicodeDecodeError):
             continue
         snippet = raw[:_FILTER_MAX_FILE_CHARS]
         note = " ← truncated" if len(raw) > _FILTER_MAX_FILE_CHARS else ""
@@ -378,6 +413,24 @@ _META_ANCHOR_REASONS: dict[str, str] = {
 }
 
 
+def _project_anchors(anchors: list[CodeAnchor], repo_path: str) -> list[CodeAnchor]:
+    """Drop anchors outside the project: dependencies, Go module cache, binaries, lockfiles."""
+    kept = [a for a in anchors if is_project_path(a.file, repo_path)]
+    if len(kept) != len(anchors):
+        dropped = [a.file for a in anchors if a not in kept]
+        log.info("localize: dropped %d non-project anchor(s): %s", len(dropped), dropped[:5])
+    return kept
+
+
+def _governs(meta_file: str, files: set[str]) -> bool:
+    """AGENTS.md/CLAUDE.md apply to their own subtree: root ones always, nested ones
+    only when a recalled file sits under their directory."""
+    folder = Path(meta_file).parent
+    if folder == Path():
+        return True
+    return any(folder in Path(f).parents for f in files)
+
+
 def _meta_anchors(repo_path: str, existing_files: set[str]) -> list[CodeAnchor]:
     """Build hot CodeAnchors for meta files not already captured by recall."""
     from pathlib import Path as _Path
@@ -385,6 +438,8 @@ def _meta_anchors(repo_path: str, existing_files: set[str]) -> list[CodeAnchor]:
     result: list[CodeAnchor] = []
     for mf in _find_meta_files(repo_path):
         if mf in existing_files:
+            continue
+        if _Path(mf).name in _META_FILE_NAMES and not _governs(mf, existing_files):
             continue
         p = (_Path(repo_path) / mf) if not _Path(mf).is_absolute() else _Path(mf)
         if not p.exists():
@@ -544,6 +599,7 @@ def filter_task_context(
     target_files = getattr(task, "target_files", None)
     description = getattr(task, "description", "")
 
+    target_files = project_paths(list(target_files or []))
     if not target_files:
         return ""
 
@@ -674,6 +730,7 @@ def _localize_item(
             hot=ladder.localizer_relevance_hot,
             medium=ladder.localizer_relevance_medium,
         ) or _anchors_from_recall(recall_output)
+        anchors = _project_anchors(anchors, repo_path)
 
         from splinter.configure import configured_decisions
 
@@ -770,6 +827,7 @@ def localize(
     if injected:
         anchors = anchors + injected
         log.info("localize: injected %d meta anchor(s) (AGENTS.md/CLAUDE.md/skills)", len(injected))
+    anchors = _project_anchors(anchors, repo_path)
 
     log.info("localize: %d candidate anchor(s) total", len(anchors))
 
