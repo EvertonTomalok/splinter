@@ -841,3 +841,42 @@ def test_opencode_has_no_fetch_pricing() -> None:
     provider = OpencodeProvider()
     assert provider.supports_pricing is False
     assert not hasattr(provider, "fetch_pricing")
+
+
+#: Flags ``codex exec resume --help`` accepts (codex-cli 0.167). ``-s`` is not one.
+_RESUME_FLAGS = {
+    "--json",
+    "--skip-git-repo-check",
+    "-m",
+    "-c",
+    "-o",
+    "--dangerously-bypass-approvals-and-sandbox",
+}
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "mode"),
+    [
+        ({"sandbox": "workspace-write"}, "workspace-write"),
+        ({"agent": "plan"}, "read-only"),
+        ({}, None),
+    ],
+)
+def test_resume_passes_only_flags_codex_resume_accepts(
+    monkeypatch: pytest.MonkeyPatch, kwargs: dict[str, str], mode: str | None
+) -> None:
+    captured: dict[str, list[str]] = {}
+
+    def fake_subprocess(cmd: list[str], **_: object) -> object:
+        captured["cmd"] = cmd
+        return _fake_proc(_SAMPLE_JSONL)
+
+    monkeypatch.setattr(codex_module, "run_subprocess", fake_subprocess)
+    codex_module.run("go", "codex/gpt-5-codex", resume="sid-1", timeout=30, **kwargs)  # type: ignore[arg-type]
+
+    cmd = captured["cmd"]
+    flags = [part for part in cmd[3 : cmd.index("--")] if part.startswith("-")]
+    assert set(flags) <= _RESUME_FLAGS
+    assert "-s" not in cmd
+    if mode is not None:
+        assert f'sandbox_mode="{mode}"' in cmd

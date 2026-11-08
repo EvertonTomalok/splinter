@@ -48,6 +48,7 @@ from splinter.tui_run_palette import Ink
 from splinter.tui_shell import SHELL_CSS, ShellBar, crumb_markup, use_splinter_theme
 from splinter.tui_status import BusyStatus
 from splinter.tui_stepper import PLAN_STEPS, PhaseStepper
+from splinter.tui_waiting import WaitingRoom
 
 DEFAULT_STRATEGY = "raphael"
 _PLAN_WORDS = {"fulfilled", "done", "plan", "write plan"}
@@ -74,6 +75,8 @@ class PlanSessionApp(App[int | None]):
 
     CSS = (
         """
+    PlanSessionApp.-waiting #session-body { display: none; }
+    PlanSessionApp.-waiting Footer { display: none; }
     #chatpane { width: 1fr; padding: 1 4 0 4; }
     #draftpane {
         width: 40%;
@@ -142,6 +145,7 @@ class PlanSessionApp(App[int | None]):
         Binding("ctrl+s", "send", "Send", key_display="ctrl+s"),
         Binding("r", "run_plan", "Run"),
         Binding("e", "edit_plan", "Edit plan", show=False),
+        Binding("f2", "configure", "Configure", show=False),
     ]
 
     FATAL_EXIT_DELAY = 2.0
@@ -176,7 +180,7 @@ class PlanSessionApp(App[int | None]):
     def compose(self) -> ComposeResult:
         stepper = PhaseStepper(PLAN_STEPS, id="stepper")
         yield ShellBar(crumb_markup("task", self._task_name), stepper)
-        with Horizontal():
+        with Horizontal(id="session-body"):
             with Vertical(id="chatpane"):
                 plan_ready = Vertical(id="plan-ready")
                 plan_ready.display = False
@@ -210,6 +214,7 @@ class PlanSessionApp(App[int | None]):
                 yield Static("answered", id="answered-head")
                 yield QuestionIndex(id="question-index")
                 yield Static("", id="doc-cost")
+        yield WaitingRoom()
         yield Footer()
 
     def _doc_head(self) -> str:
@@ -401,6 +406,12 @@ class PlanSessionApp(App[int | None]):
 
     def _set_busy(self, busy: bool, placeholder: str = "") -> None:
         self._busy = busy
+        self.set_class(busy, "-waiting")
+        waiting = self.query_one(WaitingRoom)
+        if busy:
+            waiting.start(placeholder.rstrip("…").strip(), self._busy_model())
+        else:
+            waiting.stop()
         entry = self.query_one("#entry", TextArea)
         entry.disabled = busy
         for btn in self.query("#actions Button"):
@@ -425,6 +436,16 @@ class PlanSessionApp(App[int | None]):
             entry.placeholder = placeholder
         if not busy:
             entry.focus()
+
+    async def action_configure(self) -> None:
+        from splinter.tui_session_config import edit_session_config
+
+        previous_model = self._busy_model()
+        if await edit_session_config(self, busy=self._busy):
+            self._model_name = ""
+            if self._busy_model() != previous_model:
+                self.claude_session = ""
+            self._save_state()
 
     def _busy_model(self) -> str:
         if not self._model_name:
@@ -557,7 +578,8 @@ class PlanSessionApp(App[int | None]):
     def _spawn(self, fn: Callable[..., None], **kw: Any) -> None:
         self._failed = False
         self._last_job = (fn, kw)
-        self.run_worker(partial(fn, **kw), thread=True, name="plan")
+        waiting = self.query_one(WaitingRoom)
+        self.run_worker(partial(waiting.run_job, fn, **kw), thread=True, name="plan")
 
     def _retry(self) -> None:
         if self._busy or self._last_job is None:

@@ -22,7 +22,7 @@ from splinter.prd_session import Turn
 from splinter.tui import PrdSessionApp
 from splinter.tui_plan import PlanSessionApp
 from splinter.tui_questions import QuestionForm, parse_questions
-from splinter.tui_questions_one import QuestionIndex
+from splinter.tui_questions_one import AnsweredList, AnswerRow, QuestionIndex
 from splinter.tui_stepper import PhaseStepper
 from splinter.ui_prefs import questions_mode
 
@@ -111,7 +111,7 @@ def test_one_mode_picks_advances_and_keeps_answer() -> None:
             await pilot.press("left")
             await pilot.pause()
             assert _counter(app) == "1 / 3"
-            assert "-picked" in app.query_one("#ans-B", Button).classes
+            assert "-picked" in app.query_one("#ans-B", AnswerRow).classes
             assert app.form.compile_answer("") == "1B"
 
     asyncio.run(drive())
@@ -250,7 +250,7 @@ def test_prd_one_mode_answers_reach_send_path(
             await pilot.pause()
             await pilot.click("#ans-B")
             await pilot.pause()
-            assert app.focused is app.query_one("#fulfilled", Button)
+            assert "finalize" in str(app.query_one("#q-keys", Static).render())
             form.action_toggle_mode()
             assert form.compile_answer("notes") == "1A, 2A, 3B + notes"
             form.action_toggle_mode()
@@ -306,3 +306,94 @@ def test_plan_one_mode_answers_reach_send_path(
             assert "1A, 2B + keep it small" in sent
 
     asyncio.run(drive())
+
+
+def test_question_label_and_reason_are_parsed() -> None:
+    text = "1. [primary provider] Which provider?\nA) Stripe — live traffic\nB) Adyen\n"
+    question = parse_questions(text)[0]
+    assert question.label == "primary provider"
+    assert question.text == "Which provider?"
+    assert question.options[0].text == "Stripe — live traffic"
+
+
+def test_answered_list_shows_picks_and_dashes() -> None:
+    questions = parse_questions("1. [p] Q?\nA) Stripe — live\nB) Adyen\n\n2. R?\nA) x\nB) y\n")
+
+    class _App(App[None]):
+        def compose(self) -> ComposeResult:
+            yield AnsweredList(id="answered")
+
+    app = _App()
+
+    async def drive() -> None:
+        async with app.run_test(size=SIZE) as pilot:
+            answered = app.query_one(AnsweredList)
+            answered.refresh_from(questions, {1: "A"})
+            await pilot.pause()
+            rendered = str(answered.render())
+            assert "1 Stripe" in rendered
+            assert "2 —" in rendered
+            assert "live" not in rendered
+
+    asyncio.run(drive())
+
+
+def test_prd_next_on_last_question_finalizes_with_the_answers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SPLINTER_HOME", str(tmp_path / "home"))
+    prompts: list[str] = []
+
+    def fake_ask(prompt: str, *, resume: str | None, session: object = None) -> Turn:
+        prompts.append(prompt)
+        if "output the COMPLETE final PRD" in prompt:
+            return Turn(text=PRD, session_id="sid", model="sonnet")
+        return Turn(text=QUESTIONS_TEXT, session_id="sid", model="sonnet")
+
+    monkeypatch.setattr(prd_session, "_ask", fake_ask)
+    src = tmp_path / "demo-prd.md"
+    src.write_text(PRD)
+    run_kwargs: dict[str, Any] = {
+        "strategy": "cascade",
+        "prd_path": str(src),
+        "task_path": None,
+        "cowabunga": False,
+        "no_ground": True,
+    }
+    app = PrdSessionApp(Session(new_session_id()), run_kwargs)
+    app._to_strategy_phase = lambda: None  # type: ignore[method-assign]
+
+    async def drive() -> None:
+        async with app.run_test(size=SIZE) as pilot:
+            await _settle(app, pilot)
+            assert app.has_class("-asking")
+            outline = str(app.query_one("#outline", Static).render())
+            assert "demo-prd.md · 1 story" in outline
+            assert "US-001 Demo story" in outline
+            await pilot.click("#ans-A")
+            await pilot.pause()
+            await pilot.press("right")
+            await pilot.pause()
+            assert "finalize" in str(app.query_one("#q-keys", Static).render())
+            await pilot.press("right")
+            await _settle(app, pilot)
+            final = next(p for p in prompts if "output the COMPLETE final PRD" in p)
+            assert "User answers:\n1A" in final
+
+    asyncio.run(drive())
+
+
+def test_label_line_names_the_question() -> None:
+    text = (
+        "1. What exact text must hello.py print?\n"
+        "Label: output text\n"
+        "Why: US-001 only requires stdout to contain hello.\n"
+        "A) hello world — plain print\n"
+        "B) Hello, World! — conventional\n"
+    )
+    question = parse_questions(text)[0]
+    assert question.label == "output text"
+    assert question.text == "What exact text must hello.py print?"
+    assert question.context == "US-001 only requires stdout to contain hello."
+    assert [o.letter for o in question.options] == ["A", "B"]

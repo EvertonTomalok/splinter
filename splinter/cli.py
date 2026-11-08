@@ -34,6 +34,21 @@ def setup() -> None:
     raise typer.Exit(run_setup())
 
 
+@app.command("game-demo")
+def game_demo(
+    game: Annotated[
+        str | None, typer.Option("--game", help="Initial game: pong, dino, ship or naval")
+    ] = None,
+) -> None:
+    """Play the offline arcade demo with simulated logs. No agent or model calls."""
+    from splinter.arcade import GAMES
+    from splinter.arcade_demo import ArcadeDemoApp
+
+    if game is not None and game not in GAMES:
+        raise typer.BadParameter("Choose pong, dino, ship or naval", param_hint="--game")
+    ArcadeDemoApp(game).run()
+
+
 @app.command()
 def engines(
     probe: Annotated[

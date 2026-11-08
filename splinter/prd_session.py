@@ -230,6 +230,21 @@ class Turn:
     cost: float = 0.0
 
 
+#: How every question and option is written, so the form can show a short label
+#: in the index and the reason under each answer.
+QUESTION_FORMAT = (
+    "Write every question as this block, in the language of the PRD:\n"
+    "1. The question?\n"
+    "Label: two or three lowercase words naming the decision\n"
+    "Why: one sentence naming what in the PRD makes this decision necessary "
+    "(quote the section or story id)\n"
+    "A) the answer — why, in a few words\n"
+    "B) the answer — why, in a few words\n"
+    "The question must make sense to someone who has not memorised the PRD: name the "
+    "thing being decided, never only a code."
+)
+
+
 def _load_prd_skill() -> str:
     for p in (Path("skills/prd/SKILL.md"), Path("splinter/skills/prd/SKILL.md")):
         if p.exists():
@@ -289,6 +304,7 @@ def open_questions(
         "assume — turn each assumed default into a question whose options include that "
         "default. Never skip, never finalize, never answer the questions yourself, and "
         "never output an 'assumptions' or 'defaults' list in place of questions. "
+        f"{QUESTION_FORMAT} "
         "Output ONLY the numbered questions with their lettered options, no preamble."
     )
     return _ask(prompt, resume=None, session=session)
@@ -341,6 +357,7 @@ def refine(
         "1. '## Working Draft' — the PRD so far in markdown.\n"
         "2. '## Open Questions' — any remaining lettered questions, or 'None — ready to "
         "finalize.' if the PRD is now complete.\n"
+        f"{QUESTION_FORMAT}\n"
         "Keep it tight; do not re-ask anything already answered."
     )
     return _ask(prompt, resume=resume, session=session)
@@ -355,14 +372,25 @@ def finalize(
     current_prd: str | None = None,
     localization: str = "",
     session: object = None,
+    answers: str = "",
 ) -> Turn:
-    """Emit the complete PRD with frontmatter and ``US-NNN`` user stories."""
+    """Emit the complete PRD with frontmatter and ``US-NNN`` user stories.
+
+    ``answers`` carries the answers picked on the question form right before
+    finalizing; they are applied together with the ones gathered so far.
+    """
     decide = (
         "Resolve every open question yourself using sensible defaults — do not ask "
         "anything further.\n"
         if autodecide
         else "Use the answers gathered so far; do not ask anything further.\n"
     )
+    if answers.strip() and not autodecide:
+        decide = (
+            f"User answers:\n{answers.strip()}\n\n"
+            "Apply these answers and the ones gathered so far; resolve any question "
+            "left unanswered with a sensible default; do not ask anything further.\n"
+        )
     strat_line = (
         f"Set strategy: {strategy} in the frontmatter.\n"
         if strategy

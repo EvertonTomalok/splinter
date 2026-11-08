@@ -60,6 +60,21 @@ class OpencodeResult:
     cost_indeterminate: bool = False
 
 
+#: Agents opencode ships with; ``--agent`` with any other name exits 1 with
+#: ``Agent not found``.
+_OPENCODE_AGENTS = frozenset({"build", "plan"})
+
+
+def opencode_agent(agent: str) -> str:
+    """The opencode agent for a pipeline role.
+
+    Dispatch passes the step role (``prd``, ``eval``, ``explain``…) as the agent
+    hint, which codex reads as a sandbox choice. opencode only knows its own
+    agents, so any other role runs on ``build``.
+    """
+    return agent if agent in _OPENCODE_AGENTS else "build"
+
+
 def model_with_variant(model: str, variant: str | None) -> str:
     """``provider/model#variant`` — opencode ≥2 takes the effort in ``-m``;
     the old ``--variant`` flag exits 1 with "Unrecognized flag"."""
@@ -103,7 +118,7 @@ def run(
         "-m",
         model_with_variant(model, variant),
         "--agent",
-        agent,
+        opencode_agent(agent),
         "--format",
         "json",
         "--dangerously-skip-permissions",

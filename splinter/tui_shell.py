@@ -17,6 +17,7 @@ from textual.theme import Theme
 from textual.widget import Widget
 from textual.widgets import Static
 
+from splinter.tui_frame import frame_markup, segments_markup
 from splinter.tui_run_palette import PALETTE, Ink
 
 BG = PALETTE["focus-bg"]
@@ -25,6 +26,7 @@ AMBER = PALETTE["amber"]
 RED = PALETTE["red"]
 MUTED = PALETTE["muted"]
 DIM = PALETTE["dim"]
+FAINT = "#55554e"
 TEXT = "#ecebe4"
 LINE = "#1d1d1a"
 EDGE = "#2a2a26"
@@ -83,13 +85,16 @@ def use_splinter_theme(app: App[Any]) -> None:
 
 
 def crumb_markup(mode: str, label: str) -> str:
-    """``splinter / --prd --task  <file>``: the active mode is a light chip, both click."""
-    chips = []
-    for name in ("prd", "task"):
-        tone = f"{BG} on {TEXT}" if name == mode else f"{MUTED} on {HOVER}"
-        chips.append(f"[@click=app.mode('{name}')][{tone}] --{name} [/][/]")
-    file_part = f"  [{MUTED}]{escape(label)}[/]" if label else ""
-    return f"[b {LIME}]splinter[/] [{DIM}]/[/] {''.join(chips)}{file_part}"
+    """``splinter / [--prd|--task] <file>`` on three rows: the mode switch is framed.
+
+    The active mode is a light chip; both chips click (``app.mode``).
+    """
+    chips = segments_markup(
+        [(f"--{name}", f"app.mode('{name}')", name == mode) for name in ("prd", "task")]
+        + [("configure", "app.configure", False)]
+    )
+    file_part = f" [{MUTED}]{escape(label)}[/]" if label else ""
+    return frame_markup(chips, lead=f"[b {LIME}]splinter[/] [{FAINT}]/[/] ", tail=file_part)
 
 
 class ShellBar(Horizontal):
@@ -97,18 +102,19 @@ class ShellBar(Horizontal):
 
     DEFAULT_CSS = f"""
     ShellBar {{
-        height: 3;
-        padding: 1 2 0 2;
+        height: 4;
+        padding: 0 4;
         background: {BG};
         border-bottom: solid {LINE};
     }}
     ShellBar #shell-crumb {{
         width: 1fr;
-        height: 1;
+        height: 3;
     }}
     ShellBar PhaseStepper {{
         width: auto;
         padding: 0;
+        margin: 1 0 0 0;
     }}
     """
 

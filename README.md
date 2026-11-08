@@ -288,6 +288,10 @@ splinter setup
 pick per-step models and effort levels and writes the result to
 `.splinter/config.yaml`.
 
+The PRD and plan headers also open configuration through **configure** or `F2`.
+Return to the current draft after saving or quitting; changes apply to the next
+model call. Configuration is available when no model call is running.
+
 For non-interactive use, pass flags directly:
 
 ```bash
@@ -417,6 +421,24 @@ per-token rates are relative cost proxies for ladder ranking, not billing.
 | `splinter resume [session]` | Resume a session — PRD refinement, or a failed/interrupted run |
 | `splinter analyze` | Inspect a session in an interactive TUI |
 | `splinter configure` | Pick per-step models in a TUI, then write `config.yaml` |
+| `splinter game-demo` | Play the offline arcade with simulated activity logs |
+
+### `splinter game-demo`
+
+```bash
+uv run splinter game-demo
+uv run splinter game-demo --game dino
+```
+
+Pong, Dino, Star patrol and Battleship share the arcade shown during PRD and
+plan generation. The demo runs without agents, model calls or provider setup.
+Use `1`–`4` to choose a game, `Space` to play, `P` to pause, `N` to shuffle,
+`G` to toggle logs and `Esc` to exit. Controls appear below each game.
+
+Real-time games update at 120 Hz with elapsed-time physics. Only changed rows
+are repainted; the default Textual refresh ceiling is 120 Hz and can be
+overridden with `TEXTUAL_FPS`. Terminals smaller than 66 columns or too short
+for the board show activity logs instead.
 
 ### `splinter run`
 

@@ -30,6 +30,7 @@ _LIME = "#c6f432"
 _TEXT = "#ecebe4"
 _MUTED = "#8f8e85"
 _DIM = "#7a7972"
+_FAINT = "#55554e"
 
 
 def _short(label: str) -> str:
@@ -115,7 +116,7 @@ class PhaseStepper(Static):
         self._spans = []
         for index, label in enumerate(self._steps):
             if index:
-                text.append(" / ", style=_DIM)
+                text.append(" / ", style=_FAINT)
             start = cell_len(text.plain)
             text.append(_short(label), style=self._style(index))
             self._spans.append((start, cell_len(text.plain)))
@@ -125,8 +126,8 @@ class PhaseStepper(Static):
         if index == self._current:
             return f"bold {_LIME}"
         if index <= self._reached:
-            return _TEXT
-        return _MUTED
+            return _MUTED
+        return _FAINT
 
     def on_click(self, event: Click) -> None:
         """Post StepClicked when the click lands on a reached step."""

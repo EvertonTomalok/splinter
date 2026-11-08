@@ -78,6 +78,7 @@ splinter/
   tui_run_stop.py     # Stop bar and the stop modal
   tui_run_motion.py   # Motion clock (pulses, caret) and the toast tracker
   tui_questions_one.py # Question index in "one at a time" mode
+  tui_prd_outline.py  # PRD questions screen: draft outline, nav row, spend line
   memory/
     session.py        # Session dir management, markdown I/O
     knowledge.py      # Topic-scoped markdown notes (no embeddings)

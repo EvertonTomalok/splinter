@@ -21,18 +21,21 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from rich.markup import escape
+from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical, VerticalScroll
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.message import Message
 from textual.reactive import reactive
 from textual.widget import Widget
-from textual.widgets import Button, Input, RadioButton, RadioSet, Static
+from textual.widgets import Button, RadioButton, RadioSet, Static
 
 from splinter.tui_questions_one import (
+    AnswerRow,
     OneQuestionPage,
     QModeHeader,
     mode_header_markup,
+    split_answer,
 )
 from splinter.ui_prefs import questions_mode, write_ui_pref
 
@@ -42,6 +45,12 @@ _QUESTION_RE = re.compile(r"^\s*(?:\*\*|__)?\s*(\d{1,2})\s*[.)]\s*(?:\*\*|__)?\s
 _OPTION_RE = re.compile(r"(?:\(\s*([A-Za-z])\s*\)|(?<![A-Za-z0-9])([A-Za-z])[.):])")
 #: A leading bullet does not turn a question line into an option line.
 _BULLET_RE = re.compile(r"^[-*•]\s*")
+#: ``[short label] The question?``: the label names the decision in the index.
+_LABEL_RE = re.compile(r"^\[([^\]]{1,40})\]\s*")
+#: ``Why: …``: the one line saying what in the PRD forces the decision.
+_WHY_RE = re.compile(r"^\s*(?:\*\*|__)?(?:why|context)\s*:\s*(?:\*\*|__)?\s*(.+)$", re.I)
+#: ``Label: …``: the short name of the decision, shown in the index.
+_LABEL_LINE_RE = re.compile(r"^\s*(?:\*\*|__)?label\s*:\s*(?:\*\*|__)?\s*(.+)$", re.I)
 #: More options than this (or longer labels) stop fitting on one row.
 _MAX_INLINE_OPTIONS = 4
 _MAX_INLINE_LABEL = 32
@@ -62,6 +71,8 @@ class Question:
     number: int
     text: str
     options: tuple[Option, ...] = ()
+    label: str = ""
+    context: str = ""
 
 
 def _clean(text: str) -> str:
@@ -92,11 +103,21 @@ def _question_from_block(number: int, lines: list[str]) -> Question | None:
     """Build a question from its lines; ``None`` when it carries no options."""
     question_lines: list[str] = []
     options: list[Option] = []
+    context = ""
+    label = ""
     for raw in lines:
         stripped = raw.strip()
         if not stripped:
             continue
         content = _BULLET_RE.sub("", stripped)
+        why = _WHY_RE.match(content)
+        if why and not options:
+            context = _clean(why.group(1))
+            continue
+        named = _LABEL_LINE_RE.match(content)
+        if named and not options:
+            label = _clean(named.group(1))
+            continue
         hits = list(_OPTION_RE.finditer(content))
         if not hits:
             question_lines.append(stripped)
@@ -111,7 +132,13 @@ def _question_from_block(number: int, lines: list[str]) -> Question | None:
     if not options:
         return None
     text = _clean(" ".join(question_lines))
-    return Question(number=number, text=text, options=tuple(options))
+    match = _LABEL_RE.match(text)
+    if match:
+        label = label or match.group(1).strip()
+        text = text[match.end():].strip()
+    return Question(
+        number=number, text=text, options=tuple(options), label=label, context=context
+    )
 
 
 def parse_questions(text: str) -> list[Question]:
@@ -150,6 +177,17 @@ def extract_open_questions(text: str) -> list[Question]:
     return parse_questions(match.group(1) if match else text)
 
 
+def _radio_label(option: Option) -> Text:
+    """``A  Stripe  current live traffic``: the key in lime, the reason muted."""
+    main, why = split_answer(option.text)
+    label = Text()
+    label.append(option.letter, style="bold #c6f432")
+    label.append(f"  {main}")
+    if why:
+        label.append(f"  {why}", style="#8f8e85")
+    return label
+
+
 def _fits_on_one_row(question: Question) -> bool:
     """Whether the options of a question fit side by side."""
     if len(question.options) > _MAX_INLINE_OPTIONS:
@@ -176,9 +214,19 @@ class QuestionForm(VerticalScroll):
         padding: 0;
         margin: 0 0 1 0;
     }
-    QuestionForm #q-mode {
-        height: 1;
+    QuestionForm #q-head {
+        height: 3;
         width: 100%;
+    }
+    QuestionForm #q-meta {
+        width: 1fr;
+        height: 1;
+        margin: 1 0 0 0;
+        color: #8f8e85;
+    }
+    QuestionForm #q-mode {
+        height: 3;
+        width: auto;
     }
     QuestionForm RadioButton {
         background: #0a0a09;
@@ -197,6 +245,17 @@ class QuestionForm(VerticalScroll):
         background: #1c2409;
         color: #c6f432;
     }
+    QuestionForm RadioSet:blur > RadioButton.-selected > .toggle--label {
+        background: transparent;
+    }
+    QuestionForm RadioSet:focus > RadioButton.-selected > .toggle--label {
+        background: #1a1a17;
+        color: #ecebe4;
+        text-style: bold;
+    }
+    QuestionForm RadioSet:focus {
+        background-tint: #ecebe4 0%;
+    }
     QuestionForm #q-list {
         height: auto;
     }
@@ -204,6 +263,7 @@ class QuestionForm(VerticalScroll):
         text-style: bold;
         width: 100%;
         height: auto;
+        margin: 1 0 0 0;
     }
     QuestionForm RadioSet {
         height: auto;
@@ -218,6 +278,8 @@ class QuestionForm(VerticalScroll):
     BINDINGS = [
         Binding("m", "toggle_mode", "Mode"),
         Binding("left", "prev_question", "Back", show=False),
+        Binding("right", "next_question", "Next", show=False),
+        *(Binding(key, f"pick('{key.upper()}')", show=False) for key in "abcd"),
     ]
 
     mode: reactive[str] = reactive("one")
@@ -229,6 +291,28 @@ class QuestionForm(VerticalScroll):
             super().__init__()
             self.form = form
             self.answers = answers
+
+        @property
+        def control(self) -> "QuestionForm":
+            return self.form
+
+    class PageChanged(Message):
+        """Posted when the page or the display mode changes (the nav label follows)."""
+
+        def __init__(self, form: "QuestionForm") -> None:
+            super().__init__()
+            self.form = form
+
+        @property
+        def control(self) -> "QuestionForm":
+            return self.form
+
+    class FinishRequested(Message):
+        """``→`` past the last question, or the host's finish key: finalize now."""
+
+        def __init__(self, form: "QuestionForm") -> None:
+            super().__init__()
+            self.form = form
 
         @property
         def control(self) -> "QuestionForm":
@@ -266,8 +350,32 @@ class QuestionForm(VerticalScroll):
         """The questions currently shown by the form."""
         return list(self._questions)
 
+    @property
+    def answers(self) -> dict[int, str]:
+        """Question number → picked letter or typed answer."""
+        return dict(self._answers)
+
+    @property
+    def position(self) -> int:
+        """1-based number of the page shown in ``one`` mode (0 without questions)."""
+        return self._index + 1 if self._questions else 0
+
+    @property
+    def current_question(self) -> Question | None:
+        """The question on screen: the page in ``one`` mode, the focused set in ``all``."""
+        if self.mode == "one":
+            return self._current_question()
+        return self._focused_question() or (self._questions[0] if self._questions else None)
+
+    @property
+    def on_last(self) -> bool:
+        """Whether the ``one`` page shows the last question."""
+        return bool(self._questions) and self._index >= len(self._questions) - 1
+
     def compose(self) -> ComposeResult:
-        yield QModeHeader(id="q-mode")
+        with Horizontal(id="q-head"):
+            yield Static(escape(self.meta), id="q-meta", markup=True)
+            yield QModeHeader(id="q-mode")
         yield OneQuestionPage(id="q-page")
         with Vertical(id="q-list"):
             for question in self._questions:
@@ -288,7 +396,7 @@ class QuestionForm(VerticalScroll):
         ]
 
     def _build_radio_set(self, question: Question) -> RadioSet:
-        buttons = [RadioButton(f"{option.letter}) {option.text}") for option in question.options]
+        buttons = [RadioButton(_radio_label(option)) for option in question.options]
         radio = RadioSet(*buttons, id=f"q-{question.number}", compact=True)
         if _fits_on_one_row(question):
             radio.styles.layout = "horizontal"
@@ -316,19 +424,26 @@ class QuestionForm(VerticalScroll):
         """Key ``m`` / header click: flip the display and remember the choice."""
         self.mode = "all" if self.mode == "one" else "one"
         write_ui_pref("questions_mode", self.mode, root=self._prefs_root)
+        if self.mode == "one":
+            self.focus_page()
+            return
+        radios = list(self.query(RadioSet))
+        if radios:
+            self.call_after_refresh(radios[0].focus)
 
     def watch_mode(self, mode: str) -> None:
         self._sync_mode_ui()
 
     def _sync_mode_ui(self) -> None:
         try:
-            header = mode_header_markup(self.mode, self.meta)
-            self.query_one("#q-mode", QModeHeader).update(header)
+            self.query_one("#q-meta", Static).update(escape(self.meta))
+            self.query_one("#q-mode", QModeHeader).update(mode_header_markup(self.mode))
             self.query_one("#q-list", Vertical).display = self.mode == "all"
             self.query_one("#q-page", OneQuestionPage).display = self.mode == "one"
         except Exception:
             return
         self._apply_answers_to_radios()
+        self.post_message(self.PageChanged(self))
 
     # --- one-mode navigation ---
     def action_prev_question(self) -> None:
@@ -336,18 +451,53 @@ class QuestionForm(VerticalScroll):
         if self._index > 0:
             self._index -= 1
             self._refresh_page()
-            self._focus_page()
+            self.focus_page()
+
+    def action_next_question(self) -> None:
+        """Key ``→`` / next: the next question, or finish past the last one."""
+        if not self._questions:
+            return
+        if self.on_last:
+            self.post_message(self.FinishRequested(self))
+            return
+        self._index += 1
+        self._refresh_page()
+        self.focus_page()
+
+    def action_pick(self, letter: str) -> None:
+        """Keys ``a``-``d``: pick that option of the shown (or focused) question."""
+        question = self._current_question() if self.mode == "one" else self._focused_question()
+        if question is None or not any(o.letter == letter for o in question.options):
+            return
+        self._set_answer(question.number, letter)
+        if self.mode == "one":
+            self._advance()
+        else:
+            self._apply_answers_to_radios()
+
+    def _focused_question(self) -> Question | None:
+        node = self.app.focused if self.is_attached else None
+        while node is not None and not isinstance(node, RadioSet):
+            node = node.parent if isinstance(node.parent, Widget) else None
+        if node is None or node.id is None or not node.id.startswith("q-"):
+            return None
+        try:
+            return self._question_by_number(int(node.id[2:]))
+        except ValueError:
+            return None
 
     def _advance(self) -> None:
         if self._index < len(self._questions) - 1:
             self._index += 1
             self._refresh_page()
-            self._focus_page()
+            self.focus_page()
             return
         self.post_message(self.Completed(self))
 
-    def _focus_page(self) -> None:
-        """The picked button is gone after the page swap; refocus the page.
+    def focus_page(self) -> None:
+        """Focus the shown page's picked answer, else its first one.
+
+        The picked button is gone after the page swap, so the page is refocused.
 
         The recompose is queued ahead of this callback on the same pump, so
         the new first button exists by the time the callback runs.
@@ -359,9 +509,8 @@ class QuestionForm(VerticalScroll):
         page.call_next(self._focus_first_button, page)
 
     def _focus_first_button(self, page: OneQuestionPage) -> None:
-        buttons = list(page.query(Button))
-        if buttons:
-            buttons[0].focus()
+        picked: list[Widget] = [row for row in page.query(AnswerRow) if row.has_class("-picked")]
+        (picked[0] if picked else self).focus()
 
     def _refresh_page(self) -> None:
         if not self._questions:
@@ -378,6 +527,7 @@ class QuestionForm(VerticalScroll):
             len(self._questions),
             self._answers.get(question.number, ""),
         )
+        self.post_message(self.PageChanged(self))
 
     def _current_question(self) -> Question | None:
         if 0 <= self._index < len(self._questions):
@@ -398,6 +548,7 @@ class QuestionForm(VerticalScroll):
             if self.mode == "one":
                 self._index = index
                 self._refresh_page()
+                self.focus_page()
             else:
                 self._scroll_to_question(number)
             return
@@ -453,30 +604,18 @@ class QuestionForm(VerticalScroll):
         self._set_answer(number, question.options[event.index].letter)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
-        button_id = event.button.id or ""
-        if button_id == "q-back":
+        if event.button.id == "q-back":
+            event.stop()
             self.action_prev_question()
-            return
-        if not button_id.startswith("ans-") or button_id == "ans-other":
-            return
+
+    def on_answer_row_picked(self, event: AnswerRow.Picked) -> None:
+        event.stop()
         question = self._current_question()
         if question is None:
             return
-        letter = button_id[4:]
-        if not any(option.letter == letter for option in question.options):
+        if not any(option.letter == event.letter for option in question.options):
             return
-        self._set_answer(question.number, letter)
-        self._advance()
-
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        if event.input.id != "ans-other":
-            return
-        question = self._current_question()
-        value = event.value.strip()
-        if question is None or not value:
-            return
-        self._set_answer(question.number, value)
-        event.input.value = ""
+        self._set_answer(question.number, event.letter)
         self._advance()
 
     def compile_answer(self, notes: str = "") -> str:

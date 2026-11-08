@@ -8,12 +8,12 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from textual.widgets import RichLog
 
 from splinter import plan_session
 from splinter.memory.session import Session
 from splinter.prd_session import Turn
 from splinter.task_plan import load_plan_index
+from splinter.tui_questions import QuestionForm
 
 SIZE = (160, 44)
 _README = """# Plan
@@ -112,8 +112,9 @@ def test_readme_opens_plan_mode_and_run_saves_plan_per_task(
             for _ in range(2):
                 await app.workers.wait_for_complete()
                 await pilot.pause()
-            convo = "\n".join(str(x.text) for x in app.query_one("#convo", RichLog).lines)
-            assert "Shared helper?" in convo
+            form = app.query_one(QuestionForm)
+            assert form.display
+            assert form.questions[0].text == "Shared helper?"
             assert "README.md · 2 tasks" in str(app.query_one("#shell-crumb").content)
             assert "Build b." in planner["q"][0]["task_md"]
             await pilot.click("#write-plan")

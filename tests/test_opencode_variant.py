@@ -35,3 +35,25 @@ def test_run_puts_variant_in_model_and_never_passes_variant_flag() -> None:
     cmd = run_sub.call_args.args[0]
     assert "--variant" not in cmd
     assert cmd[cmd.index("-m") + 1] == "zai-coding-plan/glm-5.3-flash#low"
+
+
+@pytest.mark.parametrize(
+    ("role", "expected"),
+    [
+        ("prd", "build"),
+        ("explain", "build"),
+        ("eval", "build"),
+        ("plan", "plan"),
+        ("build", "build"),
+    ],
+)
+def test_pipeline_roles_map_to_agents_opencode_knows(role: str, expected: str) -> None:
+    done = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+    with (
+        patch.object(opencode, "run_subprocess", return_value=done) as run_sub,
+        patch.object(opencode, "_parse_output", return_value={}),
+        patch.object(opencode, "_extract_text", return_value="ok"),
+    ):
+        opencode.run("hi", "zai-coding-plan/glm-5.3-flash", agent=role, timeout=5)
+    cmd = run_sub.call_args.args[0]
+    assert cmd[cmd.index("--agent") + 1] == expected

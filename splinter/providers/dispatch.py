@@ -180,6 +180,13 @@ def _call_provider(
             call_kwargs["session_id"] = session_id
         try:
             call_prompt = fallback_prompt if cand_model != model and fallback_prompt else prompt
+            _log.info(
+                "%s · %s%s · waiting for response",
+                role,
+                cand_model,
+                f" · effort {call_kwargs['variant']}" if call_kwargs["variant"] else "",
+                extra={"waiting_model": cand_model},
+            )
             resp = provider.run(call_prompt, cand_model, **call_kwargs)
         except Exception as exc:
             last_exc = exc
@@ -221,6 +228,15 @@ def _call_provider(
                 ts=_ts,
             )
         runtime.report_model_success(cand_model)
+        _log.info(
+            "%s completed · %s · %d characters · %d tokens · %.1fs",
+            role,
+            cand_model,
+            len(resp.text),
+            sum(resp.tokens.values()),
+            time.monotonic() - _t0,
+            extra={"waiting_model": cand_model},
+        )
         return resp, cand_model
     if last_exc is not None:
         raise last_exc

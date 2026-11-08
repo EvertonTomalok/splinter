@@ -82,18 +82,28 @@ from splinter.analyze import (
 from splinter.enums import DEFAULT_RUNNER_MODE, RunnerMode
 from splinter.memory.session import Session, delete_session, list_sessions
 from splinter.obs.events import events_path
+from splinter.question_context import Explanation, explain, explain_model, prd_excerpt
 from splinter.run_trace import TraceNode, build_trace
 from splinter.run_view import RunView, RunViewBuilder
 from splinter.run_view_files import FileCache
 from splinter.tui_blockword import BlockWord
 from splinter.tui_prd_mode import MODES, task_source
+from splinter.tui_prd_outline import (
+    cap_markup,
+    context_cap_markup,
+    context_markup,
+    cowabunga_hint,
+    nav_markup,
+    outline_markup,
+    spend_markup,
+)
 from splinter.tui_questions import (
     Question,
     QuestionForm,
     extract_open_questions,
     parse_questions,
 )
-from splinter.tui_questions_one import QuestionIndex
+from splinter.tui_questions_one import AnsweredList, QuestionIndex
 from splinter.tui_run_banner import NeedsYouBanner
 from splinter.tui_run_chrome import FooterKeys, RunHeader, cowabunga_markup
 from splinter.tui_run_composer import Composer
@@ -118,6 +128,7 @@ from splinter.tui_shell import SHELL_CSS, ShellBar, crumb_markup, use_splinter_t
 from splinter.tui_status import BusyStatus
 from splinter.tui_stepper import PRD_STEPS, PhaseStepper
 from splinter.tui_task_pick import TaskPicker, looks_like_path, system_pick
+from splinter.tui_waiting import WaitingRoom
 from splinter.vcs.diff import (
     Runner,
     StoryDiff,
@@ -4752,6 +4763,8 @@ class PrdSessionApp(App[int | None]):
 
     CSS = (
         """
+    PrdSessionApp.-waiting #session-body { display: none; }
+    PrdSessionApp.-waiting Footer { display: none; }
     #draftpane {
         width: 34%;
         padding: 1 2 0 2;
@@ -4760,18 +4773,67 @@ class PrdSessionApp(App[int | None]):
     #draft-body {
         height: 1fr;
     }
-    #q-index-head {
+    #draft-cap, #outline-scroll, #context-scroll, #answered, #spend, #prompt-glyph, #q-nav {
         display: none;
+    }
+    #context-scroll { height: 1fr; scrollbar-size-vertical: 0; }
+    #context-body { height: auto; }
+    #draft-cap { height: auto; margin-bottom: 1; }
+    #outline-scroll {
+        height: 1fr;
+        scrollbar-size-vertical: 0;
+    }
+    #outline { height: auto; }
+    #q-index-head {
         height: 1;
         margin-top: 1;
         text-style: bold;
+        color: #ecebe4;
     }
-    PrdSessionApp.-asking #q-index-head { display: block; }
+    #spend { height: 1; margin-top: 1; }
+    #prompt-row { height: auto; }
+    #prompt-glyph { width: 2; height: 1; color: #c6f432; }
+    #q-nav { height: 1; margin: 1 0 0 0; }
+    #q-keys { width: 1fr; height: 1; }
+    #q-hint { width: auto; height: 1; }
+    PrdSessionApp.-asking Footer { display: none; }
     PrdSessionApp.-asking #convo { display: none; }
+    PrdSessionApp.-asking #chatpane { padding: 0 7 1 7; }
+    PrdSessionApp.-asking #draftpane {
+        width: 30%;
+        min-width: 40;
+        max-width: 52;
+        padding: 1 3 1 3;
+    }
+    PrdSessionApp.-asking #draft-cap { display: block; }
+    PrdSessionApp.-asking #draft-body { display: none; }
+    PrdSessionApp.-asking #outline-scroll { display: block; }
+    PrdSessionApp.-asking #answered { display: block; }
+    PrdSessionApp.-asking #spend { display: block; }
+    PrdSessionApp.-asking.-context #outline-scroll { display: none; }
+    PrdSessionApp.-asking.-context #context-scroll { display: block; }
+    PrdSessionApp.-asking.-editing #draft-body { display: block; }
+    PrdSessionApp.-asking.-editing #outline-scroll { display: none; }
+    PrdSessionApp.-asking.-editing #context-scroll { display: none; }
+    PrdSessionApp.-asking #draft-edit { border: none; }
     PrdSessionApp.-asking #question-form {
         height: 1fr;
         max-height: 100%;
+        margin: 0;
     }
+    PrdSessionApp.-asking #q-back { display: none; }
+    PrdSessionApp.-asking #actions { display: none; }
+    PrdSessionApp.-asking #q-nav { display: block; }
+    PrdSessionApp.-asking #prompt-glyph { display: block; }
+    PrdSessionApp.-asking #composer { padding: 0; }
+    PrdSessionApp.-asking #entry, PrdSessionApp.-asking #entry:focus {
+        height: auto;
+        min-height: 1;
+        max-height: 4;
+        border: none;
+        padding: 0;
+    }
+    PrdSessionApp.-asking #entry .text-area--cursor-line { background: #0a0a09; }
     #draft-stage {
         display: none;
         height: 1fr;
@@ -4864,9 +4926,15 @@ class PrdSessionApp(App[int | None]):
 
     BINDINGS = [
         ("ctrl+c", "abort", "Abort"),
-        ("escape", "abort", "Abort"),
+        ("escape", "escape", "Abort"),
         Binding("ctrl+s", "send", "Send"),
+        Binding("ctrl+k", "cowabunga", "Cowabunga", show=False, priority=True),
+        Binding("enter", "finish_questions", "Finalize", show=False, priority=True),
+        Binding("e", "edit_draft", "Edit draft", show=False),
+        Binding("question_mark", "question_context", "Context", show=False),
+        Binding("x", "explain_again", "Explain again", show=False),
         Binding("ctrl+t", "plan_task", "Plan first", show=False),
+        Binding("f2", "configure", "Configure", show=False),
         Binding("ctrl+o", "pick('file')", "File", show=False),
         Binding("ctrl+l", "pick('folder')", "Folder", show=False),
     ]
@@ -4903,6 +4971,9 @@ class PrdSessionApp(App[int | None]):
         self._model_name = ""
         self.mode = "prd"
         self.task_handoff: str | None = None
+        self._explanations: dict[str, Explanation] = {}
+        self._explain_errors: dict[str, str] = {}
+        self._explaining: set[str] = set()
 
     def _save_state(self) -> None:
         """Persist enough to resume this refinement: conversation id, phase, strategy."""
@@ -4922,7 +4993,7 @@ class PrdSessionApp(App[int | None]):
     def compose(self) -> ComposeResult:
         label = self._prd_name if self._source_prd_path else f"new {self.mode}"
         yield ShellBar(crumb_markup("prd", label), PhaseStepper(PRD_STEPS, id="stepper"))
-        with Horizontal():
+        with Horizontal(id="session-body"):
             with Vertical(id="chatpane"):
                 with Vertical(id="draft-stage"):
                     mode = MODES[self.mode]
@@ -4937,15 +5008,28 @@ class PrdSessionApp(App[int | None]):
                     yield QuestionForm(id="question-form")
                 with Vertical(id="composer"):
                     yield BusyStatus(id="busy")
-                    entry_reply = ComposerTextArea(id="entry", soft_wrap=True)
-                    entry_reply.placeholder = "anything else the writer should know"
-                    yield entry_reply
+                    with Horizontal(id="prompt-row"):
+                        yield Static("›", id="prompt-glyph")
+                        entry_reply = ComposerTextArea(id="entry", soft_wrap=True)
+                        entry_reply.placeholder = "anything else the writer should know"
+                        yield entry_reply
                     with Horizontal(id="actions"):
                         yield Button("Generate PRD", id="generate", variant="primary")
+                    with Horizontal(id="q-nav"):
+                        yield Ink("", id="q-keys")
+                        yield Ink(cowabunga_hint(), id="q-hint")
             with Vertical(id="draftpane"):
+                yield Ink(cap_markup(False), id="draft-cap")
                 yield Vertical(id="draft-body")
-                yield Static("Open questions", id="q-index-head")
-                yield QuestionIndex(id="question-index")
+                with VerticalScroll(id="outline-scroll"):
+                    yield Ink("", id="outline")
+                    yield Static("Open questions", id="q-index-head")
+                    yield QuestionIndex(id="question-index")
+                with VerticalScroll(id="context-scroll"):
+                    yield Ink("", id="context-body")
+                yield AnsweredList(id="answered")
+                yield Ink("", id="spend")
+        yield WaitingRoom()
         yield Footer()
 
     def on_mount(self) -> None:
@@ -5250,6 +5334,12 @@ class PrdSessionApp(App[int | None]):
 
     def _set_busy(self, busy: bool, placeholder: str = "") -> None:
         self._busy = busy
+        self.set_class(busy, "-waiting")
+        waiting = self.query_one(WaitingRoom)
+        if busy:
+            waiting.start(self._busy_action(placeholder), self._busy_model())
+        else:
+            waiting.stop()
         entry = self.query_one("#entry", TextArea)
         entry.disabled = busy
         for btn in self.query("#actions Button"):
@@ -5286,6 +5376,16 @@ class PrdSessionApp(App[int | None]):
         """The action shown by the busy line (placeholder without the ellipsis)."""
         return placeholder.rstrip("…").strip()
 
+    async def action_configure(self) -> None:
+        from splinter.tui_session_config import edit_session_config
+
+        previous_model = self._busy_model()
+        if await edit_session_config(self, busy=self._busy):
+            self._model_name = ""
+            if self._busy_model() != previous_model:
+                self.claude_session = ""
+            self._save_state()
+
     def _busy_model(self) -> str:
         """The model doing the work, for the busy line."""
         if self._model_name:
@@ -5317,32 +5417,252 @@ class PrdSessionApp(App[int | None]):
         async def _swap() -> None:
             await form.set_questions(self._questions)
             form.display = bool(self._questions)
+            if self._questions and form.mode == "one":
+                form.focus_page()
 
         self.set_class(bool(self._questions), "-asking")
-        model = self._model_name or "sonnet"
+        if not self._questions:
+            self.remove_class("-editing", "-context")
         count = len(self._questions)
-        form.meta = f"PRD writer · {model} · {count} question{'s' if count != 1 else ''}"
+        plural = "s" if count != 1 else ""
+        form.meta = f"PRD writer · {self._writer_model()} · {count} question{plural}"
         self.run_worker(_swap, name="questions")  # type: ignore[arg-type]
         self._refresh_question_index()
+        self._refresh_outline()
+        self._refresh_spend()
+
+    def _writer_model(self) -> str:
+        """``sonnet@high``: the PRD model and its effort, as the header names it."""
+        model = self._model_name or self._busy_model() or "sonnet"
+        try:
+            from splinter.models.roster import load_ladder
+
+            effort = load_ladder().prd_effort
+        except Exception:
+            effort = ""
+        return f"{model}@{effort}" if effort and "@" not in model else model
 
     def _refresh_question_index(self) -> None:
-        """Point the right-pane question list at the current questions."""
+        """Point the right-pane question list and answers at the current questions."""
         try:
             index = self.query_one("#question-index", QuestionIndex)
+            answered = self.query_one("#answered", AnsweredList)
         except Exception:
             return
         index.refresh_from(self._questions, self._last_answers)
+        answered.refresh_from(self._questions, self._last_answers)
+        self._refresh_nav()
+
+    def _refresh_outline(self) -> None:
+        """The right-pane outline of the draft (file, title, a few stories)."""
+        try:
+            outline = self.query_one("#outline", Ink)
+        except Exception:
+            return
+        draft = self._read_draft() or self.session.read("prd.md")
+        outline.update(outline_markup(draft, self._prd_name))
+
+    def _refresh_spend(self) -> None:
+        try:
+            spend = self.query_one("#spend", Ink)
+        except Exception:
+            return
+        spend.update(spend_markup(self.session.read_pre_run_usage(), self.session.read_jev_usage()))
+
+    def _refresh_nav(self) -> None:
+        """``← back  → next`` (``finalize`` on the last question) under the composer."""
+        try:
+            form = self.query_one("#question-form", QuestionForm)
+            keys = self.query_one("#q-keys", Ink)
+        except Exception:
+            return
+        letters = "".join(
+            sorted({option.letter for q in self._questions for option in q.options})
+        )
+        answered = sum(1 for q in self._questions if self._last_answers.get(q.number))
+        keys.update(
+            nav_markup(
+                mode=form.mode,
+                on_last=form.on_last,
+                answered=answered,
+                total=len(self._questions),
+                letters=letters or "A",
+            )
+        )
 
     def on_question_form_answers_changed(self, event: QuestionForm.AnswersChanged) -> None:
         self._last_answers = dict(event.answers)
         self._refresh_question_index()
 
-    def on_question_form_completed(self, event: QuestionForm.Completed) -> None:
-        """Auto-advance ended: focus Finalize; the form never submits alone."""
+    def on_question_form_page_changed(self, event: QuestionForm.PageChanged) -> None:
+        self._refresh_nav()
+        if self.has_class("-context"):
+            self._refresh_context()
+
+    def action_question_context(self) -> None:
+        """``?``: the PRD sections behind the question and a plain-words explanation."""
+        if not self.has_class("-asking"):
+            return
+        opening = not self.has_class("-context")
+        self.remove_class("-editing")
+        self.set_class(opening, "-context")
+        if opening:
+            self._refresh_context()
+            return
+        self.query_one("#draft-cap", Ink).update(cap_markup(False))
+
+    def action_explain_again(self) -> None:
+        """``x``: ask the cheap model again (after a failure, or for a fresh take)."""
+        question = self._context_question()
+        if question is None or not self.has_class("-context"):
+            return
+        self._explanations.pop(question.text, None)
+        self._explain_errors.pop(question.text, None)
+        self._refresh_context()
+
+    def _context_question(self) -> Question | None:
         try:
-            self.query_one("#fulfilled", Button).focus()
+            return self.query_one("#question-form", QuestionForm).current_question
         except Exception:
-            pass
+            return None
+
+    def _refresh_context(self) -> None:
+        """Render the context pane for the question on screen; explain it once."""
+        question = self._context_question()
+        if question is None:
+            return
+        draft = self._read_draft() or self.session.read("prd.md")
+        sections = prd_excerpt(draft, question)
+        key = question.text
+        try:
+            model = explain_model()[0]
+        except Exception:
+            model = ""
+        self.query_one("#draft-cap", Ink).update(context_cap_markup(question.number))
+        self.query_one("#context-body", Ink).update(
+            context_markup(
+                question,
+                sections,
+                explanation=self._explanations.get(key),
+                error=self._explain_errors.get(key, ""),
+                model=model,
+            )
+        )
+        if key in self._explanations or key in self._explain_errors or key in self._explaining:
+            return
+        self._explaining.add(key)
+        title = self._outline_title(draft)
+        self.run_worker(
+            lambda: self._explain_worker(question, sections, title),
+            thread=True,
+            name="explain",
+            group="explain",
+        )
+
+    @staticmethod
+    def _outline_title(draft: str) -> str:
+        for line in draft.splitlines():
+            if line.startswith("# "):
+                return line[2:].strip()
+        return ""
+
+    def _explain_worker(self, question: Question, sections: list[Any], title: str) -> None:
+        try:
+            result = explain(question, sections, title)
+        except Exception as exc:  # noqa: BLE001 — shown in the pane, x retries
+            self.call_from_thread(self._explained, question.text, None, str(exc) or "failed")
+            return
+        self.session.log_llm_usage(result.model, result.tokens, result.cost)
+        self.call_from_thread(self._explained, question.text, result, "")
+
+    def _explained(self, key: str, result: Explanation | None, error: str) -> None:
+        self._explaining.discard(key)
+        if result is not None:
+            self._explanations[key] = result
+        else:
+            self._explain_errors[key] = error[:200]
+        self._refresh_spend()
+        if self.has_class("-context"):
+            self._refresh_context()
+
+    def on_question_form_finish_requested(self, event: QuestionForm.FinishRequested) -> None:
+        self.action_finish_questions()
+
+    def on_question_form_completed(self, event: QuestionForm.Completed) -> None:
+        """Auto-advance ended on the last question: ``→`` now finalizes."""
+        self._refresh_nav()
+
+    def action_question_back(self) -> None:
+        try:
+            self.query_one("#question-form", QuestionForm).action_prev_question()
+        except Exception:
+            return
+
+    def action_question_next(self) -> None:
+        try:
+            self.query_one("#question-form", QuestionForm).action_next_question()
+        except Exception:
+            return
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        """``enter`` finalizes only in ``all at once`` mode, away from the text boxes;
+        ``^k`` is cowabunga only where cowabunga means something."""
+        if action == "finish_questions":
+            if not self.has_class("-asking") or isinstance(self.focused, TextArea):
+                return False
+            try:
+                return self.query_one("#question-form", QuestionForm).mode == "all"
+            except Exception:
+                return False
+        if action == "cowabunga":
+            return self.phase in _COWABUNGA_TOOLTIPS and not self._busy
+        return True
+
+    def action_finish_questions(self) -> None:
+        """``→ finalize`` / ``↵ finalize``: finalize the PRD with the answers picked."""
+        if self._busy or self.phase != "chat" or not self._questions:
+            return
+        entry = self.query_one("#entry", TextArea)
+        answers = self._compile_answers(entry.text)
+        entry.text = ""
+        if answers:
+            self._say(f"[cyan]> {escape(answers)}[/]")
+        draft = self._read_draft()
+        self._set_phase("finalize")
+        self._set_busy(True, "finalizing the PRD with your answers…")
+        self._spawn(self._finalize_worker, autodecide=False, draft=draft, answers=answers)
+
+    def action_cowabunga(self) -> None:
+        """``^k``: let the model answer whatever is left and move on."""
+        if not self._busy and self.phase in _COWABUNGA_TOOLTIPS:
+            self._submit("cowabunga")
+
+    def action_edit_draft(self) -> None:
+        """``e``: swap the outline for the draft editor (``esc`` swaps back)."""
+        if not self.has_class("-asking"):
+            return
+        editing = not self.has_class("-editing")
+        self.remove_class("-context")
+        self.set_class(editing, "-editing")
+        self.query_one("#draft-cap", Ink).update(cap_markup(editing))
+        if editing:
+            try:
+                self.query_one("#draft-edit", TextArea).focus()
+            except Exception:
+                pass
+            return
+        self._refresh_outline()
+        self.query_one("#question-form", QuestionForm).focus_page()
+
+    def action_escape(self) -> None:
+        """``esc`` closes the editor or the context pane first; otherwise it asks to leave."""
+        if self.has_class("-editing"):
+            self.action_edit_draft()
+            return
+        if self.has_class("-context"):
+            self.action_question_context()
+            return
+        self.action_abort()
 
     def action_jump_question(self, n: int | str) -> None:
         """QuestionIndex row click: jump to that question in the form."""
@@ -5467,7 +5787,8 @@ class PrdSessionApp(App[int | None]):
 
         self._failed = False
         self._last_job = (fn, kw)
-        self.run_worker(partial(fn, **kw), thread=True, name="prd")
+        waiting = self.query_one(WaitingRoom)
+        self.run_worker(partial(waiting.run_job, fn, **kw), thread=True, name="prd")
 
     def _retry(self) -> None:
         if self._busy or self._last_job is None:
@@ -5520,7 +5841,7 @@ class PrdSessionApp(App[int | None]):
         self.session.log_llm_usage(turn.model, turn.tokens, turn.cost)
         self.call_from_thread(self._after_refine, turn.text, turn.session_id)
 
-    def _finalize_worker(self, autodecide: bool, draft: str) -> None:
+    def _finalize_worker(self, autodecide: bool, draft: str, answers: str = "") -> None:
         from splinter import prd_session
 
         seed = draft or None if not self.claude_session else None
@@ -5529,6 +5850,7 @@ class PrdSessionApp(App[int | None]):
                 resume=self.claude_session,
                 strategy=self.strategy,
                 autodecide=autodecide,
+                answers=answers,
                 prd_text=seed,
                 current_prd=draft,
                 localization=self._grounding(draft or self._initial_prd),
@@ -5648,6 +5970,8 @@ class PrdSessionApp(App[int | None]):
             return
         edited = bool(self._prd_base) and event.text_area.text != self._prd_base
         event.text_area.border_subtitle = "edited" if edited else ""
+        if self.has_class("-asking"):
+            self._refresh_outline()
 
     def _after_generate(self, prd: str, sid: str) -> None:
         from splinter import prd_session

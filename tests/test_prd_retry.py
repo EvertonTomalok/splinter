@@ -17,7 +17,8 @@ SIZE = (160, 44)
 
 
 def _convo(app: Any) -> str:
-    return "\n".join(str(line.text) for line in app.query_one("#convo", RichLog).lines)
+    rendered = "\n".join(str(line.text) for line in app.query_one("#convo", RichLog).lines)
+    return rendered + "\n" + "\n".join(app._convo_lines)
 
 
 def _buttons(app: Any) -> list[str]:

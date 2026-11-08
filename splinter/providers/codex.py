@@ -152,12 +152,22 @@ def _build_base_flags(
     agent: str,
     sandbox: str | None = None,
     network_access: bool = True,
+    resume: bool = False,
 ) -> list[str]:
+    """Flags shared by ``codex exec`` and ``codex exec resume``.
+
+    ``codex exec resume`` has no ``-s/--sandbox`` flag (it exits 2 with
+    "unexpected argument '-s'"), so a resumed turn sets the same mode through
+    the ``sandbox_mode`` config key instead.
+    """
     flags: list[str] = ["--json", "--skip-git-repo-check", "-m", bare_model]
-    if sandbox is not None:
-        flags.extend(["-s", sandbox])
-    elif _use_read_only_sandbox(agent):
-        flags.extend(["-s", "read-only"])
+    mode = sandbox
+    if mode is None and _use_read_only_sandbox(agent):
+        mode = "read-only"
+    if mode is not None and resume:
+        flags.extend(["-c", f'sandbox_mode="{mode}"'])
+    elif mode is not None:
+        flags.extend(["-s", mode])
     else:
         flags.append("--dangerously-bypass-approvals-and-sandbox")
     if effort is not None:
@@ -292,6 +302,7 @@ def run(
         agent=agent,
         sandbox=sandbox,
         network_access=network_access,
+        resume=resume is not None,
     )
 
     last_msg_path: Path | None = None

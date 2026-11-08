@@ -1,11 +1,13 @@
 """Widgets for the one-question-at-a-time display mode.
 
 :class:`QModeHeader` is the clickable ``one at a time | all at once`` toggle,
-:class:`OneQuestionPage` renders a single question with large answer rows,
-auto-advancing on pick, and :class:`QuestionIndex` is the right-pane list of
-open and answered questions. The question data and the answer bookkeeping
-live in :class:`splinter.tui_questions.QuestionForm`; these widgets render
-and forward, they hold no state of their own.
+:class:`OneQuestionPage` renders a single question with large answer rows
+(:class:`AnswerRow`: a boxed key, the answer and the reason under it),
+auto-advancing on pick, :class:`QuestionIndex` is the right-pane list of open
+questions and :class:`AnsweredList` the answers picked so far. The question
+data and the answer bookkeeping live in
+:class:`splinter.tui_questions.QuestionForm`; these widgets render and
+forward, they hold no state of their own.
 """
 
 from __future__ import annotations
@@ -14,36 +16,44 @@ from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, cast
 
 from rich.markup import escape
+from textual import events
 from textual.app import ComposeResult
-from textual.containers import Vertical
-from textual.widgets import Button, Input, Static
+from textual.containers import Horizontal, Vertical
+from textual.message import Message
+from textual.widgets import Button, Static
 
-from splinter.tui_run_palette import BG, DIM, HOVER, INK, LIME, MUTED, Ink
+from splinter.tui_frame import KEY_EDGE, frame_markup, segments_markup
+from splinter.tui_run_palette import BG, INK, LIME, MUTED, Ink
 
 if TYPE_CHECKING:
     from splinter.tui_questions import Question, QuestionForm
 
-_INDEX_TEXT_MAX = 48
+#: The design's faintest text: separators, unanswered marks, the spend line.
+FAINT = "#55554e"
+_INDEX_TEXT_MAX = 38
 
 
-def mode_header_markup(mode: str, meta: str = "") -> str:
-    """``PRD writer · sonnet · 3 questions   show [one at a time][all at once]``."""
+def mode_header_markup(mode: str) -> str:
+    """``show [one at a time|all at once]`` on three rows, the switch framed."""
+    chips = segments_markup(
+        [
+            ("one at a time", "set_mode('one')", mode == "one"),
+            ("all at once", "set_mode('all')", mode == "all"),
+        ]
+    )
+    return frame_markup(chips, lead=f"[{MUTED}]show[/]  ")
 
-    def chip(name: str, label: str) -> str:
-        tone = f"{BG} on {INK}" if mode == name else f"{MUTED} on {HOVER}"
-        return f"[@click=set_mode('{name}')][{tone}] {label} [/][/]"
 
-    head = f"[{MUTED}]{escape(meta)}[/]    " if meta else ""
-    return f"{head}[{DIM}]show[/] {chip('one', 'one at a time')}{chip('all', 'all at once')}"
+def key_markup(letter: str, *, picked: bool = False) -> str:
+    """An answer key: the letter in a tight frame drawn in the widget's colour."""
+    tone = BG if picked else LIME
+    return frame_markup(f"[{tone}] {escape(letter)} [/]", "")
 
 
-def answer_label(letter: str, text: str, picked: bool) -> str:
-    """An answer row: the key, the answer, and the reason under it in grey."""
+def split_answer(text: str) -> tuple[str, str]:
+    """``Stripe — current live traffic`` → (``Stripe``, ``current live traffic``)."""
     main, _, why = text.partition(" — ")
-    key = f"{BG} on #a9d12a" if picked else f"{LIME} on #1d1d1a"
-    note = BG if picked else MUTED
-    label = f"[b {key}] {letter} [/]  {escape(main.strip())}"
-    return label + (f"\n     [{note}]{escape(why.strip())}[/]" if why.strip() else "")
+    return main.strip(), why.strip()
 
 
 class QModeHeader(Ink):
@@ -51,68 +61,149 @@ class QModeHeader(Ink):
 
     def action_toggle_mode(self) -> None:
         """Markup ``@click`` actions land here; forward them to the form."""
-        if self.parent is not None:
-            cast("QuestionForm", self.parent).action_toggle_mode()
+        form = self._form()
+        if form is not None:
+            form.action_toggle_mode()
 
     def action_set_mode(self, mode: str) -> None:
         """A segment click: switch only when it is not the active one."""
-        form = cast("QuestionForm | None", self.parent)
+        form = self._form()
         if form is not None and form.mode != mode:
             form.action_toggle_mode()
 
+    def _form(self) -> QuestionForm | None:
+        from splinter.tui_questions import QuestionForm
 
-class OneQuestionPage(Vertical):
-    """One question per page: counter, large answer rows, free text, back."""
+        node = self.parent
+        while node is not None and not isinstance(node, QuestionForm):
+            node = node.parent
+        return cast("QuestionForm | None", node)
 
-    DEFAULT_CSS = """
-    OneQuestionPage {
-        height: auto;
-        padding: 0 1;
-    }
-    OneQuestionPage #q-counter {
-        height: 1;
-        margin: 1 0 1 0;
-    }
-    OneQuestionPage #q-text {
-        height: auto;
-        text-style: bold;
-        color: #ecebe4;
-        margin: 0 0 1 0;
-    }
-    OneQuestionPage .ans {
+
+class AnswerRow(Horizontal, can_focus=True):
+    """One answer: the boxed key, the answer and the reason under it.
+
+    A click, ``enter`` or ``space`` posts :class:`AnswerRow.Picked`.
+    """
+
+    DEFAULT_CSS = f"""
+    AnswerRow {{
         width: 100%;
         height: auto;
-        min-height: 3;
-        margin: 0;
         padding: 0 1;
-        border: none;
-        border-top: solid #1d1d1a;
-        background: #0a0a09;
-        color: #ecebe4;
-        content-align: left middle;
-        text-align: left;
-        text-style: none;
-    }
-    OneQuestionPage .ans:hover {
-        background: #121210;
-        border-top: solid #1d1d1a;
-    }
-    OneQuestionPage .ans.-picked {
-        background: #c6f432;
-        color: #0a0a09;
-    }
-    OneQuestionPage #ans-other {
-        height: 3;
-        margin: 0;
-        border: none;
-        border-top: solid #1d1d1a;
         border-bottom: solid #1d1d1a;
-        background: #0a0a09;
-    }
-    OneQuestionPage #q-back {
+        background: {BG};
+    }}
+    AnswerRow:hover {{
+        background: #121210;
+    }}
+    AnswerRow .kk {{
+        width: 5;
+        height: 3;
+        color: {KEY_EDGE};
+    }}
+    AnswerRow:focus .kk {{
+        color: {LIME};
+    }}
+    AnswerRow.-picked .kk {{
+        color: {BG};
+    }}
+    AnswerRow .ans-body {{
+        width: 1fr;
+        height: auto;
+        padding: 1 0 0 2;
+    }}
+    AnswerRow .ans-main {{
+        color: {INK};
+        height: auto;
+    }}
+    AnswerRow .ans-why {{
+        color: {MUTED};
+        height: auto;
+    }}
+    AnswerRow.-picked {{
+        background: {LIME};
+    }}
+    AnswerRow.-picked .ans-main {{
+        color: {BG};
+    }}
+    AnswerRow.-picked .ans-why {{
+        color: #3d4a10;
+    }}
+    """
+
+    class Picked(Message):
+        """The user chose this answer."""
+
+        def __init__(self, row: AnswerRow, letter: str) -> None:
+            super().__init__()
+            self.row = row
+            self.letter = letter
+
+        @property
+        def control(self) -> AnswerRow:
+            return self.row
+
+    def __init__(self, letter: str, text: str, *, picked: bool = False, id: str | None = None):
+        super().__init__(id=id, classes="ans -picked" if picked else "ans")
+        self.letter = letter
+        self._picked = picked
+        self._main, self._why = split_answer(text)
+
+    def compose(self) -> ComposeResult:
+        yield Static(key_markup(self.letter, picked=self._picked), classes="kk")
+        with Vertical(classes="ans-body"):
+            yield Static(self._main, classes="ans-main", markup=False)
+            if self._why:
+                yield Static(self._why, classes="ans-why", markup=False)
+
+    def on_click(self, event: events.Click) -> None:
+        event.stop()
+        self.post_message(self.Picked(self, self.letter))
+
+    def on_key(self, event: events.Key) -> None:
+        if event.key in ("enter", "space"):
+            event.stop()
+            event.prevent_default()
+            self.post_message(self.Picked(self, self.letter))
+
+
+class OneQuestionPage(Vertical):
+    """One question per page: counter, the question, its answer rows, back."""
+
+    DEFAULT_CSS = f"""
+    OneQuestionPage {{
+        height: auto;
+        padding: 0;
+    }}
+    OneQuestionPage #q-counter {{
+        height: 1;
         margin: 1 0 0 0;
-        color: #ecebe4;
-    }
+    }}
+    OneQuestionPage #q-text {{
+        height: auto;
+        max-width: 60;
+        text-style: bold;
+        color: {INK};
+        margin: 1 0 1 0;
+    }}
+    OneQuestionPage #q-why {{
+        height: auto;
+        max-width: 72;
+        color: {MUTED};
+        margin: 0 0 1 0;
+    }}
+    OneQuestionPage #q-text.-has-why {{
+        margin: 1 0 0 0;
+    }}
+    OneQuestionPage #ans-list {{
+        height: auto;
+        border-top: solid #1d1d1a;
+    }}
+    OneQuestionPage #q-back {{
+        margin: 1 0 0 0;
+        color: {INK};
+    }}
     """
 
     def __init__(self, *, id: str | None = None) -> None:
@@ -127,19 +218,21 @@ class OneQuestionPage(Vertical):
         if question is None:
             return
         yield Static(
-            f"[b {LIME}]{self._position}[/] [{DIM}]/ {self._total}[/]", id="q-counter"
+            f"[b {LIME}]{self._position}[/][{FAINT}] / {self._total}[/]", id="q-counter"
         )
-        yield Static(escape(question.text), id="q-text")
-        letters = {option.letter for option in question.options}
-        for option in question.options:
-            picked = option.letter == self._answer
-            yield Button(
-                answer_label(option.letter, option.text, picked),
-                id=f"ans-{option.letter}",
-                classes="ans -picked" if picked else "ans",
-            )
-        free_text = "" if self._answer in letters else self._answer
-        yield Input(placeholder="other answer…", id="ans-other", value=free_text)
+        yield Static(
+            escape(question.text), id="q-text", classes="-has-why" if question.context else ""
+        )
+        if question.context:
+            yield Static(escape(question.context), id="q-why")
+        with Vertical(id="ans-list"):
+            for option in question.options:
+                yield AnswerRow(
+                    option.letter,
+                    option.text,
+                    picked=option.letter == self._answer,
+                    id=f"ans-{option.letter}",
+                )
         yield Button("← back", id="q-back")
 
     def show(self, question: Question, position: int, total: int, answer: str) -> None:
@@ -152,12 +245,11 @@ class OneQuestionPage(Vertical):
 
 
 class QuestionIndex(Ink):
-    """Open and answered questions; a row click jumps to that question."""
+    """The open questions by their short label; a row click jumps to one."""
 
     DEFAULT_CSS = """
     QuestionIndex {
         height: auto;
-        max-height: 8;
         padding: 0;
         display: none;
     }
@@ -173,14 +265,52 @@ class QuestionIndex(Ink):
         self.display = True
 
 
+def question_label(question: Question) -> str:
+    """The short name of a question: its ``[label]``, else its clipped text."""
+    return question.label or _clip(question.text)
+
+
+def answer_text(question: Question, answer: str) -> str:
+    """The picked option's answer (reason dropped), or the typed answer."""
+    for option in question.options:
+        if option.letter == answer:
+            return split_answer(option.text)[0]
+    return answer
+
+
 def _index_row(question: Question, answer: str | None) -> str:
-    if answer is None:
-        label = f"[{LIME}]○ {question.number} · {escape(_clip(question.text))}[/]"
-    elif any(option.letter == answer for option in question.options):
-        label = f"[{MUTED}]● {question.number} · {escape(answer)}[/]"
-    else:
-        label = f"[{MUTED}]● {question.number} · {escape(_clip(answer))}[/]"
+    label = f"[{LIME}]{question.number} {escape(question_label(question))}[/]"
     return f"[@click=app.jump_question({question.number})]{label}[/]"
+
+
+class AnsweredList(Ink):
+    """``answered`` and one row per question: the pick, or a dash."""
+
+    DEFAULT_CSS = """
+    AnsweredList {
+        height: auto;
+        border-top: solid #1d1d1a;
+        padding: 1 0 0 0;
+        display: none;
+    }
+    """
+
+    def refresh_from(self, questions: Sequence[Question], answers: Mapping[int, str]) -> None:
+        """Re-render the rows; hidden while there are no questions."""
+        if not questions:
+            self.display = False
+            return
+        rows = [f"[{MUTED}]answered[/]"]
+        for question in questions:
+            answer = answers.get(question.number)
+            if answer:
+                picked = escape(_clip(answer_text(question, answer)))
+                text = f"[{LIME}]{question.number} {picked}[/]"
+            else:
+                text = f"[{FAINT}]{question.number} —[/]"
+            rows.append(f"[@click=app.jump_question({question.number})]{text}[/]")
+        self.update("\n".join(rows))
+        self.display = True
 
 
 def _clip(text: str, limit: int = _INDEX_TEXT_MAX) -> str:
