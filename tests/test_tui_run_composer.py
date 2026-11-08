@@ -31,9 +31,9 @@ def test_all_agents_message_changes_from_queued_to_delivered(
             input_widget.value = "do not edit migrations"
             await pilot.click("#user-cmd-input")
             await pilot.press("enter")
-            assert "queued" in str(app.query_one("#composer-msgs").render())
+            assert "sending" in str(app.query_one("#composer-msgs").render())
             assert "do not edit migrations" in session.pop_live_commands(24)
             app._refresh()
-            assert "delivered" in str(app.query_one("#composer-msgs").render())
+            assert "✓ with the orchestrator" in str(app.query_one("#composer-msgs").render())
 
     asyncio.run(drive())

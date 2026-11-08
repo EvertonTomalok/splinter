@@ -135,8 +135,12 @@ def build_trace(session: Session, view: RunView) -> TraceNode:
             root.children.append(_group(label, tone, nodes, expanded))
     if queued:
         names = "\n".join(" ".join(story_label(row)) for row in queued)
+        leaves = [
+            TraceNode(escape(" · ".join(part for part in story_label(row) if part)), row.title)
+            for row in queued
+        ]
         root.children.append(
-            TraceNode(f"[b {MUTED}]queued[/] [{DIM}]{len(queued)}[/]", names)
+            TraceNode(f"[b {MUTED}]queued[/] [{DIM}]{len(queued)}[/]", names, leaves)
         )
     events = _events_node(session)
     if events.children:

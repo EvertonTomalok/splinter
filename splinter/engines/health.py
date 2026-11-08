@@ -63,6 +63,12 @@ class CircuitBreaker:
         """True unless the breaker is OPEN (HALF_OPEN grants a single trial)."""
         return self.state(now) is not BreakerState.OPEN
 
+    def wait_s(self, now: float | None = None) -> float:
+        """Seconds until the breaker lets a trial through (0 when it already does)."""
+        if self.allow(now) or self.opened_at is None:
+            return 0.0
+        return max(self.cooldown_s - (_now(now) - self.opened_at), 0.0)
+
 
 class EngineHealth:
     """Circuit-breaker registry, one breaker per engine key."""
@@ -80,6 +86,10 @@ class EngineHealth:
     def allow(self, key: str, now: float | None = None) -> bool:
         """Whether an engine may be launched right now."""
         return self._breaker(key).allow(now)
+
+    def wait_s(self, key: str, now: float | None = None) -> float:
+        """Seconds until ``key`` may be launched again."""
+        return self._breaker(key).wait_s(now)
 
     def trip(self, key: str) -> None:
         """Record an infra failure against the engine's breaker."""

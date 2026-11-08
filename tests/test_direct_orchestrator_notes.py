@@ -46,3 +46,28 @@ def test_force_replan_passes_orchestrator_notes(
     )
 
     assert received == ["## Orchestrator notes\n- keep the public API stable"]
+
+
+def test_given_plan_skips_the_planner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
+    session = Session("ses_direct_given_plan")
+
+    def no_planner(*_args: object, **_kwargs: object) -> str:
+        raise AssertionError("the planner must not run when a plan is given")
+
+    monkeypatch.setattr("splinter.strategies.direct._make_plan", no_planner)
+    DirectStrategy()._run_task_loop(
+        Task(description="define the proto", acceptance="stubs exist"),
+        session,
+        _Ladder(),  # type: ignore[arg-type]
+        Trace(session),
+        KnowledgeStore(session),
+        task_index=1,
+        effort=None,
+        budget=None,
+        max_iterations=0,
+        localization="",
+        plan_text="# Brief us-002-att1\nwrite report.proto and run make gen",
+    )
+
+    assert "run make gen" in session.read("knowledge/plan-2.md")

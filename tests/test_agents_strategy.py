@@ -9,9 +9,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+import splinter.agents.brief_io as brief_io
 import splinter.strategies.agents as agents_mod
+import splinter.strategies.agents_brief as brief_mod
 from splinter.agents.acceptance import AcceptanceMode, AcceptanceResult
+from splinter.agents.codegen import CodegenResult
 from splinter.agents.gate import GateResult
+from splinter.agents.progress import read_attempts, read_done
 from splinter.agents.refiner import Brief
 from splinter.agents.runner import RunResult, Task
 from splinter.configure import AgentsOptions
@@ -122,11 +126,19 @@ def _mocked(
         "chain_for_effort": MagicMock(return_value=_chain()),
         "run_engine": run_engine or MagicMock(return_value=_LAUNCH),
         "check_acceptance": check_acceptance or MagicMock(return_value=_ACCEPT),
-        "_worktree_diff": MagicMock(return_value="diff --git a/x b/x"),
+        "worktree_diff": MagicMock(return_value="diff --git a/x b/x"),
+        "run_codegen": MagicMock(return_value=CodegenResult()),
+        "read_report": MagicMock(return_value=""),
+        "_sleep": MagicMock(return_value=None),
+    }
+    in_brief = {
+        "load_standards", "chain_for_effort", "run_engine", "check_acceptance",
+        "worktree_diff", "run_codegen", "read_report", "_sleep",
     }
     with ExitStack() as stack:
         for name, mock in patches.items():
-            stack.enter_context(patch.object(agents_mod, name, mock))
+            module = brief_mod if name in in_brief else agents_mod
+            stack.enter_context(patch.object(module, name, mock))
         stack.enter_context(
             patch("splinter.agents.gate.run_gate", return_value=GateResult(True, []))
         )
@@ -316,7 +328,7 @@ class TestFallbackWithoutWorktrees:
 class TestSlug:
     def test_slug_from_task_id(self, raw: str, expected: str) -> None:
         tasks = [Task(description="x", acceptance="- [ ] y", id=raw)]
-        assert agents_mod._slug_from(tasks) == expected
+        assert brief_io.slug_from(tasks) == expected
 
 
 def test_merge_failure_blocks_checkpoint_and_dependents(tmp_path: Path) -> None:
@@ -329,7 +341,7 @@ def test_merge_failure_blocks_checkpoint_and_dependents(tmp_path: Path) -> None:
         with pytest.raises(RuntimeError, match="incomplete briefs"):
             AgentsStrategy().execute(_tasks(), session, _ladder())
         assert mocks["run_engine"].call_count == 1
-        assert AgentsStrategy._load_checkpoint(session) == set()
+        assert not (tmp_path / "agents-run" / "checkpoint.json").exists()
 
 
 def test_assumed_brief_still_requires_merge(tmp_path: Path) -> None:
@@ -344,7 +356,7 @@ def test_assumed_brief_still_requires_merge(tmp_path: Path) -> None:
         mocks["merge_no_ff"].side_effect = WorktreeMergeConflict("dirty")
         with pytest.raises(RuntimeError, match="incomplete briefs"):
             AgentsStrategy().execute(_tasks(), session, _ladder())
-        assert AgentsStrategy._load_checkpoint(session) == set()
+        assert not (tmp_path / "agents-run" / "checkpoint.json").exists()
 
 
 def test_resume_reuses_integration_and_pending_worktree(tmp_path: Path) -> None:
@@ -380,7 +392,7 @@ def test_budget_does_not_queue_all_ready_briefs(tmp_path: Path) -> None:
 
 
 def test_parallel_is_opt_in(tmp_path: Path) -> None:
-    with _mocked(tmp_path), patch.object(AgentsStrategy, "_dispatch_briefs") as dispatch:
+    with _mocked(tmp_path), patch.object(AgentsStrategy, "_dispatch") as dispatch:
         def finish(*args: Any) -> list[RunResult]:
             assert args[-2].max_concurrency() == 1
             args[-1].add("q1")
@@ -394,9 +406,88 @@ def test_parallel_is_opt_in(tmp_path: Path) -> None:
 
 def test_diff_includes_untracked_content(tmp_path: Path) -> None:
     (tmp_path / "new.py").write_text("def greet(): return 'hello'\n")
-    with patch.object(agents_mod.subprocess, "run") as run:
+    with patch.object(brief_io.subprocess, "run") as run:
         run.side_effect = [
             MagicMock(stdout="?? new.py"), MagicMock(stdout=""),
             MagicMock(stdout="new.py\0"),
         ]
-        assert "def greet(): return 'hello'" in agents_mod._worktree_diff(tmp_path)
+        diff = brief_io.worktree_diff(tmp_path)
+    assert "def greet(): return 'hello'" in diff
+    assert run.call_args_list[0].args[0][-1] == "--untracked-files=all"
+
+
+def _attempts(tmp_path: Path) -> list[Any]:
+    return read_attempts((tmp_path / "agents-run" / "attempts.jsonl").read_text())
+
+
+def test_blocked_workhorse_goes_to_the_orchestrator_without_acceptance(tmp_path: Path) -> None:
+    captured: dict[str, Any] = {}
+
+    def assume(*args: Any, **kwargs: Any) -> None:
+        captured.update(kwargs)
+        kwargs["outcome"].passed = True
+
+    blocked = EngineLaunch(text="AGENT_RESULT: BLOCKED q1", model="kimi")
+    with _mocked(
+        tmp_path, run_engine=MagicMock(return_value=blocked),
+        task_loop=MagicMock(side_effect=assume),
+    ) as mocks:
+        mocks["read_report"].return_value = "protoc is blocked by the guard"
+        AgentsStrategy().execute(_tasks(), _session(tmp_path), _ladder())
+    assert mocks["run_engine"].call_count == 1
+    mocks["check_acceptance"].assert_not_called()
+    assert "protoc is blocked by the guard" in captured["plan_text"]
+    assert "greet('x') returns hello, x" in captured["plan_text"]
+    verdicts = [(a.engine, a.verdict) for a in _attempts(tmp_path)]
+    assert verdicts == [("mcode", "RETRY"), ("orchestrator", "PASS")]
+
+
+def test_codegen_failure_is_a_fix_round_and_success_reaches_acceptance(tmp_path: Path) -> None:
+    with _mocked(tmp_path) as mocks:
+        mocks["run_codegen"].side_effect = [
+            CodegenResult(("make gen",), "make gen exited 2: report.proto:3: syntax error"),
+            CodegenResult(("make gen",)),
+        ]
+        AgentsStrategy().execute(_tasks(), _session(tmp_path), _ladder())
+    assert mocks["run_engine"].call_count == 2
+    assert mocks["check_acceptance"].call_count == 1
+    doc = (tmp_path / "agents-run" / "briefs" / "q1.md").read_text()
+    assert "syntax error" in doc
+    assert [a.verdict for a in _attempts(tmp_path)] == ["RETRY", "PASS"]
+
+
+def test_cooling_chain_waits_instead_of_burning_attempts(tmp_path: Path) -> None:
+    calls: list[str] = []
+
+    def flaky(engine: Any, prompt: str, **kw: Any) -> EngineLaunch:
+        calls.append(engine.key)
+        if len(calls) <= 6:
+            raise RuntimeError(f"{engine.key} exited 1: boom")
+        return _LAUNCH
+
+    clock = [1000.0]
+
+    def sleep(seconds: float) -> None:
+        clock[0] += seconds
+
+    with (
+        _mocked(tmp_path, run_engine=MagicMock(side_effect=flaky)) as mocks,
+        patch("splinter.engines.health.time.monotonic", side_effect=lambda: clock[0]),
+    ):
+        mocks["_sleep"].side_effect = sleep
+        AgentsStrategy().execute(_tasks(), _session(tmp_path), _ladder())
+    assert mocks["_sleep"].call_count == 2
+    assert len(calls) == 7
+    assert read_done((tmp_path / "agents-run" / "checkpoint.json").read_text()) == {"q1"}
+
+
+def test_attempts_are_logged_per_story_with_their_tier(tmp_path: Path) -> None:
+    with _mocked(tmp_path, check_acceptance=MagicMock(side_effect=[_FAIL, _ACCEPT])):
+        AgentsStrategy().execute(_tasks(), _session(tmp_path), _ladder())
+    attempts = _attempts(tmp_path)
+    assert [(a.story, a.n, a.brief, a.verdict) for a in attempts] == [
+        (1, 1, "q1", "RETRY"), (1, 2, "q1", "PASS"),
+    ]
+    assert (tmp_path / "agents-run" / "logs" / "q1-1.log").exists()
+    stories = (tmp_path / "agents-run" / "stories.json").read_text()
+    assert '"q1": 1' in stories and "add greeting module" in stories

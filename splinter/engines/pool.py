@@ -29,6 +29,10 @@ class EnginePool:
             return engine
         raise PoolExhausted(f"no engine available; tried: {', '.join(tried) or 'none'}")
 
+    def wait_s(self, chain: Sequence[Engine]) -> float:
+        """Seconds until the first engine of ``chain`` leaves its cooldown."""
+        return min((self._health.wait_s(engine.key) for engine in chain), default=0.0)
+
     def report_success(self, key: str) -> None:
         """Close the engine's breaker after a good run."""
         self._health.reset(key)

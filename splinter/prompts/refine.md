@@ -33,5 +33,16 @@ Output STRICT JSON only — no prose, no markdown fences:
 {{"briefs": [{{"id": "q1", "task": "US-001", "goal": "...", "files": ["..."], "sketch": "...", "acceptance": ["..."], "deps": [], "effort": "normal"}}]}}
 
 `id` is a short slug such as "q1" or "pb3a". `task` is the originating US-NNN
-id. `effort` is the brief's difficulty — one of trivial, normal, hard, critical —
-and picks the model that runs it; default to the originating task's effort.
+id. `effort` is this brief's own difficulty, judged after the split — not the
+task's. It picks the model that runs it, and each step up costs far more:
+
+- trivial: copy an existing pattern, rename, wiring, config, docs, a spec file.
+- normal: a new function, handler, screen, query or test that follows a pattern
+  already in the repo. Most briefs are normal.
+- hard: new logic with no pattern to copy — an algorithm, concurrency, a tricky
+  migration, a refactor across modules.
+- critical: auth, money, security or data loss, where a subtle bug does harm.
+
+The task's effort is a ceiling: never rate a brief above its task. A brief a
+fast model finishes in 15 minutes is rarely hard; splitting a hard task should
+give mostly normal briefs and at most one hard one.

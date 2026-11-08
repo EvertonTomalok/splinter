@@ -18,10 +18,8 @@ import json
 import re
 from dataclasses import dataclass, replace
 
+from splinter.configure import configured_agents_options
 from splinter.memory.session import Session
-
-#: The agents strategy sends at most two fix briefs per brief before giving up.
-MAX_FIX_ROUNDS = 2
 
 _AGENTS_EVENT_RE = re.compile(r"^\[AGENTS\] brief (\S+)(.*)$")
 _WAVE_RE = re.compile(r"^-\s*Wave\s+(\d+):\s*(.+)$")
@@ -49,10 +47,11 @@ def render_waves(session: Session, strategy: str) -> list[str]:
     waves = parse_waves(session)
     if not waves:
         return []
+    max_fix = max_fix_rounds()
     lines = ["[bold]WAVES[/]"]
     for wave_no, briefs in waves:
         lines.append(f"  [b]Wave {wave_no}[/]")
-        lines.extend(f"    {brief_line(brief)}" for brief in briefs)
+        lines.extend(f"    {brief_line(brief, max_fix)}" for brief in briefs)
     return lines
 
 
@@ -74,13 +73,18 @@ def parse_waves(session: Session) -> list[tuple[int, list[BriefRow]]]:
     return waves
 
 
-def brief_line(brief: BriefRow) -> str:
+def max_fix_rounds() -> int:
+    """Fix rounds before the orchestrator takes over: one per burned attempt but the last."""
+    return max(configured_agents_options().max_attempts - 1, 0)
+
+
+def brief_line(brief: BriefRow, max_fix: int) -> str:
     """``B-04  mcode  fix 1/2  ↺ from agy`` — the brief's one-line status."""
     parts = [f"[b]{brief.ident}[/]"]
     if brief.engine:
         parts.append(brief.engine)
     if brief.fix_round:
-        parts.append(f"fix {brief.fix_round}/{MAX_FIX_ROUNDS}")
+        parts.append(f"fix {brief.fix_round}/{max_fix}")
     if brief.rerouted_from and brief.rerouted_from != brief.engine:
         parts.append(f"↺ from {brief.rerouted_from}")
     if brief.merged:
@@ -141,9 +145,12 @@ def _apply_agents_event(row: BriefRow, rest: str) -> BriefRow:
         round_m = re.search(r"fix round (\d+)", rest)
         round_no = int(round_m.group(1)) if round_m else 0
         return replace(row, engine=current, rerouted_from=origin, fix_round=round_no)
-    if "accepted" in rest:
+    if "merged=" in rest:
         merged = "merged=True" in rest
-        return replace(row, engine=current, rerouted_from=origin, merged=merged or row.merged)
+        return replace(
+            row, engine=current, rerouted_from=origin,
+            merged=merged or row.merged, conflict=not merged,
+        )
     if "assumed by orchestrator" in rest:
         return replace(row, engine=current, rerouted_from=origin, assumed=True)
     return row

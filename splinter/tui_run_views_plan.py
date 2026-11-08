@@ -212,14 +212,26 @@ def _refining(ctx: ViewContext) -> RenderableType:
     return Text.from_markup("\n".join(lines))
 
 
+def _runs_parallel(ctx: ViewContext) -> bool:
+    try:
+        return bool(ctx.session.read_status().get("parallel"))
+    except (OSError, ValueError):
+        return False
+
+
 def run_plan_view(ctx: ViewContext) -> RenderableType:
     """The run's plan: waves of briefs (agents), else the planner's notes so far."""
     briefs = _briefs(ctx)
     if not briefs:
         return _refining(ctx)
-    lines = [f"[{DIM}]agents-run/briefs.json · {len(briefs)} briefs[/]"]
+    parallel = _runs_parallel(ctx)
+    pace = "waves overlap, briefs of a wave in parallel" if parallel else "one brief at a time"
+    lines = [f"[{DIM}]agents-run/briefs.json · {len(briefs)} briefs · {pace}[/]"]
     for index, wave in enumerate(_waves(briefs), 1):
-        lines += ["", f"[b {LIME}]wave {index}[/] [{DIM}]· {len(wave)} in parallel[/]"]
+        size = f"{len(wave)} in parallel" if parallel else f"{len(wave)} brief" + (
+            "s" if len(wave) != 1 else ""
+        )
+        lines += ["", f"[b {LIME}]wave {index}[/] [{DIM}]· {size}[/]"]
         for brief in wave:
             task = str(brief.get("task_id") or brief.get("task") or "")
             effort = str(brief.get("effort") or "")

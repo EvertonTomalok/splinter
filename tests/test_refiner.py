@@ -10,10 +10,10 @@ import pytest
 from splinter.agents import refiner
 from splinter.agents.refiner import (
     Brief,
-    _sanitize_brief_id,
     brief_to_task,
     brief_waves,
     refine_briefs,
+    sanitize_brief_id,
     validate_briefs,
 )
 from splinter.agents.runner import Task
@@ -72,20 +72,20 @@ def _fake_run_text(
 
 class TestSanitizeBriefId:
     def test_keeps_slug_chars_and_lowercases(self) -> None:
-        assert _sanitize_brief_id("q1") == "q1"
-        assert _sanitize_brief_id("PB3a") == "pb3a"
+        assert sanitize_brief_id("q1") == "q1"
+        assert sanitize_brief_id("PB3a") == "pb3a"
 
     def test_sanitizes_task_style_ids(self) -> None:
-        assert _sanitize_brief_id("US-001") == "us-001"
+        assert sanitize_brief_id("US-001") == "us-001"
 
     def test_collapses_runs_and_strips_dashes(self) -> None:
-        assert _sanitize_brief_id("--Q  1!!") == "q-1"
-        assert _sanitize_brief_id("a/b") == "a-b"
+        assert sanitize_brief_id("--Q  1!!") == "q-1"
+        assert sanitize_brief_id("a/b") == "a-b"
 
     def test_unusable_input_falls_back_to_b(self) -> None:
-        assert _sanitize_brief_id("") == "b"
-        assert _sanitize_brief_id("---") == "b"
-        assert _sanitize_brief_id("###") == "b"
+        assert sanitize_brief_id("") == "b"
+        assert sanitize_brief_id("---") == "b"
+        assert sanitize_brief_id("###") == "b"
 
 
 class TestValidateBriefs:
@@ -233,7 +233,7 @@ class TestRefineBriefs:
         assert briefs[0].acceptance == ["acc one"]
         assert briefs[1].acceptance == ["acc two", "acc three"]
         assert [b.task_id for b in briefs] == ["US-001", "US-002"]
-        assert all(b.deps == [] for b in briefs)
+        assert [b.deps for b in briefs] == [[], ["us-001"]]
         assert all(b.effort == "normal" for b in briefs)
 
     def test_malformed_json_falls_back(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -431,3 +431,27 @@ def test_one_failing_story_keeps_the_others(monkeypatch: pytest.MonkeyPatch) -> 
     briefs = refine_briefs([_task("US-001"), _task("US-002", "two")], _ladder())
     assert [b.id for b in briefs] == ["x1", "us-002"]
     assert briefs[1].goal == "two"
+
+
+def test_resume_reuses_stories_a_killed_refine_already_split(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: object
+) -> None:
+    from splinter.memory.session import Session
+
+    session = Session.__new__(Session)
+    store: dict[str, str] = {}
+    monkeypatch.setattr(Session, "read", lambda self, name: store.get(name, ""))
+    monkeypatch.setattr(Session, "write", lambda self, name, text: store.__setitem__(name, text))
+    store[refiner.PROGRESS_FILE] = json.dumps(
+        {"total": 2, "done": [{"task": "US-001", "briefs": [{"id": "r1", "goal": "kept"}]}]}
+    )
+    asked = json.dumps({"briefs": [{"id": "r2", "goal": "new", "acceptance": ["ok"]}]})
+    fake, calls = _fake_run_text(asked)
+    monkeypatch.setattr(refiner, "run_text", fake)
+    tasks = [_task("US-001"), _task("US-002")]
+    tasks[1].deps = ["US-001"]
+
+    briefs = refine_briefs(tasks, _ladder(), session=session, reuse_progress=True)
+
+    assert [b.goal for b in briefs] == ["kept", "new"]
+    assert len(calls) == 1

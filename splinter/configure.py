@@ -421,6 +421,20 @@ _LEGACY_AGENTS_KEYS = frozenset({"engines", "engine_models", "engine_efforts"})
 
 
 @dataclass(frozen=True)
+class CodegenStep:
+    """A generator splinter runs in a brief's worktree before acceptance.
+
+    Workhorses may not run generators (the run guard refuses them), so a brief
+    that edits ``api/`` gets its stubs from here. The step runs when a changed
+    file starts with one of ``paths`` (always when ``paths`` is empty).
+    """
+
+    cmd: str
+    paths: tuple[str, ...] = ()
+    timeout: int = 600
+
+
+@dataclass(frozen=True)
 class AgentsOptions:
     """Run knobs under ``agents:``; the model per brief comes from its effort chain."""
 
@@ -428,6 +442,32 @@ class AgentsOptions:
     stall_min: float = 8.0
     max_attempts: int = 3
     probe_on_start: bool = False
+    codegen: tuple[CodegenStep, ...] = ()
+
+
+def _codegen_steps(raw: object) -> tuple[CodegenStep, ...]:
+    if not isinstance(raw, list):
+        return ()
+    steps: list[CodegenStep] = []
+    for item in raw:
+        if isinstance(item, str) and item.strip():
+            steps.append(CodegenStep(cmd=item.strip()))
+            continue
+        if not isinstance(item, dict) or not str(item.get("cmd") or "").strip():
+            continue
+        paths = item.get("paths") or []
+        try:
+            timeout = max(int(item.get("timeout", 600)), 1)
+        except (ValueError, TypeError):
+            timeout = 600
+        steps.append(
+            CodegenStep(
+                cmd=str(item["cmd"]).strip(),
+                paths=tuple(str(path) for path in paths) if isinstance(paths, list) else (),
+                timeout=timeout,
+            )
+        )
+    return tuple(steps)
 
 
 def configured_agents_options() -> AgentsOptions:
@@ -451,6 +491,7 @@ def configured_agents_options() -> AgentsOptions:
         stall_min=stall_min,
         max_attempts=max_attempts,
         probe_on_start=bool(raw.get("probe_on_start", False)),
+        codegen=_codegen_steps(raw.get("codegen")),
     )
 
 

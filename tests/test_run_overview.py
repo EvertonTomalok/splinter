@@ -392,3 +392,18 @@ def test_run_completion_total_includes_pre_run_cost(
     session.log_llm_usage("jev:typesafe/jev-1.14", {"input": 10, "output": 1}, 0.005)
     session.log_llm_usage("sonnet", {"input": 10, "output": 1}, 0.025)
     assert "$0.0500" in format_run_completion(session)
+
+
+def test_fix_rounds_follow_max_attempts_and_merge_events_mark_the_brief(
+    monkeypatch: "pytest.MonkeyPatch",
+) -> None:
+    import splinter.run_overview_agents as waves
+    from splinter.configure import AgentsOptions
+
+    monkeypatch.setattr(waves, "configured_agents_options", lambda: AgentsOptions(max_attempts=5))
+    row = waves._apply_agents_event(waves.BriefRow(ident="B-01"), " engine=kimi fix round 1")
+    assert "fix 1/4" in waves.brief_line(row, waves.max_fix_rounds())
+    merged = waves._apply_agents_event(row, " engine=kimi merged=True")
+    assert merged.merged and not merged.conflict
+    conflict = waves._apply_agents_event(row, " engine=kimi merged=False")
+    assert conflict.conflict and not conflict.merged

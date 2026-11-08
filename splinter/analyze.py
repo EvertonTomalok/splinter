@@ -518,8 +518,11 @@ def _task_iters(
         result.append((1, "", reindexed_single))
         return result
 
+    merged: dict[int, tuple[str, list[tuple[int, str, str]]]] = {}
     for task_no, title, start, end in ranges:
-        raw = _iterations_in_range(loop_md, start, end)
+        _, raw = merged.setdefault(task_no, (title, []))
+        raw.extend(_iterations_in_range(loop_md, start, end))
+    for task_no, (title, raw) in merged.items():
         reindexed_task: list[tuple[int, str, str]] = [
             (idx, tier, verdict) for idx, (_, tier, verdict) in enumerate(raw, 1)
         ]

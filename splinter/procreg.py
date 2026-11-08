@@ -102,6 +102,8 @@ def run_subprocess(
     :class:`IdleTimeoutError` when no line arrives on either pipe in time — the
     workhorse STALL watchdog.
     """
+    if _shutting_down.is_set():
+        raise ShuttingDownError(f"splinter is exiting: not starting {cmd[0]}")
     if env is not None and "SPLINTER_LAUNCH_PATH" in env:
         import shutil
 
@@ -193,6 +195,62 @@ def _stream(
     out_thread.join()
     err_thread.join()
     return "".join(out), "".join(err)
+
+
+_shutting_down = threading.Event()
+
+
+class ShuttingDownError(RuntimeError):
+    """Raised by :func:`run_subprocess` once :func:`shutdown` began."""
+
+
+def _descendants(root: int) -> list[int]:
+    """Every live descendant pid of ``root`` (by parent pid, any process group)."""
+    try:
+        out = subprocess.run(
+            ["ps", "-A", "-o", "pid=,ppid="], capture_output=True, text=True, timeout=5
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    children: dict[int, list[int]] = {}
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+            children.setdefault(int(parts[1]), []).append(int(parts[0]))
+    found: list[int] = []
+    stack = [root]
+    while stack:
+        for child in children.get(stack.pop(), []):
+            found.append(child)
+            stack.append(child)
+    return found
+
+
+def _signal_all(pids: list[int], sig: int) -> None:
+    for pid in pids:
+        try:
+            os.kill(pid, sig)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+
+
+def shutdown(grace: float = 2.0) -> None:
+    """Stop for good: refuse new children, then kill every child and grandchild.
+
+    Tracked provider groups get SIGTERM first; then every descendant of this
+    process (gate commands, git, anything spawned outside the registry) gets
+    SIGTERM, and SIGKILL after ``grace`` seconds if still alive.
+    """
+    _shutting_down.set()
+    _stop_event.set()
+    terminate_all()
+    pids = _descendants(os.getpid())
+    _signal_all(pids, signal.SIGTERM)
+    deadline = time.monotonic() + grace
+    while pids and time.monotonic() < deadline:
+        time.sleep(0.1)
+        pids = [pid for pid in pids if pid in set(_descendants(os.getpid()))]
+    _signal_all(pids, signal.SIGKILL)
 
 
 def terminate_all() -> None:

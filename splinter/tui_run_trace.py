@@ -177,6 +177,12 @@ class TraceScreen(Screen[None]):
         first = tree.root.children[0] if tree.root.children else None
         if first is not None:
             self._show(first)
+            self.call_after_refresh(self._land, first)
+
+    def _land(self, node: TreeNode[str]) -> None:
+        """Put the cursor on the first line so enter, e and c act right away."""
+        tree: Tree[str] = self.query_one("#trace-tree", Tree)
+        tree.move_cursor(node)
 
     def write(self, line: str) -> None:
         """Append one formatted line to the live log while the screen is open."""

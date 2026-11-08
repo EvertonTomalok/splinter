@@ -103,9 +103,9 @@ def notes_for(session: Session, consumer: str, strategy: str) -> str:
                 note.text,
             )
             delivered.append(updated)
+            session.write_receipt(updated.note_id)
             if needed <= updated.reads:
                 applied.append(_render_note(updated))
-                session.write_receipt(updated.note_id)
             else:
                 remaining.append(updated)
         _write(session, remaining, applied)

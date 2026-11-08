@@ -12,6 +12,7 @@ from threading import Lock
 from typing import Any
 
 from splinter.agents.runner import Task
+from splinter.agents.story_order import with_story_deps
 from splinter.enums import Effort
 from splinter.memory.session import Session
 from splinter.models.roster import Ladder
@@ -36,7 +37,7 @@ class Brief:
     task_id: str = ""
 
 
-def _sanitize_brief_id(value: str) -> str:
+def sanitize_brief_id(value: str) -> str:
     """Coerce an id into one safe path component; unusable input degrades to "b"."""
     cleaned = re.sub(r"[^a-z0-9-]+", "-", value.lower())
     cleaned = re.sub(r"-{2,}", "-", cleaned).strip("-")
@@ -162,12 +163,12 @@ def _inherit_effort(briefs: list[Brief], tasks: list[Task]) -> list[Brief]:
 
 def _brief_from_item(item: dict[str, Any]) -> Brief:
     return Brief(
-        id=_sanitize_brief_id(str(item.get("id") or "")),
+        id=sanitize_brief_id(str(item.get("id") or "")),
         goal=str(item.get("goal") or ""),
         files=_as_lines(item.get("files")),
         sketch=str(item.get("sketch") or ""),
         acceptance=_as_lines(item.get("acceptance")),
-        deps=[_sanitize_brief_id(d) for d in _as_lines(item.get("deps"))],
+        deps=[sanitize_brief_id(d) for d in _as_lines(item.get("deps"))],
         effort=_valid_effort(item.get("effort")),
         task_id=str(item.get("task") or ""),
     )
@@ -179,12 +180,12 @@ def _fallback_briefs(tasks: list[Task]) -> list[Brief]:
     for n, task in enumerate(tasks):
         briefs.append(
             Brief(
-                id=_sanitize_brief_id(task.id or f"t{n}"),
+                id=sanitize_brief_id(task.id or f"t{n}"),
                 goal=task.description,
                 files=list(task.target_files or []),
                 acceptance=[ln.strip() for ln in task.acceptance.splitlines() if ln.strip()],
                 task_id=task.id,
-                deps=[_sanitize_brief_id(dep) for dep in (task.deps or [])],
+                deps=[sanitize_brief_id(dep) for dep in (task.deps or [])],
                 effort=_valid_effort(task.effort),
             )
         )
@@ -269,6 +270,7 @@ def refine_briefs(
     trace: Trace | None = None,
     task_index: int = 0,
     orchestrator_notes: str = "",
+    reuse_progress: bool = False,
 ) -> list[Brief]:
     """Refine PRD tasks into workhorse briefs through the refine template.
 
@@ -279,13 +281,32 @@ def refine_briefs(
     """
     if not tasks:
         return []
+    tasks = with_story_deps(
+        tasks,
+        prd_text,
+        lambda prompt: run_text(
+            prompt,
+            ladder.planner_model,
+            variant=ladder.planner_effort,
+            output_format="json",
+            timeout=ladder.prd_timeout,
+            trace=trace,
+            task_index=task_index,
+            role="refine",
+            pool=ladder.step_pool("planner"),
+        ),
+    )
     prd_head = _clip_prd(prd_text)
     log.info(
         "refine · %d stories into briefs · %s, one call per story",
         len(tasks),
         ladder.planner_model,
     )
-    done: dict[int, list[Brief]] = {}
+    done: dict[int, list[Brief]] = (
+        _saved_progress(session, tasks) if reuse_progress and session is not None else {}
+    )
+    if done:
+        log.info("refine · resume · %d/%d stories already split", len(done), len(tasks))
     progress_lock = Lock()
 
     def report(n: int, briefs: list[Brief]) -> None:
@@ -303,6 +324,8 @@ def refine_briefs(
             session.write(PROGRESS_FILE, json.dumps(payload))
 
     def one(n: int, task: Task) -> list[Brief]:
+        if n in done:
+            return done[n]
         try:
             briefs = _inherit_effort(
                 _refine_via_llm([task], ladder, prd_head, trace, task_index, orchestrator_notes),
@@ -339,6 +362,28 @@ _REFINE_WORKERS = 6
 _PRD_HEAD = 6000
 
 
+def _saved_progress(session: Session, tasks: list[Task]) -> dict[int, list[Brief]]:
+    """Stories a killed refine already split, by task index, from :data:`PROGRESS_FILE`."""
+    try:
+        data = json.loads(session.read(PROGRESS_FILE) or "{}")
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(data, dict) or data.get("total") != len(tasks):
+        return {}
+    index = {task.id: n for n, task in enumerate(tasks) if task.id}
+    found: dict[int, list[Brief]] = {}
+    for story in data.get("done") or []:
+        if not isinstance(story, dict) or story.get("task") not in index:
+            continue
+        try:
+            briefs = [Brief(**item) for item in story.get("briefs") or []]
+        except TypeError:
+            continue
+        if briefs:
+            found[index[story["task"]]] = briefs
+    return found
+
+
 def _clip_prd(prd_text: str) -> str:
     text = prd_text.strip()
     return text if len(text) <= _PRD_HEAD else text[:_PRD_HEAD].rstrip() + "\n…"
@@ -358,7 +403,7 @@ def _join_story_briefs(tasks: list[Task], per_task: list[list[Brief]]) -> list[B
     by_task: dict[str, list[str]] = {}
     joined: list[Brief] = []
     for n, (task, briefs) in enumerate(zip(tasks, per_task)):
-        prefix = _sanitize_brief_id(task.id or f"t{n}")
+        prefix = sanitize_brief_id(task.id or f"t{n}")
         rename = {
             b.id: (f"{prefix}-{b.id}" if seen[b.id] > 1 and not b.id.startswith(prefix) else b.id)
             for b in briefs
@@ -375,7 +420,7 @@ def _join_story_briefs(tasks: list[Task], per_task: list[list[Brief]]) -> list[B
         upstream = [
             bid
             for dep in (task.deps or [])
-            for bid in by_task.get(dep, by_task.get(_sanitize_brief_id(dep), []))
+            for bid in by_task.get(dep, by_task.get(sanitize_brief_id(dep), []))
         ]
         if not upstream:
             continue

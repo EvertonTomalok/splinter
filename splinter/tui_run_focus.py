@@ -7,11 +7,11 @@ from typing import cast
 
 from textual import events
 from textual.app import ComposeResult
-from textual.containers import Vertical, VerticalScroll
-from textual.widgets import RichLog
+from textual.containers import Vertical
 
 from splinter.run_view import IterationRow, RunView, StoryRow
 from splinter.tui_blockword import BlockWord
+from splinter.tui_follow import FollowLog, FollowScroll, new_bar
 from splinter.tui_run_live import LiveAction, live_phrase
 from splinter.tui_run_palette import DIM, INK, LIME, LIVE_LINE, MUTED, RED, Ink
 from splinter.tui_run_text import cell_len, pad, story_id
@@ -70,6 +70,7 @@ class FocusColumn(Vertical):
     FocusColumn #view-static { height: auto; }
     FocusColumn #log-pane { height: 1fr; display: none; }
     FocusColumn #log-head { height: 1; }
+    FocusColumn .new-below { height: 1; dock: bottom; background: $hover; }
     """
 
     available_views: tuple[str, ...] = ("act",)
@@ -91,10 +92,12 @@ class FocusColumn(Vertical):
         yield Ink(id="view-tabs")
         with Vertical(id="view-body"):
             yield Vertical(id="needs-you-slot")
-            yield VerticalScroll(Ink(id="view-static"), id="view-scroll")
+            yield FollowScroll(Ink(id="view-static"), id="view-scroll")
+            yield new_bar("view-scroll", "view-new")
         with Vertical(id="log-pane"):
             yield Ink(LOG_HEAD, id="log-head")
-            yield RichLog(id="log", markup=True, wrap=True, highlight=False)
+            yield FollowLog(id="log", markup=True, wrap=True, highlight=False)
+            yield new_bar("log", "log-new")
 
     def on_resize(self, event: events.Resize) -> None:
         self.call_after_refresh(self._reapply)

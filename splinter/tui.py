@@ -14,6 +14,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import os
 import re
 import sys
 import time
@@ -87,6 +88,7 @@ from splinter.run_trace import TraceNode, build_trace
 from splinter.run_view import RunView, RunViewBuilder
 from splinter.run_view_files import FileCache
 from splinter.tui_blockword import BlockWord
+from splinter.tui_follow import FollowLog, FollowScroll, TailChanged
 from splinter.tui_prd_mode import MODES, task_source
 from splinter.tui_prd_outline import (
     cap_markup,
@@ -2996,6 +2998,7 @@ class RunApp(App[int]):
         self._view_files = FileCache()
         self._last_view: RunView | None = None
         self._view_key: tuple[object, ...] | None = None
+        self._view_place: tuple[str, int | None] | None = None
         self._live_actions: list[LiveAction] = []
         self._log_history: list[str] = []
         self._motion_phase = False
@@ -3151,7 +3154,25 @@ class RunApp(App[int]):
             self.action_toggle_iteration(story or 0, rows[-1].n)
 
     def _scroll_view_end(self) -> None:
-        self.query_one("#view-scroll", VerticalScroll).scroll_end(animate=False)
+        self.query_one("#view-scroll", FollowScroll).follow()
+        self.query_one("#view-new").display = False
+
+    def _mark_new_below(self) -> None:
+        if self.query_one("#view-scroll", FollowScroll).new_below():
+            self.query_one("#view-new").display = True
+
+    def action_follow_tail(self, target: str) -> None:
+        """The "↓ new below" bar: pin the pane to its tail again."""
+        pane = self.query_one(f"#{target}")
+        if isinstance(pane, FollowScroll | FollowLog):
+            pane.follow()
+        bar = "#view-new" if target == "view-scroll" else "#log-new"
+        self.query_one(bar).display = False
+
+    def on_tail_changed(self, event: TailChanged) -> None:
+        bar = "#view-new" if event.pane.id == "view-scroll" else "#log-new"
+        if event.pane.id in ("view-scroll", "log"):
+            self.query_one(bar).display = not event.following
 
     def on_key(self, event: events.Key) -> None:
         if event.key == "escape":
@@ -3910,20 +3931,29 @@ class RunApp(App[int]):
         logs = self.view == "logs"
         self.query_one("#view-body").display = not logs
         self.query_one("#log-pane").display = logs
-        scroll = self.query_one("#view-scroll", VerticalScroll)
+        scroll = self.query_one("#view-scroll", FollowScroll)
         scroll.display = True
         scroll.set_class(self.view == "act", "-bottom")
         self.query_one("#needs-you-slot").display = self.view == "act"
         if key != self._view_key:
             factory = view_registry()[self.view]
+            place = (self.view, story)
+            switched = self._view_place != place
+            changed = self._view_key is None or self._view_key[:-1] != base
+            following = scroll.following
             self.query_one("#view-static", Static).update(factory(ctx))
-            moved = self._view_key is None or self._view_key[:-1] != base
             self._view_key = key
-            if self.view == "act":
-                if moved:
+            self._view_place = place
+            if switched:
+                self.query_one("#view-new").display = False
+                if self.view == "act":
                     self.call_after_refresh(self._scroll_view_end)
-            else:
-                scroll.scroll_home(animate=False)
+                else:
+                    scroll.scroll_home(animate=False)
+            elif changed and following and self.view == "act":
+                self.call_after_refresh(self._scroll_view_end)
+            elif changed:
+                self.call_after_refresh(self._mark_new_below)
 
     def _refresh_view_model(self, state: str) -> None:
         view: RunView | None
@@ -4222,6 +4252,34 @@ class RunApp(App[int]):
         ind.update(cowabunga_markup(val == RunnerMode.KOWABUNGA_ON, error))
 
 
+def _pipeline_alive() -> bool:
+    """Whether a non-daemon thread (the pipeline worker, an executor) still runs."""
+    import threading
+
+    main = threading.main_thread()
+    return any(t is not main and not t.daemon and t.is_alive() for t in threading.enumerate())
+
+
+def _hard_exit(session: Session, rc: int) -> None:
+    """Quit with the run still live: kill every child, mark the run paused, exit now.
+
+    The pipeline thread cannot be cancelled; left alone it would start the next
+    brief, gate or engine and Python would wait for it at exit.
+    """
+    from splinter import procreg
+
+    print(f"stopping run {session.id}: killing its processes…", flush=True)
+    procreg.shutdown()
+    status = session.read_status()
+    if status.get("state") == "running":
+        session.set_status(
+            "paused", reason="user_kill", stage=str(status.get("stage", "run")), pid=None
+        )
+    print(f"stopped. resume with: splinter resume {session.id}", flush=True)
+    logging.shutdown()
+    os._exit(rc or 130)
+
+
 def run_with_tui(run_kwargs: dict[str, Any], session: Session | None = None) -> int:
     """Run the pipeline on a worker thread under RunApp.
 
@@ -4235,6 +4293,8 @@ def run_with_tui(run_kwargs: dict[str, Any], session: Session | None = None) -> 
         session = Session(new_session_id())
     app = RunApp(session, {**run_kwargs, "session": session})
     app.run()
+    if _pipeline_alive():
+        _hard_exit(session, app.rc)
     if app.rc != 0:
         print(f"run failed (session {session.id}){': ' + app.error if app.error else ''}")
     else:

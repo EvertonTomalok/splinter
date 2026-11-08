@@ -8,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
+from splinter.agents.progress import ATTEMPTS, CHECKPOINT, STORIES
 from splinter.memory.session import Session
 from splinter.models.roster import Ladder, load_ladder
 from splinter.obs.event_reader import RunEntryReader
@@ -18,6 +19,7 @@ from splinter.run_snapshot import (
     current_task_no,
     task_rows,
 )
+from splinter.run_view_agents import agents_groups, agents_rows
 from splinter.run_view_files import FileCache, iteration_files, review_note_name
 from splinter.run_view_rows import (
     as_int,
@@ -133,6 +135,7 @@ class RunViewBuilder:
             key = (
                 session.dir, state, snap.status, snap.loop_md, snap.pre_run_models,
                 self._files, self._reader.revision, _ladder_key(active_ladder),
+                self._agents_texts(session),
             )
             if self._view is not None and key == self._view_key:
                 if state.upper() != "RUNNING" or parse_time(
@@ -282,22 +285,41 @@ class RunViewBuilder:
     def _groups_for(self, snap: Snapshot) -> list[tuple[int, str, list[tuple[int, str, str]]]]:
         key = self._groups_key_for(snap.session)
         if key != self._groups_key:
-            self._groups = groups(snap, self._cache.read)
+            stories, attempts, _ = self._agents_texts(snap.session)
+            self._groups = (
+                agents_groups(stories, attempts) if stories else groups(snap, self._cache.read)
+            )
             self._groups_key = key
         return self._groups
 
     def _rows_for(self, snap: Snapshot) -> list[TaskRow]:
         key = (self._groups_key, snap.status, snap.state)
         if key != self._rows_key:
+            stories, attempts, checkpoint = self._agents_texts(snap.session)
             try:
-                self._rows = task_rows(snap, self._groups)
+                self._rows = (
+                    agents_rows(stories, attempts, checkpoint)
+                    if stories
+                    else task_rows(snap, self._groups)
+                )
             except Exception:
                 self._rows = []
             self._rows_key = key
         return self._rows
 
     def _groups_key_for(self, session: Session) -> tuple[object, ...]:
-        return session.dir, self._text(session.dir / "loop.md"), self._files
+        return (
+            session.dir, self._text(session.dir / "loop.md"), self._files,
+            self._agents_texts(session),
+        )
+
+    def _agents_texts(self, session: Session) -> tuple[str, str, str]:
+        """The agents run's stories, attempts and checkpoint ("" for other strategies)."""
+        return (
+            self._text(session.dir / STORIES),
+            self._text(session.dir / ATTEMPTS),
+            self._text(session.dir / CHECKPOINT),
+        )
 
     def _iterations(
         self,

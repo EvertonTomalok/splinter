@@ -36,13 +36,13 @@ def _status(message: SentMessage) -> str:
     """Where a sent message is: waiting for its reader, or read."""
     orchestrator = message.target == "orchestrator only"
     if message.delivered_at is None:
-        waiting = (
-            "queued · read at the orchestrator's next step"
-            if orchestrator
-            else "queued · read at the start of the next iteration"
-        )
+        waiting = "sending to the orchestrator…"
         return f"[{AMBER}]{waiting}[/]"
-    done = "✓ read by the orchestrator" if orchestrator else "✓ delivered to the runner"
+    done = (
+        "✓ with the orchestrator · it decides where it applies"
+        if orchestrator
+        else "✓ with the orchestrator · applied to the story's next step"
+    )
     return f"[{LIME}]{done}[/]"
 
 

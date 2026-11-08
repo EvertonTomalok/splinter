@@ -26,6 +26,13 @@ def _stream_event(line: str) -> None:
         return
     if not isinstance(obj, dict):
         return
+    if obj.get("role") == "assistant":
+        for call in _tool_calls(obj):
+            _stream_log.info("  🔧 %s", call[:90])
+        txt = _role_text(obj).strip().replace("\n", " ")
+        if txt:
+            _stream_log.info("  💬 %s", txt)
+        return
     etype = obj.get("type")
     raw_msg = obj.get("message")
     message: dict[str, Any] = raw_msg if isinstance(raw_msg, dict) else {}
@@ -44,6 +51,41 @@ def _stream_event(line: str) -> None:
         txt = obj["text"].strip().replace("\n", " ")
         if txt:
             _stream_log.info("  💬 %s", txt)
+
+
+def _role_text(obj: dict[str, Any]) -> str:
+    """Text of a kimi-code 2.5+ ``{"role": "assistant", "content": ...}`` row."""
+    content = obj.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            part["text"]
+            for part in content
+            if isinstance(part, dict) and part.get("type") == "text"
+            and isinstance(part.get("text"), str)
+        )
+    return ""
+
+
+def _tool_calls(obj: dict[str, Any]) -> list[str]:
+    """``Name arg`` for each ``tool_calls`` entry of a kimi-code 2.5+ row."""
+    found: list[str] = []
+    for call in obj.get("tool_calls") or []:
+        fn = call.get("function") if isinstance(call, dict) else None
+        if not isinstance(fn, dict):
+            continue
+        name = str(fn.get("name") or "tool")
+        try:
+            args = json.loads(fn.get("arguments") or "{}")
+        except (json.JSONDecodeError, TypeError):
+            args = {}
+        hint = next(
+            (str(args[k]) for k in ("path", "file_path", "command", "pattern") if k in args),
+            "",
+        ) if isinstance(args, dict) else ""
+        found.append(f"{name} {hint}".strip())
+    return found
 
 
 @dataclass(frozen=True)
@@ -102,7 +144,11 @@ def _parse_output(stdout: str) -> KimiResult:
         if isinstance(sid, str) and sid:
             session_id = sid
         message = obj.get("message")
-        if isinstance(message, dict) and isinstance(message.get("content"), list):
+        if obj.get("role") == "assistant":
+            text = _role_text(obj)
+            if text.strip():
+                text_parts.append(text)
+        elif isinstance(message, dict) and isinstance(message.get("content"), list):
             for block in message["content"]:
                 if not isinstance(block, dict):
                     continue

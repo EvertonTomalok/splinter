@@ -152,3 +152,36 @@ class TestProvider:
         )
         with pytest.raises(ProviderGapError):
             kimi.KimiProvider().run("hi", "kimi/kimi-code/k3.1-pro", timeout=60)
+
+
+KIMI_25_STREAM = "\n".join(
+    [
+        '{"role":"meta","type":"system.version","version":"2.5.2"}',
+        '{"role":"assistant","tool_calls":[{"type":"function","id":"t1","function":'
+        '{"name":"Write","arguments":"{\\"path\\":\\"a.txt\\",\\"content\\":\\"bye\\\\n\\"}"}}]}',
+        '{"role":"tool","tool_call_id":"t1","content":"Appended 4 bytes to a.txt"}',
+        '{"role":"assistant","content":"AGENT_RESULT: DONE t1"}',
+        '{"role":"meta","type":"session.resume_hint","session_id":"session_5cd4",'
+        '"content":"To resume this session: kimi -r session_5cd4"}',
+    ]
+)
+
+
+def test_kimi_25_role_rows_give_the_answer_and_session() -> None:
+    from splinter.providers.kimi import _parse_output
+
+    result = _parse_output(KIMI_25_STREAM)
+    assert result.text == "AGENT_RESULT: DONE t1"
+    assert result.session_id == "session_5cd4"
+
+
+def test_kimi_25_stream_logs_tool_calls_and_text(caplog: pytest.LogCaptureFixture) -> None:
+    from splinter.providers.kimi import _stream_event
+
+    with caplog.at_level("INFO", logger="splinter.live"):
+        for line in KIMI_25_STREAM.splitlines():
+            _stream_event(line)
+    lines = [r.getMessage() for r in caplog.records]
+    assert "  🔧 Write a.txt" in lines
+    assert "  💬 AGENT_RESULT: DONE t1" in lines
+    assert not any("resume" in line for line in lines)

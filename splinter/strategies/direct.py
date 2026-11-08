@@ -461,6 +461,7 @@ class DirectStrategy(Strategy):
         lock: threading.Lock | None = None,
         cwd: str | None = None,
         outcome: TaskOutcome | None = None,
+        plan_text: str | None = None,
     ) -> RunResult | None:
         if checkpoint is not None:
             _clear_checkpoint(session)
@@ -502,6 +503,10 @@ class DirectStrategy(Strategy):
             # + user guidance. That IS the plan — what to fix is already known.
             log.info("ASK_USER resume — using corrections as plan (skill output + user guidance)")
             plan = corrections
+            session.write(task_plan_file, f"# Plan\n\n{plan}\n")
+        elif plan_text:
+            log.info("plan given for task %d — the planner does not run", task_index + 1)
+            plan = plan_text
             session.write(task_plan_file, f"# Plan\n\n{plan}\n")
         else:
             # Reuse any existing plan — opus calls are expensive and the plan is

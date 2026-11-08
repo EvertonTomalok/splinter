@@ -60,6 +60,7 @@ splinter/
   run_snapshot.py     # Shared read-side snapshot of the session files
   run_view.py         # Pure run view model: RunView, build_run_view
   run_view_files.py   # File cache, mtime keys, review/run file paths
+  run_view_agents.py  # Agents run stories and attempts from agents-run/
   run_view_rows.py    # Story, iteration, stage and ladder projections
   run_view_spend.py   # Spend aggregation (cost, time) for the rail
   task_waves.py       # PRD tasks → waves
@@ -93,6 +94,9 @@ splinter/
     acceptance.py     # Brief acceptance validator (gate | gate+eval | gate+orchestrator)
     laws.py           # Workhorse contract, brief template, AGENT_RESULT protocol
     refiner.py        # PRD tasks → waves of briefs with deps
+    brief_io.py       # Engine prompt, worktree diff, report, engine logs, saved briefs
+    codegen.py        # Project generators run in a brief worktree before acceptance
+    progress.py       # agents-run/stories.json + attempts.jsonl (what the run screen reads)
   engines/            # Engine CLIs for the agents strategy
     catalog.py        # Engine catalog (mcode, agy, sonnet, codex, glm, …)
     health.py         # Circuit breaker + live probe
@@ -103,7 +107,9 @@ splinter/
   strategies/
     base.py           # Strategy ABC, EvalVerdict
     direct.py         # Raphael: single-task loop with escalation
-    agents.py         # plan-with-agents: briefs, engines, integration branch
+    agents.py         # plan-with-agents: refine, dispatch, merge, orchestrator takeover
+    agents_brief.py   # One brief: launch, classify, codegen, acceptance, fix rounds
+    agents_ctx.py     # BriefCtx: run settings, attempt log, user guidance
   providers/
     claude_cli.py     # Subprocess wrapper for `claude -p`
     opencode.py       # Subprocess wrapper for `opencode run`
@@ -264,21 +270,37 @@ its own git worktree forked from a dedicated integration branch
 with `--no-ff`. Flow per brief:
 
 1. **Refine** — LLM turns tasks into small briefs (goal, files, sketch,
-   acceptance, deps, effort — defaults to the task's effort) grouped into waves
+   acceptance, deps, effort — rated per brief, empty takes the task's) grouped into waves
 2. **Launch** — the first healthy model of the effort chain runs the brief in a
    guarded worktree
    (PATH shims block git write/build/test/lint; the workhorse only edits files)
 3. **Classify** — STALL/LIMIT/CRASH/EMPTY/MISSING (`engines/failures.py`);
    infra failures trip that model's circuit breaker and reroute the same brief
-   to the next model of the chain **without burning attempts**
-4. **Acceptance** — per brief: `gate` | `gate+eval` (default) | `gate+orchestrator`
-   (`agents/acceptance.py`, config `agents.acceptance_check`); failures return a
-   fix brief to the same engine session (max 2 fix rounds)
-5. **Assume** — after 3 burned attempts the orchestrator takes the brief over
-   via the direct loop in the same worktree
-6. **Merge** — acceptance PASS → commit + `merge --no-ff` into the integration
+   to the next model of the chain **without burning attempts**. When every
+   model of the chain is cooling down, the brief waits for the first breaker
+   to let a trial through; after `max_attempts` such rounds it goes to the
+   orchestrator. A workhorse that prints `AGENT_RESULT: BLOCKED` goes to the
+   orchestrator at once, with its report as the reason (no acceptance run).
+4. **Generate** — `agents.codegen` steps run in the worktree outside the guard
+   (workhorses may not run generators), each only when a changed file starts
+   with one of its `paths`. A failing step is a fix round with its output.
+5. **Acceptance** — per brief: `gate` | `gate+eval` (default) | `gate+orchestrator`
+   (`agents/acceptance.py`, config `agents.acceptance_check`) on the full diff
+   (file list first, every new file listed); failures return a fix brief to the
+   same engine session and burn one attempt
+6. **Assume** — after `max_attempts` burned attempts the orchestrator takes the
+   brief over via the direct loop in the same worktree, with the brief document
+   (fix rounds and the reason included) as its plan: the planner does not run
+7. **Merge** — acceptance PASS → commit + `merge --no-ff` into the integration
    branch; after all waves the final gate runs there and the branch lands in the
    main tree
+
+Progress lives in `agents-run/`: `stories.json` (the PRD stories and the story
+of each brief), `attempts.jsonl` (a start and an end line per attempt: story,
+attempt number, brief, engine, tier, verdict, note), `checkpoint.json` (merged
+briefs) and `logs/<brief>-<n>.log` (each engine's output). The run screen reads
+these (`run_view_agents.py`): a story passes when all its briefs merged and is
+live while one of its attempts is open, in sequential and parallel runs alike.
 
 ### Config (`agents:` in `.splinter/config.yaml`)
 
@@ -292,6 +314,8 @@ agents:
   stall_min: 8                  # idle watchdog: minutes without output → STALL
   max_attempts: 3               # burned attempts before the orchestrator assumes
   probe_on_start: false         # live-probe the effort-chain models before wave 1
+  codegen:                      # generators splinter runs before acceptance
+    - {cmd: make gen, paths: ["api/"], timeout: 600}
 ```
 
 ```bash
