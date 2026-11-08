@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -149,3 +150,49 @@ def test_filter_reads_skip_binary_and_noise(
     assert "### a.go" in block
     assert "blob.txt" not in block
     assert "node_modules" not in block
+
+
+def test_meta_anchors_go_through_jev_and_stay_dropped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from unittest.mock import patch
+
+    from splinter.agents import localizer
+    from splinter.configure import DecisionsOptions
+    from splinter.memory.session import Session
+    from splinter.models.roster import Ladder
+
+    _tree(tmp_path, "AGENTS.md", "apps/web/AGENTS.md", "apps/web/page.tsx")
+    monkeypatch.setenv("SPLINTER_HOME", str(tmp_path / "home"))
+    ladder = Ladder(
+        tiers=[],
+        effort_map={},
+        eval_model="sonnet",
+        eval_effort="high",
+        planner_model="sonnet",
+        planner_effort="high",
+        localizer_recall_model="recall-model",
+        localizer_recall_large_model="",
+        localizer_precision_model="precision-model",
+    )
+    recall = json.dumps([{"file": "apps/web/page.tsx", "symbol": "Page", "confidence": 0.9}])
+    seen: list[list[str]] = []
+
+    def fake_rank(item: str, anchors: list[CodeAnchor], **_: object) -> list[CodeAnchor]:
+        seen.append([a.file for a in anchors])
+        return [a for a in anchors if not a.file.endswith("AGENTS.md")]
+
+    with (
+        patch.object(localizer, "_run_search_tools", return_value="files"),
+        patch.object(localizer, "_recall_phase", return_value=recall),
+        patch.object(localizer, "_jev_rank_anchors", side_effect=fake_rank),
+        patch(
+            "splinter.configure.configured_decisions",
+            return_value=DecisionsOptions(use_for=("recall",)),
+        ),
+    ):
+        out = localizer._localize_item(
+            0, "task", ladder, repo_path=str(tmp_path), session=Session("s")
+        )
+    assert sorted(seen[0]) == ["AGENTS.md", "apps/web/AGENTS.md", "apps/web/page.tsx"]
+    assert [a.file for a in out] == ["apps/web/page.tsx"]

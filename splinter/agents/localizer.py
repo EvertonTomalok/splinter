@@ -730,7 +730,13 @@ def _localize_item(
             hot=ladder.localizer_relevance_hot,
             medium=ladder.localizer_relevance_medium,
         ) or _anchors_from_recall(recall_output)
-        anchors = _project_anchors(anchors, repo_path)
+        # AGENTS.md / CLAUDE.md / skills the LLM missed join BEFORE jev ranks the
+        # item, so they are refined like any other anchor and a file jev drops
+        # never comes back afterwards.
+        injected = _meta_anchors(repo_path, {a.file for a in anchors})
+        if injected:
+            log.info("localize[%d]: injected %d meta anchor(s)", index, len(injected))
+        anchors = _project_anchors(anchors + injected, repo_path)
 
         from splinter.configure import configured_decisions
 
@@ -821,12 +827,6 @@ def localize(
         # No dedup for N=1 — stays byte-identical to the pre-concurrency baseline.
         anchors = results[0]
 
-    # Deterministically inject AGENTS.md / CLAUDE.md / skill files the LLM missed.
-    existing_files = {a.file for a in anchors}
-    injected = _meta_anchors(repo_path, existing_files)
-    if injected:
-        anchors = anchors + injected
-        log.info("localize: injected %d meta anchor(s) (AGENTS.md/CLAUDE.md/skills)", len(injected))
     anchors = _project_anchors(anchors, repo_path)
 
     log.info("localize: %d candidate anchor(s) total", len(anchors))

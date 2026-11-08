@@ -60,6 +60,14 @@ class OpencodeResult:
     cost_indeterminate: bool = False
 
 
+def model_with_variant(model: str, variant: str | None) -> str:
+    """``provider/model#variant`` — opencode ≥2 takes the effort in ``-m``;
+    the old ``--variant`` flag exits 1 with "Unrecognized flag"."""
+    if variant is None or variant == "auto" or "#" in model:
+        return model
+    return f"{model}#{variant}"
+
+
 def run(
     prompt: str,
     model: str,
@@ -93,15 +101,13 @@ def run(
         cmd.append("--auto")
     cmd += [
         "-m",
-        model,
+        model_with_variant(model, variant),
         "--agent",
         agent,
         "--format",
         "json",
         "--dangerously-skip-permissions",
     ]
-    if variant is not None and variant != "auto":
-        cmd.extend(["--variant", variant])
     if session is not None:
         cmd.extend(["-s", session])
 
@@ -323,7 +329,7 @@ def _extract_cost(raw: dict[str, Any]) -> tuple[float, bool]:
 
 
 class OpencodeProvider(ModelProvider):
-    """Routes runs through ``opencode run`` with ``--variant`` and session reuse.
+    """Routes runs through ``opencode run`` (effort as ``-m model#variant``) and session reuse.
 
     OpenCode does not implement ``fetch_pricing`` — billed cost is returned in the
     run JSON payload via :func:`_extract_cost` (USD per call, not MTok lookup).

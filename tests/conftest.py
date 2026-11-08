@@ -49,3 +49,16 @@ def _block_live_model_lists(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(live_models, "_run", _blocked)
     monkeypatch.setattr(live_models, "_get_json", _blocked)
+
+
+@pytest.fixture(autouse=True)
+def _block_live_decisions(monkeypatch: pytest.MonkeyPatch) -> None:
+    """jev/decision calls go over urllib — a repo config with jev enabled must not
+    make the suite call OpenRouter/Vercel. Blocked as URLError so callers fail open."""
+    import urllib.error
+    import urllib.request
+
+    def _blocked(*args: object, **kwargs: object) -> object:
+        raise urllib.error.URLError("network calls are blocked in tests")
+
+    monkeypatch.setattr(urllib.request, "urlopen", _blocked)
