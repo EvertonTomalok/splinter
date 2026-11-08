@@ -90,6 +90,53 @@ def test_pipeline_loads_every_task_and_keeps_the_readme(
 
     monkeypatch.setattr(pipeline, "get_strategy", _stop)
     session = Session("plan-index-test")
+    session.write("knowledge/plan-index.md", "# Task plan: 4 tasks (stale editor bundle)\n")
     with pytest.raises(RuntimeError, match="stop before running"):
         pipeline.run_pipeline(task_path=str(folder / "README.md"), session=session)
-    assert session.read("knowledge/plan-index.md").startswith("# Plan")
+    assert session.read("knowledge/plan-index.md") == _README
+
+
+def test_seed_task_plans_writes_task_text_and_keeps_existing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from splinter.memory.session import Session
+    from splinter.task_plan import seed_task_plans
+
+    monkeypatch.setenv("SPLINTER_HOME", str(tmp_path / "home"))
+    folder = _plan(tmp_path)
+    index = load_plan_index(folder)
+    session = Session("seed-test")
+    session.write("knowledge/plan-2.md", "# Plan\n\nkept\n")
+    session.write("knowledge/plan-T03.md", "# Plan\n\nby id\n")
+    assert seed_task_plans(session, index.tasks, index.path) == 2
+    first = session.read("knowledge/plan-1.md")
+    assert first.startswith("# Plan\n\nT01: Task file: ") and "Do T01-a." in first
+    assert f"`{index.path}`" in first
+    assert session.read("knowledge/plan-2.md") == "# Plan\n\nkept\n"
+    assert session.read("knowledge/plan-3.md") == ""
+    assert "Do T04-d." in session.read("knowledge/plan-4.md")
+
+
+def test_readme_run_skips_localize_and_planner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from splinter import pipeline
+    from splinter.memory.session import Session
+
+    folder = _plan(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SPLINTER_HOME", str(tmp_path / "home"))
+
+    def _no_localize(*args: object, **kwargs: object) -> object:
+        raise AssertionError("task mode must not localize")
+
+    def _stop(*args: object, **kwargs: object) -> object:
+        raise RuntimeError("stop at the gate")
+
+    monkeypatch.setattr(pipeline, "_localize_and_filter", _no_localize)
+    monkeypatch.setattr(pipeline, "_resolve_gate", _stop)
+    session = Session("readme-direct")
+    with pytest.raises(RuntimeError, match="stop at the gate"):
+        pipeline.run_pipeline(task_path=str(folder / "README.md"), session=session)
+    assert [session.read(f"knowledge/plan-{n}.md") != "" for n in (1, 2, 3, 4)] == [True] * 4
+    assert "Do T03-c." in session.read("knowledge/plan-3.md")

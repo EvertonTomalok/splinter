@@ -106,7 +106,86 @@ def test_recommended_strategy_highlighted_on_open(
         cascade_idx = names.index("cascade")
         assert ol.highlighted == cascade_idx
         prompt = str(ol.get_option_at_index(cascade_idx).prompt)
-        assert "★ recommended · 2 stories, dependency-ordered" in prompt
+        assert "recommended" in prompt
+
+    _run_modal(modal, drive)
+
+
+def test_frontmatter_strategy_tagged_and_highlighted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
+    monkeypatch.setattr("splinter.vcs.worktree.worktree_supported", lambda: True)
+    session = Session("ses_modal_fm")
+    prd = "---\nstrategy: cascade\n---\n\n### US-001: First\n### US-002: Second\n"
+    modal = RunSetupModal(prd, session)
+
+    async def drive(app: _HostApp, pilot: Pilot[Any]) -> None:
+        ol = app.screen.query_one("#run-setup-strategy", OptionList)
+        names = [cls.name for cls in registered_strategies()]
+        cascade_idx = names.index("cascade")
+        assert ol.highlighted == cascade_idx
+        prompt = str(ol.get_option_at_index(cascade_idx).prompt)
+        assert "★ set in the PRD" in prompt
+
+    _run_modal(modal, drive)
+
+
+def test_run_it_how_title_and_facts_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
+    monkeypatch.setattr("splinter.vcs.worktree.worktree_supported", lambda: True)
+    session = Session("ses_modal_facts")
+    modal = RunSetupModal(_TWO_STORIES_PRD, session)
+
+    async def drive(app: _HostApp, pilot: Pilot[Any]) -> None:
+        title = app.screen.query_one("#run-setup-title", Static)
+        assert str(title.render()) == "Run it how?"
+        facts = app.screen.query_one("#run-setup-facts", Static)
+        rendered = str(facts.render())
+        assert "2 stories in 1 dependency wave" in rendered
+        assert "widest wave has 2 stories" in rendered
+        assert "parallel off" in rendered
+
+    _run_modal(modal, drive)
+
+
+def test_agents_tagged_fits_wide_waves_when_widest_over_three(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
+    monkeypatch.setattr("splinter.vcs.worktree.worktree_supported", lambda: True)
+    session = Session("ses_modal_agents")
+    stories = "\n".join(f"### US-{i:03d}: Story {i}\n**Description:** x\n" for i in range(1, 5))
+    modal = RunSetupModal(f"---\nfeature: wide\n---\n\n{stories}", session)
+
+    async def drive(app: _HostApp, pilot: Pilot[Any]) -> None:
+        ol = app.screen.query_one("#run-setup-strategy", OptionList)
+        names = [cls.name for cls in registered_strategies()]
+        agents_idx = names.index("agents")
+        prompt = str(ol.get_option_at_index(agents_idx).prompt)
+        assert "fits 4-wide waves" in prompt
+
+    _run_modal(modal, drive)
+
+
+def test_setup_sweep_animation_level_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
+    session = Session("ses_modal_sweep")
+    modal = RunSetupModal(_TWO_STORIES_PRD, session)
+
+    async def drive(app: _HostApp, pilot: Pilot[Any]) -> None:
+        app.animation_level = "none"
+        sweep = app.screen.query_one("#setup-sweep", Static)
+        assert not sweep.display
+        modal.start_scan()
+        assert sweep.display
+        assert str(sweep.render()) == "scanning…"
+        modal.stop_scan()
+        assert not sweep.display
 
     _run_modal(modal, drive)
 

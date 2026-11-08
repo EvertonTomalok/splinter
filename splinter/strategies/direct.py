@@ -533,6 +533,11 @@ class DirectStrategy(Strategy):
                 if plan:
                     session.write(task_plan_file, f"# Plan\n\n{plan}\n")
             else:
+                orchestrator_notes = ""
+                if force_replan:
+                    from splinter.memory.orchestrator_notes import notes_for
+
+                    orchestrator_notes = notes_for(session, "replan", "direct")
                 plan = _plan_task(
                     task,
                     session,
@@ -541,6 +546,7 @@ class DirectStrategy(Strategy):
                     task_index=task_index,
                     trace=trace,
                     tier=tier,
+                    orchestrator_notes=orchestrator_notes,
                 )
 
         resolved = resolve_eval_skill(eval_skill or task.eval_skill)
@@ -950,6 +956,7 @@ def _plan_task(
     task_index: int,
     trace: object = None,
     tier: int = 0,
+    orchestrator_notes: str = "",
 ) -> str:
     """Plan ONE task with its own context: per-task localization + prior rounds.
 
@@ -973,6 +980,7 @@ def _plan_task(
             iteration=0,
             tier=tier,
             task_index=task_index,
+            orchestrator_notes=orchestrator_notes,
         )
     session.write(f"knowledge/plan-{task_index + 1}.md", f"# Plan\n\n{plan}\n")
     if task_index == 0:
@@ -1005,6 +1013,7 @@ def _make_plan(
     iteration: int = 0,
     tier: int = 0,
     task_index: int = 0,
+    orchestrator_notes: str = "",
 ) -> str:
     from splinter.templating import load_standards
 
@@ -1015,6 +1024,7 @@ def _make_plan(
         code_context_section=section("Code Context", code_ctx),
         standards_section=section("Code Conventions", load_standards()),
         plan_index_section=section("Plan index (README of the task plan)", _plan_index(session)),
+        orchestrator_notes_section=orchestrator_notes,
     )
     plan = run_text(
         prompt,

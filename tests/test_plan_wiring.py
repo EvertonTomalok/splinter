@@ -1,4 +1,4 @@
-"""Plan mode wiring: CLI routing, resume routing, prune, and the in-app hand-off."""
+"""Task routing (straight to the run), plan-mode resume routing, prune, and the hand-off."""
 
 from __future__ import annotations
 
@@ -41,22 +41,9 @@ def _record(target: list[dict[str, Any]], rc: int) -> Any:
     return _f
 
 
-def test_task_on_tty_opens_plan_mode(tty: None, monkeypatch: pytest.MonkeyPatch) -> None:
-    from splinter import tui, tui_plan
-
-    planned: list[dict[str, Any]] = []
-    ran: list[dict[str, Any]] = []
-    monkeypatch.setattr(tui_plan, "run_plan_interactive", _record(planned, 7))
-    monkeypatch.setattr(tui, "run_with_tui", _record(ran, 9))
-    _fake_tty(monkeypatch)
-    with pytest.raises(typer.Exit) as exc:
-        cli.run(task="t.yaml")
-    assert exc.value.exit_code == 7
-    assert planned[0]["task_path"] == "t.yaml" and not ran
-
-
-def test_task_with_cowabunga_skips_plan_mode(
-    tty: None, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("cowabunga", [False, True])
+def test_task_on_tty_goes_straight_to_the_run(
+    tty: None, monkeypatch: pytest.MonkeyPatch, cowabunga: bool
 ) -> None:
     from splinter import tui, tui_plan
 
@@ -66,7 +53,7 @@ def test_task_with_cowabunga_skips_plan_mode(
     monkeypatch.setattr(tui, "run_with_tui", _record(ran, 9))
     _fake_tty(monkeypatch)
     with pytest.raises(typer.Exit) as exc:
-        cli.run(task="t.yaml", cowabunga=True)
+        cli.run(task="t.yaml", cowabunga=cowabunga)
     assert exc.value.exit_code == 9
     assert ran[0]["task_path"] == "t.yaml" and not planned
 

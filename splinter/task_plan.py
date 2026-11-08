@@ -12,14 +12,23 @@ refiner as the plan index (:data:`PLAN_INDEX_FILE` in the session).
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
 from splinter.agents.runner import Task
 from splinter.enums import Effort
+from splinter.memory.session import Session
 from splinter.task_file import read_task_mapping
 
-__all__ = ["PLAN_INDEX_FILE", "PlanIndex", "is_plan_index", "load_plan_index"]
+__all__ = [
+    "PLAN_INDEX_FILE",
+    "PlanIndex",
+    "is_plan_index",
+    "load_plan_index",
+    "seed_task_plans",
+    "task_as_plan",
+]
 
 PLAN_INDEX_FILE = "knowledge/plan-index.md"
 
@@ -67,6 +76,31 @@ def load_plan_index(path: Path) -> PlanIndex:
     ids = [row.task_id for row in rows]
     tasks = tuple(_task_from_row(readme.parent, row, ids) for row in rows)
     return PlanIndex(path=readme, text=text, tasks=tasks)
+
+
+def task_as_plan(task: Task, index: Path | None = None) -> str:
+    """A task file is already a plan: its text, plus where the plan index lives."""
+    parts = [task.description.strip()]
+    if index is not None:
+        parts.append(f"Plan index (decisions, file ownership, handoffs): `{index}`")
+    return "\n\n".join(parts)
+
+
+def seed_task_plans(session: Session, tasks: Sequence[Task], index: Path | None = None) -> int:
+    """Write each task's own text as ``knowledge/plan-N.md`` so the run skips the planner.
+
+    A plan already on disk (resume, or one written by id in plan mode) is kept.
+    Returns how many plans were written.
+    """
+    written = 0
+    for i, task in enumerate(tasks):
+        name = f"knowledge/plan-{i + 1}.md"
+        by_id = f"knowledge/plan-{task.id}.md" if task.id else ""
+        if session.read(name).strip() or (by_id and session.read(by_id).strip()):
+            continue
+        session.write(name, f"# Plan\n\n{task_as_plan(task, index)}\n")
+        written += 1
+    return written
 
 
 @dataclass(frozen=True)

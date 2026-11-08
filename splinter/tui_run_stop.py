@@ -12,9 +12,12 @@ from __future__ import annotations
 
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical
+from textual.containers import Horizontal, Vertical
+from textual.message import Message
 from textual.screen import ModalScreen
 from textual.widgets import Button, Static
+
+from splinter.tui_run_palette import Ink
 
 PAUSE = "pause"
 RESTART = "restart"
@@ -98,3 +101,52 @@ class StopMenuModal(ModalScreen[str | None]):
 
     def action_choose_cancel(self) -> None:
         self.dismiss(None)
+
+
+class StopBar(Horizontal):
+    can_focus = True
+
+    DEFAULT_CSS = """
+    StopBar {
+        display: none;
+        height: 1;
+        margin-top: 1;
+        padding: 0 3;
+        background: #c6f432;
+        color: #0a0a09;
+    }
+    StopBar Static { width: auto; height: 1; }
+    StopBar #stop-fill { width: 1fr; }
+    """
+
+    BINDINGS = [
+        Binding("p", "choose('pause')", "Pause"),
+        Binding("r", "choose('restart')", "Restart"),
+        Binding("k", "choose('kill_exit')", "Kill"),
+        Binding("escape", "choose_none", "Keep running"),
+    ]
+
+    class Chosen(Message):
+        def __init__(self, result: str | None) -> None:
+            super().__init__()
+            self.result = result
+
+    def compose(self) -> ComposeResult:
+        dark, kill = "#0a0a09", "#8a1408"
+
+        def key(letter: str, label: str, action: str, tone: str = dark) -> Ink:
+            text = f"[@click={action}][b underline {tone}]{letter}[/] [{tone}]{label}[/][/]   "
+            return Ink(text)
+
+        yield Ink("[b]Stop how?[/]    ")
+        yield key("p", "pause after this iteration", "choose('pause')")
+        yield key("r", "restart from checkpoint", "choose('restart')")
+        yield key("k", "kill & exit", "choose('kill_exit')", kill)
+        yield Static(id="stop-fill")
+        yield key("esc", "keep going", "choose_none()")
+
+    def action_choose(self, result: str) -> None:
+        self.post_message(self.Chosen(result))
+
+    def action_choose_none(self) -> None:
+        self.post_message(self.Chosen(None))

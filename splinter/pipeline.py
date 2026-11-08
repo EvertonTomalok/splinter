@@ -25,7 +25,7 @@ from splinter.scheduling import default_max_concurrency
 from splinter.strategies.base import AskUserPause, GracefulPause, ManualValidationPause
 from splinter.strategies.registry import available_strategies, get_strategy
 from splinter.task_file import read_task_mapping
-from splinter.task_plan import PLAN_INDEX_FILE, is_plan_index, load_plan_index
+from splinter.task_plan import PLAN_INDEX_FILE, is_plan_index, load_plan_index, seed_task_plans
 
 DEFAULT_STRATEGY = "cascade"
 
@@ -470,10 +470,14 @@ def _localize_and_filter(
         )
         log.info("resume: re-parsed %d anchor(s)", len(anchors))
     else:
-        log.info("localizing against the codebase…")
+        before = session.read("knowledge/localization.md")
+        log.info("localizing against the codebase…" if not before.strip()
+                 else "localization.md exists · reusing it unless it has no anchors")
         with agentic_scope(session, "locate", 0, 0):
             anchors = localize(prd_text, session, ladder, max_concurrency=max_concurrency)
         localization = session.read("knowledge/localization.md")
+        if before.strip() and localization == before:
+            log.info("reused localization.md · %d anchor(s), no new localizer call", len(anchors))
 
     if not (anchors and tasks and not single_shot):
         return localization, anchors
@@ -566,6 +570,7 @@ def _execute_final_eval(
     ladder: Ladder,
     tasks: list[Task],
     resume_round: int,
+    strategy: str = "",
 ) -> None:
     """Run all configured final evals. Raises ManualValidationPause on failure."""
     from splinter.agents.final_eval import run_all_final_evals
@@ -584,11 +589,15 @@ def _execute_final_eval(
     session.set_status("running", stage="final_eval")
     log.info("running %d final eval(s)…", len(final_eval_entries))
     task_for_eval = tasks[0] if tasks else None
+    from splinter.memory.orchestrator_notes import notes_for
+
+    orchestrator_notes = notes_for(session, "final_eval", strategy)
     fe_results = run_all_final_evals(
         final_eval_entries,
         task=task_for_eval,
         project_dir=str(Path.cwd()),
         ladder=ladder,
+        extra=orchestrator_notes,
     )
     fe_summary = "\n".join(
         f"- {r.name}: {'PASS' if r.passed else 'FAIL'} — {r.output}" for r in fe_results
@@ -673,8 +682,7 @@ def run_pipeline(
     if task_path and is_plan_index(Path(task_path)):
         plan_index = load_plan_index(Path(task_path))
         tasks = list(plan_index.tasks)
-        if not session.read(PLAN_INDEX_FILE).strip():
-            session.write(PLAN_INDEX_FILE, plan_index.text)
+        session.write(PLAN_INDEX_FILE, plan_index.text)
         if strategy is None and len(tasks) == 1:
             strategy = "direct"
     elif task_path:
@@ -688,6 +696,7 @@ def run_pipeline(
         print("error: provide --task or --prd")
         return 1
 
+    task_mode = bool(task_path) and not prd_path and not (resume and rs.round > 0)
     strategy_name = strategy or DEFAULT_STRATEGY
     effective_user_guidance = user_guidance
     skip_planner = rs.skip_planner
@@ -793,7 +802,15 @@ def run_pipeline(
         localization: str
         anchors: list[CodeAnchor]
         localization, anchors = ("", [])
-        if not rs.from_final_eval:
+        if task_mode and not rs.from_final_eval:
+            index = Path(task_path) if task_path and is_plan_index(Path(task_path)) else None
+            seeded = seed_task_plans(session, tasks, index)
+            log.info(
+                "task mode · %d task(s) are the plan (%d seeded) · no localize, no planner",
+                len(tasks),
+                seeded,
+            )
+        elif not rs.from_final_eval:
             localization, anchors = _localize_and_filter(
                 session, ladder, prd_text, tasks, single_shot, resume, rs.round, max_concurrency
             )
@@ -845,7 +862,7 @@ def run_pipeline(
         )
 
         if not rs.skip_final_eval:
-            _execute_final_eval(session, ladder, tasks, rs.round)
+            _execute_final_eval(session, ladder, tasks, rs.round, strategy_name)
 
         session.set_status("completed", stage="done")
         trace = Trace.from_jsonl(session)
@@ -937,4 +954,12 @@ def run_pipeline(
         log.error("pipeline failed (%s): %s", fail_class, exc)
         raise
     finally:
+        try:
+            state = str(session.read_status().get("state", ""))
+            if not state.startswith("awaiting"):
+                from splinter.memory.orchestrator_notes import close_pending
+
+                close_pending(session)
+        except Exception as exc:
+            log.warning("could not close the pending orchestrator notes: %s", exc)
         splog.removeHandler(trace_handler)

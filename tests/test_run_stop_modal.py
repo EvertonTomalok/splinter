@@ -36,11 +36,11 @@ def _idle_session(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> "Session
     return session
 
 
-def _drive(app: "RunApp", body: object) -> None:
+def _drive(app: "RunApp", body: object, size: tuple[int, int] = (120, 24)) -> None:
     """Run ``app`` headless, letting ``body`` (a coroutine fn) drive the pilot."""
 
     async def run() -> None:
-        async with app.run_test(size=(160, 44)) as pilot:
+        async with app.run_test(size=size) as pilot:
             await pilot.pause()
             await pilot.pause(0.05)
             await body(pilot)  # type: ignore[operator]
@@ -48,7 +48,33 @@ def _drive(app: "RunApp", body: object) -> None:
     asyncio.run(run())
 
 
-def test_stop_key_opens_the_stop_menu(
+def test_stop_key_opens_the_stop_bar(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
+) -> None:
+    import pytest
+
+    pytest.importorskip("textual")
+
+    from textual.containers import Horizontal
+
+    from splinter.tui import RunApp
+    from splinter.tui_run_stop import StopBar
+
+    monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
+    monkeypatch.setattr(RunApp, "_work", lambda self: None)
+    session = _running_session(tmp_path, monkeypatch)
+
+    async def body(pilot: object) -> None:
+        await pilot.press("s")  # type: ignore[attr-defined]
+        await pilot.pause()
+        assert app.query_one("#stop-bar", StopBar).display
+        assert not app.query_one("#footer-bar", Horizontal).display
+
+    app = RunApp(session, {})
+    _drive(app, body, size=(160, 44))
+
+
+def test_stop_key_opens_the_stop_menu_on_a_short_screen(
     tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
 ) -> None:
     import pytest
@@ -65,9 +91,7 @@ def test_stop_key_opens_the_stop_menu(
     async def body(pilot: object) -> None:
         await pilot.press("s")  # type: ignore[attr-defined]
         await pilot.pause()
-        assert isinstance(app.screen, StopMenuModal), (
-            f"stop menu not shown — screen is {app.screen!r}"
-        )
+        assert isinstance(app.screen, StopMenuModal)
         assert app.screen.query_one("#stop-pause")
 
     app = RunApp(session, {})
@@ -203,7 +227,7 @@ def test_cancel_button_leaves_the_run_alone(
     assert session.read_status()["state"] == "running"
 
 
-def test_q_while_running_opens_the_stop_menu(
+def test_q_while_running_opens_the_stop_bar(
     tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
 ) -> None:
     import pytest
@@ -211,7 +235,7 @@ def test_q_while_running_opens_the_stop_menu(
     pytest.importorskip("textual")
 
     from splinter.tui import RunApp
-    from splinter.tui_run_stop import StopMenuModal
+    from splinter.tui_run_stop import StopBar
 
     monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
     monkeypatch.setattr(RunApp, "_work", lambda self: None)
@@ -223,14 +247,12 @@ def test_q_while_running_opens_the_stop_menu(
     async def body(pilot: object) -> None:
         await pilot.press("q")  # type: ignore[attr-defined]
         await pilot.pause()
-        assert isinstance(app.screen, StopMenuModal), (
-            f"q must open the stop menu while running — screen is {app.screen!r}"
-        )
+        assert app.query_one("#stop-bar", StopBar).display
 
     app = RunApp(session, {})
     app.write_log = lambda *a, **k: None  # type: ignore[method-assign]
     monkeypatch.setattr(app, "exit", lambda code=0: exits.append(code))
-    _drive(app, body)
+    _drive(app, body, size=(160, 44))
 
     assert exits == [], "q must not exit while the run is live"
 
@@ -262,15 +284,17 @@ def test_q_when_not_running_exits(
     assert exits == [0], f"q must exit when the run is not live — {exits}"
 
 
-def test_escape_cancels_the_stop_menu(
+def test_escape_cancels_the_stop_bar(
     tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
 ) -> None:
     import pytest
 
     pytest.importorskip("textual")
 
+    from textual.containers import Horizontal
+
     from splinter.tui import RunApp
-    from splinter.tui_run_stop import StopMenuModal
+    from splinter.tui_run_stop import StopBar
 
     monkeypatch.setenv("SPLINTER_HOME", str(tmp_path))
     monkeypatch.setattr(RunApp, "_work", lambda self: None)
@@ -283,14 +307,15 @@ def test_escape_cancels_the_stop_menu(
     async def body(pilot: object) -> None:
         await pilot.press("s")  # type: ignore[attr-defined]
         await pilot.pause()
-        assert isinstance(app.screen, StopMenuModal)
+        assert app.query_one("#stop-bar", StopBar).display
         await pilot.press("escape")  # type: ignore[attr-defined]
         await pilot.pause()
-        assert not isinstance(app.screen, StopMenuModal), "esc must close the stop menu"
+        assert not app.query_one("#stop-bar", StopBar).display
+        assert app.query_one("#footer-bar", Horizontal).display
 
     app = RunApp(session, {})
     app.write_log = lambda *a, **k: None  # type: ignore[method-assign]
-    _drive(app, body)
+    _drive(app, body, size=(160, 44))
 
     assert calls == [], f"esc must not touch the run — {calls}"
 
@@ -336,6 +361,7 @@ def test_log_lines_carry_a_dim_timestamp(
     async def body(pilot: object) -> None:
         await pilot.pause()
         app.write_log("hello world", logging.WARNING)
+        await app.run_action("set_view('logs')")
         await pilot.pause()
         log = app.query_one("#log", RichLog)
         lines = list(log.lines)

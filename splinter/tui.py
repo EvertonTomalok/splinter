@@ -11,12 +11,15 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import re
-from collections.abc import Iterable
+import sys
+import time
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -79,16 +82,51 @@ from splinter.analyze import (
 from splinter.enums import DEFAULT_RUNNER_MODE, RunnerMode
 from splinter.memory.session import Session, delete_session, list_sessions
 from splinter.obs.events import events_path
-from splinter.run_overview import render_run_overview
+from splinter.run_trace import TraceNode, build_trace
+from splinter.run_view import RunView, RunViewBuilder
+from splinter.run_view_files import FileCache
+from splinter.tui_blockword import BlockWord
+from splinter.tui_prd_mode import MODES, task_source
 from splinter.tui_questions import (
     Question,
     QuestionForm,
     extract_open_questions,
     parse_questions,
 )
-from splinter.tui_run_stop import StopMenuModal
+from splinter.tui_questions_one import QuestionIndex
+from splinter.tui_run_banner import NeedsYouBanner
+from splinter.tui_run_chrome import FooterKeys, RunHeader, cowabunga_markup
+from splinter.tui_run_composer import Composer
+from splinter.tui_run_focus import FocusColumn
+from splinter.tui_run_live import LiveAction, live_action
+from splinter.tui_run_log import format_line, stamp_prefix
+from splinter.tui_run_motion import MotionClock, ToastTracker
+from splinter.tui_run_palette import DIM as _DIM
+from splinter.tui_run_palette import INK as _INK
+from splinter.tui_run_palette import LIME as _LIME
+from splinter.tui_run_palette import MUTED as _MUTED
+from splinter.tui_run_palette import RED as _RED
+from splinter.tui_run_palette import Ink, palette_css, palette_variables
+from splinter.tui_run_rail import RunRail
+from splinter.tui_run_stop import StopBar, StopMenuModal
+from splinter.tui_run_text import story_label
+from splinter.tui_run_trace import TraceScreen
+from splinter.tui_run_view_key import view_content_key
+from splinter.tui_run_views import ViewContext, view_registry
+from splinter.tui_run_views_more import MoreState, set_more_state
+from splinter.tui_shell import SHELL_CSS, ShellBar, crumb_markup, use_splinter_theme
 from splinter.tui_status import BusyStatus
 from splinter.tui_stepper import PRD_STEPS, PhaseStepper
+from splinter.tui_task_pick import TaskPicker, looks_like_path, system_pick
+from splinter.vcs.diff import (
+    Runner,
+    StoryDiff,
+    git_runner,
+    shown_tree,
+    story_cwd,
+    story_diff,
+    story_worktree,
+)
 
 REFRESH_SECONDS = 2.0
 AUTO_REFRESH_SECONDS = 2.0
@@ -677,7 +715,7 @@ _MAXIMIZE_CSS = """
         #nav { display: none; }
         #overview { display: none; }
         #draftpane { display: none; }
-        #run-left { display: none; }
+        #rail { display: none; }
         #cmd-bar { display: none; }
     }
 """
@@ -2146,78 +2184,6 @@ class _FinalEvalModal(ModalScreen[dict[str, str | None] | None]):
             )
 
 
-class _SelectSessionModal(ModalScreen["int | None"]):
-    """Pick which running parallel task a live directive should be sent to.
-
-    Only shown when 2+ tasks are running concurrently. Dismiss value: the chosen
-    1-based ``task_no`` (int), or ``None`` on cancel.
-    """
-
-    DEFAULT_CSS = """
-    _SelectSessionModal {
-        align: center middle;
-        background: $background 60%;
-    }
-    _SelectSessionModal > Vertical#sel-dialog {
-        width: 72;
-        height: auto;
-        max-height: 80%;
-        border: round $primary;
-        background: $surface;
-        padding: 1 2;
-    }
-    _SelectSessionModal #sel-title {
-        text-style: bold;
-        color: $primary;
-        margin-bottom: 1;
-    }
-    _SelectSessionModal #sel-list {
-        height: auto;
-        max-height: 20;
-    }
-    _SelectSessionModal Button {
-        width: 1fr;
-        height: 3;
-        margin: 0 0 1 0;
-        text-align: left;
-    }
-    _SelectSessionModal #sel-cancel {
-        border: none;
-    }
-    """
-
-    BINDINGS = [("escape", "do_cancel", "Cancel")]
-
-    def __init__(self, tasks: list[tuple[int, str]]) -> None:
-        super().__init__()
-        self._tasks = tasks
-
-    def compose(self) -> ComposeResult:
-        with Vertical(id="sel-dialog"):
-            yield Static("Which session gets the directive?", id="sel-title")
-            yield Static("[dim]Sent to the runner; the model applies it on its next iteration.[/]")
-            with VerticalScroll(id="sel-list"):
-                for task_no, title in self._tasks:
-                    label = f"Task {task_no}" + (f": {title}" if title else "")
-                    yield Button(label, id=f"sel-task-{task_no}", variant="primary")
-            yield Button("Cancel (Esc)", id="sel-cancel")
-
-    def on_mount(self) -> None:
-        first = self.query("#sel-list Button").first()
-        if first is not None:
-            first.focus()
-
-    def action_do_cancel(self) -> None:
-        self.dismiss(None)
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        bid = event.button.id or ""
-        if bid.startswith("sel-task-"):
-            self.dismiss(int(bid.removeprefix("sel-task-")))
-        else:
-            self.dismiss(None)
-
-
 class _ConfirmStopModal(ModalScreen[str | None]):
     """Confirm before pausing or killing the run.
 
@@ -2916,26 +2882,43 @@ class _PhaseConfigModal(ModalScreen[dict[str, str] | None]):
 
 
 class RunApp(App[int]):
-    """Live dashboard for ``splinter run``: overview + streaming activity log."""
+    """Live dashboard for ``splinter run``: story views + streaming activity log."""
 
     CSS = (
         """
-    #run-left { width: 42%; border-right: solid $primary; }
-    #overview { height: auto; padding: 0 1; }
-    RichLog {
-        padding: 0 1;
+    Screen { background: $focus-bg; color: $ink; }
+    RunApp * {
+        scrollbar-background: $focus-bg;
+        scrollbar-background-hover: $focus-bg;
+        scrollbar-background-active: $focus-bg;
+        scrollbar-color: $line2;
+        scrollbar-color-hover: $edge;
+        scrollbar-color-active: $dim;
+        scrollbar-corner-color: $focus-bg;
     }
-    #run-right { width: 1fr; }
+    #run-body { height: 1fr; min-height: 0; }
+    #left { width: 1fr; padding: 1 3 0 3; }
+    #focus { height: 1fr; min-height: 0; }
+    #rail { width: 36%; min-width: 44; max-width: 62; border-left: solid $line; padding: 1 2 0 2; }
+    #overview { height: auto; }
+    #view-scroll { display: none; }
+    #log {
+        height: 1fr;
+        padding: 0 0 0 2;
+        border-left: solid $live-line;
+        background: $focus-bg;
+    }
+    #groups { height: 1fr; min-height: 0; }
     #cmd-bar {
-        height: 3;
-        border-top: solid $primary;
-        padding: 0 1;
-        align: left middle;
+        height: auto;
+        max-height: 8;
+        border-top: solid $line;
+        padding: 0;
     }
-    #user-cmd-input { width: 1fr; height: 3; }
-    #footer-bar { height: 1; }
-    #kowabunga-ind { width: auto; padding: 0 1; dock: right; }
+    #composer { width: 1fr; }
+    #footer-bar { height: 2; }
     """
+        + palette_css()
         + _PALETTE_CSS
         + _SCROLL_LEFT_PANE_CSS
         + _MAXIMIZE_CSS
@@ -2947,12 +2930,43 @@ class RunApp(App[int]):
     BINDINGS = [
         Binding("s", "stop", "Stop"),
         Binding("ctrl+k", "toggle_kowabunga", "Cowabunga"),
+        Binding("i", "instruct", "Instruct"),
+        Binding("o", "toggle_latest_iteration", "Iteration", show=False),
+        Binding("slash", "find", "Find", show=False),
+        Binding("g", "follow_live", "Live"),
+        Binding("left", "prev_story", "Prev", show=False),
+        Binding("right", "next_story", "Next", show=False),
+        Binding("1", "set_view('act')", "Activity", show=False),
+        Binding("3", "set_view('plan')", "Plan", show=False),
+        Binding("4", "set_view('gate')", "Gate", show=False),
+        Binding("5", "set_view('eval')", "Eval", show=False),
         Binding("q", "quit_or_stop", "Quit"),
         Binding("ctrl+c", "quit", "Quit", show=False),
+        Binding("dollar_sign", "open_spend('cost')", "Spend"),
+        Binding("d", "open_diff", "Diff"),
+        Binding("t", "open_tier('')", "Tier"),
+        Binding("b", "toggle_spend_by", "By", show=False),
+        Binding("r", "refresh_diff", "Refresh", show=False),
+        Binding("2", "open_diff", "Diff", show=False),
+        Binding("6", "open_spend('cost')", "Spend", show=False),
+        Binding("7", "open_tier('')", "Tier", show=False),
+        Binding("f", "toggle_needs_filter", "Needs you", show=False),
+        Binding("L", "trace", "Trace"),
+        Binding("l", "set_view('logs')", "Logs", show=False),
     ]
+
+    #: The spend measure (cost or time), the picked ladder rung and the loaded diff.
+    spend_by: str = "cost"
+    tier_pick: str = ""
+    _diff: StoryDiff | None = None
+    _diff_cwd: str = ""
+    _diff_gen: int = 0
 
     _maximized: reactive[bool] = reactive(False)
     _kowabunga: reactive[RunnerMode] = reactive(DEFAULT_RUNNER_MODE)
+    selected_story: reactive[int | None] = reactive(None)
+    view: reactive[str] = reactive("act")
+    opened_iterations: reactive[frozenset[tuple[int, int]]] = reactive(frozenset())
 
     def __init__(self, session: Session, run_kwargs: dict[str, Any]) -> None:
         super().__init__()
@@ -2966,24 +2980,186 @@ class RunApp(App[int]):
         self._run_config: dict[str, str | None] = {}
         self._restart_after_kill = False
         self._parallel = False
+        self.follow_live = True
+        self._view_builder = RunViewBuilder()
+        self._view_files = FileCache()
+        self._last_view: RunView | None = None
+        self._view_key: tuple[object, ...] | None = None
+        self._live_actions: list[LiveAction] = []
+        self._log_history: list[str] = []
+        self._motion_phase = False
+        self._diff_runner: Runner = git_runner
+        budget = self.run_kwargs.get("budget")
+        self._budget: float | None = float(budget) if budget else None
+        self._needs_notified: set[int] = set()
+        self._motion = MotionClock(self)
+        self._toasts = ToastTracker()
+
+    def _story_number(self, view: RunView) -> int | None:
+        numbers = {story.number for story in view.stories}
+        if self.selected_story in numbers:
+            return self.selected_story
+        return view.live_story
+
+    def get_css_variables(self) -> dict[str, str]:
+        return palette_variables(super().get_css_variables())
+
+    def _apply_run_view(self, view: RunView) -> None:
+        if not self.is_running:
+            return
+        story = self._story_number(view)
+        focus = self.query_one("#focus", FocusColumn)
+        focus.available_views = tuple(view_registry())
+        focus.current_view = self.view
+        focus.tier_pick = getattr(self, "tier_pick", "")
+        focus.apply(view, story)
+        rail = self.query_one("#rail", RunRail)
+        rail.tier_pick = focus.tier_pick if self.view == "tier" else ""
+        rail.max_iterations = self._max_iterations()
+        rail.apply(view, story)
+        self._apply_chrome(view, story)
+        self._render_view()
+
+    def _max_iterations(self) -> int:
+        try:
+            return int(self.session.read_status().get("max_iterations", 5) or 5)
+        except (TypeError, ValueError, OSError):
+            return 5
+
+    def _apply_chrome(self, view: RunView, story: int | None) -> None:
+        status = self.session.read_status()
+        strategy = str(self.run_kwargs.get("strategy") or status.get("strategy") or "direct")
+        source = self._run_source() if self.run_kwargs.get("prd_path") or self.run_kwargs.get(
+            "task_path"
+        ) else ""
+        header = self.query_one(RunHeader)
+        header.show(view, story, strategy, source, self._max_iterations())
+        row = next((item for item in view.stories if item.number == story), None)
+        if row is not None:
+            composer = self.query_one(Composer)
+            composer.set_story(row.number, story_label(row)[0], row.number == view.live_story)
+
+    def action_toggle_needs_filter(self) -> None:
+        self.query_one("#rail", RunRail).toggle_needs()
+        if self._last_view is not None:
+            self._apply_run_view(self._last_view)
+
+    def action_composer_send(self) -> None:
+        self._send_live_command()
+
+    def _reapply_view(self) -> None:
+        view = getattr(self, "_last_view", None)
+        if view is not None:
+            self._apply_run_view(view)
+            self._refresh_needs_you()
+
+    def watch_selected_story(self) -> None:
+        self._reapply_view()
+        if self.view == "diff":
+            self._start_diff()
+
+    def watch_view(self, old: str, new: str) -> None:
+        self._reapply_view()
+        if new == "diff" and old != "diff":
+            self._start_diff()
+
+    def watch_opened_iterations(self) -> None:
+        self._render_view()
+
+    def select_story(self, n: int) -> None:
+        self.follow_live = False
+        self.selected_story = n
+
+    def action_select_story(self, n: int) -> None:
+        self.select_story(n)
+
+    def action_follow_live(self) -> None:
+        self.follow_live = True
+        self.selected_story = None
+
+    def _step_story(self, offset: int) -> None:
+        if isinstance(self.focused, Input) or self._last_view is None:
+            return
+        numbers = [story.number for story in self._last_view.stories]
+        if not numbers:
+            return
+        current = self._story_number(self._last_view)
+        try:
+            index = numbers.index(current) if current is not None else 0
+        except ValueError:
+            index = 0
+        self.select_story(numbers[min(max(index + offset, 0), len(numbers) - 1)])
+
+    def action_prev_story(self) -> None:
+        self._step_story(-1)
+
+    def action_next_story(self) -> None:
+        self._step_story(1)
+
+    def action_set_view(self, name: str) -> None:
+        if name in view_registry():
+            self.view = name
+
+    def action_stage_view(self, stage: str) -> None:
+        """A stage of the strip opens its first sub-topic (or keeps the open one)."""
+        from splinter.tui_run_focus import TOPICS, VIEW_STAGE
+
+        topics = TOPICS.get(stage, ())
+        if not topics or VIEW_STAGE.get(self.view) == stage:
+            return
+        self.action_set_view(topics[0][0])
+
+    def action_open_iteration(self, story: int, n: int) -> None:
+        self.select_story(story)
+        self.view = "act"
+        self.opened_iterations = self.opened_iterations | {(story, n)}
+        self.call_after_refresh(self._scroll_view_end)
+
+    def action_toggle_iteration(self, story: int, n: int) -> None:
+        key = (story, n)
+        if key in self.opened_iterations:
+            self.opened_iterations = self.opened_iterations - {key}
+        else:
+            self.opened_iterations = self.opened_iterations | {key}
+
+    def action_instruct(self) -> None:
+        """i — write to the orchestrator: focus the composer."""
+        self.query_one("#user-cmd-input", Input).focus()
+
+    def action_find(self) -> None:
+        """/ — find a story by id or title in the right rail."""
+        self.query_one("#rail", RunRail).open_find()
+
+    def action_toggle_latest_iteration(self) -> None:
+        if self._last_view is None:
+            return
+        story = self._story_number(self._last_view)
+        rows = self._last_view.iterations_by_story.get(story or 0, ())
+        if rows:
+            self.view = "act"
+            self.action_toggle_iteration(story or 0, rows[-1].n)
+
+    def _scroll_view_end(self) -> None:
+        self.query_one("#view-scroll", VerticalScroll).scroll_end(animate=False)
+
+    def on_key(self, event: events.Key) -> None:
+        if event.key == "escape":
+            event.stop()
+            self.action_follow_live()
 
     def compose(self) -> ComposeResult:
-        yield Header(show_clock=True)
-        with Horizontal():
-            with Vertical(id="run-left"):
-                yield VerticalScroll(Static(id="overview"), id="overview-scroll")
-            with Vertical(id="run-right"):
-                yield RichLog(id="log", markup=True, wrap=True, highlight=False)
+        yield RunHeader(id="run-header")
+        with Horizontal(id="run-body"):
+            with Vertical(id="left"):
+                yield FocusColumn(id="focus")
                 with Horizontal(id="cmd-bar"):
-                    yield Input(
-                        placeholder="Guide the runner — applies on its next iteration (↵)",
-                        id="user-cmd-input",
-                    )
-        with Horizontal(id="footer-bar"):
-            yield Footer()
-            yield Static(id="kowabunga-ind")
+                    yield Composer()
+            yield RunRail(id="rail")
+        yield FooterKeys(id="footer-bar")
+        yield StopBar(id="stop-bar")
 
     def on_mount(self) -> None:
+        use_splinter_theme(self)
         self._kowabunga = self.session.read_kowabunga()
         self._render_kowabunga_ind(self._kowabunga)
         self._refresh()
@@ -3016,13 +3192,21 @@ class RunApp(App[int]):
                 self._run_config[key] = value
         _state = _status.get("state")
         if _state == "awaiting_user" and _status.get("stage") == "final_eval":
-            self.call_after_refresh(self._show_manual_validation_modal)
+            self.call_after_refresh(self._open_validation)
         elif _state == "awaiting_user":
-            self.call_after_refresh(self._show_ask_user_modal)
+            self.call_after_refresh(self._open_ask)
         elif _state == "awaiting_validation":
-            self.call_after_refresh(self._show_manual_validation_modal)
+            self.call_after_refresh(self._open_validation)
         else:
             self.run_worker(self._work, thread=True, name="pipeline", exclusive=True)
+
+    def _open_ask(self, prefill: str = "") -> None:
+        if not self._show_selected_banner("asked"):
+            self._show_ask_user_modal(prefill)
+
+    def _open_validation(self, prefill: str = "") -> None:
+        if not self._show_selected_banner("paused"):
+            self._show_manual_validation_modal(prefill)
 
     def _show_ask_user_modal(self, prefill: str = "") -> None:
         st = self.session.read_status()
@@ -3031,8 +3215,6 @@ class RunApp(App[int]):
         cp = self.session.read("run_checkpoint.json").strip()
         if cp:
             try:
-                import json
-
                 data = json.loads(cp)
                 gate = str(data.get("gate_output", "")).strip()
                 corr = str(data.get("corrections", "")).strip()
@@ -3042,127 +3224,191 @@ class RunApp(App[int]):
             except (json.JSONDecodeError, TypeError):
                 pass
 
-        def _on_choice(result: tuple[str, str] | None) -> None:
-            if self._timer is None:
-                self._timer = self.set_interval(0.5, self._refresh)
-            if result is None:
-                self.exit(3)
-                return
-            action, text = result
-            if action == "answer":
-                if text:
-                    self.query_one("#log", RichLog).write(
-                        self._log_prefix("")
-                        + f"[bold cyan]👤 User guidance:[/] [cyan]{escape(text)}[/]"
-                    )
-                    self.session.append("events.md", f"[USER GUIDANCE] {text}\n")
-                self.write_log("— continuing with your answer —", logging.WARNING)
-                self._run_pipeline_worker(
-                    resume=True, user_guidance=text or None, jump_premium=False, cowabunga=False
-                )
-            elif action == "jump_premium":
-                if text:
-                    self.query_one("#log", RichLog).write(
-                        self._log_prefix("")
-                        + f"[bold cyan]👤 User guidance:[/] [cyan]{escape(text)}[/]"
-                    )
-                    self.session.append("events.md", f"[USER GUIDANCE] {text}\n")
-                self.write_log("— jumping to premium tier —", logging.WARNING)
-                self._run_pipeline_worker(
-                    resume=True,
-                    user_guidance=text or None,
-                    jump_premium=True,
-                    cowabunga=False,
-                )
-            elif action == "accept":
-                self.write_log("— ✓ accepted by user — marking done and continuing —", logging.INFO)
-                self.run_kwargs["cowabunga"] = True
-                self._run_pipeline_worker(
-                    resume=True, user_guidance=None, jump_premium=False, cowabunga=True
-                )
-            elif action == "cowabunga":
-                self.write_log("— cowabunga — proceeding autonomously —", logging.WARNING)
-                self.run_kwargs["cowabunga"] = True
-                st = self.session.read_status()
-                state = str(st.get("state", "awaiting_user"))
+        def reopen(text: str) -> None:
+            self.call_after_refresh(lambda: self._show_ask_user_modal(prefill=text))
+
+        self.push_screen(
+            _AskUserModal(reason, corrections, prefill=prefill),
+            callback=lambda result: self._handle_ask_choice(result, reopen),
+        )
+
+    def _record_user_guidance(self, text: str) -> None:
+        if not text:
+            return
+        self._log_line(
+            self._log_prefix("") + f"[bold cyan]👤 User guidance:[/] [cyan]{escape(text)}[/]"
+        )
+        self.session.append("events.md", f"[USER GUIDANCE] {text}\n")
+
+    def _handle_ask_choice(
+        self, result: tuple[str, str] | None, reopen: Callable[[str], None]
+    ) -> None:
+        if self._timer is None:
+            self._timer = self.set_interval(0.5, self._refresh)
+        if result is None:
+            self.exit(3)
+            return
+        action, text = result
+        if action in {"answer", "jump_premium"}:
+            self._record_user_guidance(text)
+            message = "continuing with your answer"
+            if action == "jump_premium":
+                message = "jumping to premium tier"
+            self.write_log(f"— {message} —", logging.WARNING)
+            self._run_pipeline_worker(
+                resume=True,
+                user_guidance=text or None,
+                jump_premium=action == "jump_premium",
+                cowabunga=False,
+            )
+        elif action in {"accept", "cowabunga"}:
+            message = (
+                "✓ accepted by user — marking done and continuing"
+                if action == "accept"
+                else "cowabunga — proceeding autonomously"
+            )
+            level = logging.INFO if action == "accept" else logging.WARNING
+            self.write_log(f"— {message} —", level)
+            self.run_kwargs["cowabunga"] = True
+            if action == "cowabunga":
+                state = str(self.session.read_status().get("state", "awaiting_user"))
                 self.session.set_status(state, cowabunga=True)
-                self._run_pipeline_worker(
-                    resume=True, user_guidance=None, jump_premium=False, cowabunga=True
-                )
-            elif action == "edit_config":
-                prefill_text = text
+            self._run_pipeline_worker(resume=True, jump_premium=False, cowabunga=True)
+        elif action == "edit_config":
+            self._edit_run_config(text, reopen)
+        else:
+            self.exit(3)
 
-                def _on_cfg(cfg: "dict[str, str | None] | None") -> None:
-                    if cfg is not None:
-                        self._store_config_overrides(cfg)
-                    self.call_after_refresh(lambda: self._show_ask_user_modal(prefill=prefill_text))
+    def _edit_run_config(self, text: str, reopen: Callable[[str], None]) -> None:
+        def _on_cfg(cfg: dict[str, str | None] | None) -> None:
+            if cfg is not None:
+                self._store_config_overrides(cfg)
+            reopen(text)
 
-                self.push_screen(_EditConfigModal(self._run_config), callback=_on_cfg)
-            else:
-                self.exit(3)
-
-        self.push_screen(_AskUserModal(reason, corrections, prefill=prefill), callback=_on_choice)
+        self.push_screen(_EditConfigModal(self._run_config), callback=_on_cfg)
 
     def _show_manual_validation_modal(self, prefill: str = "") -> None:
         st = self.session.read_status()
         summary = str(st.get("final_eval_summary", ""))
         all_passed = bool(st.get("final_eval_passed", True))
-        round_index = int(st.get("round_index", 1))
-        current_round = max(0, round_index - 1)
-        fe_round_file = f"knowledge/final-eval-{current_round}.md"
 
-        def _append_decision(label: str, text: str = "") -> None:
-            if self.session.has(fe_round_file):
-                body = f"\n## User Decision: {label}\n"
-                if text:
-                    body += f"\n{text}\n"
-                self.session.append(fe_round_file, body)
-
-        def _on_choice(result: tuple[str, str] | None) -> None:
-            if result is None:
-                self.write_log("— rejected ❌ — run marked failed —", logging.WARNING)
-                _append_decision("Rejected")
-                self.session.set_status("failed", stage="final_eval")
-                self.exit(1)
-                return
-            action, text = result
-            if action == "approve":
-                self.write_log("— validated ✅ — run accepted —", logging.INFO)
-                _append_decision("Approved")
-                self.session.set_status("completed", stage="done")
-                if self._phased:
-                    self.call_after_refresh(self._show_phase_modal)
-                else:
-                    self._write_run_complete()
-            elif action == "changes":
-                guidance = text or summary
-                _append_decision("Requested Changes", guidance)
-                self.write_log(f"— planning corrections: {guidance[:80]}… —", logging.INFO)
-                if self._timer is None:
-                    self._timer = self.set_interval(0.5, self._refresh)
-                self._run_pipeline_worker(resume=True, user_guidance=guidance)
-            elif action == "next_phase":
-                _append_decision("Approved (next phase)", text)
-                self.session.set_status("completed", stage="done")
-                if self._timer is None:
-                    self._timer = self.set_interval(0.5, self._refresh)
-                self.call_after_refresh(self._show_phase_modal)
-            elif action == "edit_config":
-                prefill = text
-
-                def _on_cfg(cfg: "dict[str, str | None] | None") -> None:
-                    if cfg is not None:
-                        self._store_config_overrides(cfg)
-                    self.call_after_refresh(
-                        lambda: self._show_manual_validation_modal(prefill=prefill)
-                    )
-
-                self.push_screen(_EditConfigModal(self._run_config), callback=_on_cfg)
+        def reopen(text: str) -> None:
+            self.call_after_refresh(lambda: self._show_manual_validation_modal(prefill=text))
 
         self.push_screen(
             _ManualValidationModal(summary, all_passed, show_phase=self._phased, prefill=prefill),
-            callback=_on_choice,
+            callback=lambda result: self._handle_validation_choice(result, reopen),
         )
+
+    def _append_validation_decision(self, label: str, text: str = "") -> None:
+        round_index = int(self.session.read_status().get("round_index", 1))
+        path = f"knowledge/final-eval-{max(0, round_index - 1)}.md"
+        if self.session.has(path):
+            body = f"\n## User Decision: {label}\n"
+            if text:
+                body += f"\n{text}\n"
+            self.session.append(path, body)
+
+    def _handle_validation_choice(
+        self, result: tuple[str, str] | None, reopen: Callable[[str], None]
+    ) -> None:
+        if result is None:
+            self.write_log("— rejected ❌ — run marked failed —", logging.WARNING)
+            self._append_validation_decision("Rejected")
+            self.session.set_status("failed", stage="final_eval")
+            self.exit(1)
+            return
+        action, text = result
+        if action == "approve":
+            self.write_log("— validated ✅ — run accepted —", logging.INFO)
+            self._append_validation_decision("Approved")
+            self.session.set_status("completed", stage="done")
+            if self._phased:
+                self.call_after_refresh(self._show_phase_modal)
+            else:
+                self._write_run_complete()
+        elif action == "changes":
+            summary = str(self.session.read_status().get("final_eval_summary", ""))
+            guidance = text or summary
+            self._append_validation_decision("Requested Changes", guidance)
+            self.write_log(f"— planning corrections: {guidance[:80]}… —", logging.INFO)
+            if self._timer is None:
+                self._timer = self.set_interval(0.5, self._refresh)
+            self._run_pipeline_worker(resume=True, user_guidance=guidance)
+        elif action == "next_phase":
+            self._append_validation_decision("Approved (next phase)", text)
+            self.session.set_status("completed", stage="done")
+            if self._timer is None:
+                self._timer = self.set_interval(0.5, self._refresh)
+            self.call_after_refresh(self._show_phase_modal)
+        elif action == "edit_config":
+            self._edit_run_config(text, reopen)
+
+    def _show_selected_banner(self, kind: str, prefill: str = "") -> bool:
+        if not self._refresh_needs_you(expected=kind):
+            return False
+        if prefill:
+            self.query_one("#needs-you", NeedsYouBanner).prefill(prefill)
+        return True
+
+    def _refresh_needs_you(self, expected: str | None = None) -> bool:
+        slots = self.query("#needs-you-slot")
+        view = getattr(self, "_last_view", None)
+        if not slots or view is None:
+            return False
+        banner = next(iter(slots.first().query(NeedsYouBanner)), None)
+        status = self.session.read_status()
+        story = self.selected_story
+        if story is None:
+            try:
+                story = int(status.get("task_index", -1)) + 1
+            except (TypeError, ValueError):
+                story = 0
+            if story <= 0:
+                story = view.live_story
+            if story is None and len(view.needs_you) == 1:
+                story = view.needs_you[0]
+        row = next((item for item in view.stories if item.number == story), None)
+        if row is None or row.state not in {"asked", "paused", "fail"}:
+            if banner is not None:
+                banner.hide()
+            return False
+        if row.state in ("paused", "fail") and row.number not in self._needs_notified:
+            self.notify(f"{row.id} needs you")
+            self._needs_notified.add(row.number)
+        if self.size.height < 30 or (expected is not None and row.state != expected):
+            if banner is not None:
+                banner.hide()
+            return False
+        if banner is None:
+            banner = NeedsYouBanner(id="needs-you")
+            slots.first().mount(banner)
+        banner.show(row.state, row, {**status, "phased": self._phased})
+        return True
+
+    def on_needs_you_banner_chosen(self, event: NeedsYouBanner.Chosen) -> None:
+        banner = self.query_one("#needs-you", NeedsYouBanner)
+        if event.kind == "asked":
+            self._handle_ask_choice(event.result, banner.prefill)
+            return
+        if event.kind == "paused":
+            self._handle_validation_choice(event.result, banner.prefill)
+            return
+        if event.result is None:
+            return
+        action, text = event.result
+        if action == "retry":
+            self.session.queue_live_command(text, task_no=event.story)
+            self._do_pause_kill()
+        elif action == "open_worktree":
+            path = story_worktree(self.session, event.story, self._story_task_id(event.story))
+            if path is None:
+                self.notify(
+                    f"T{event.story} ran in the main tree: {Path.cwd()}", severity="warning"
+                )
+                return
+            self.copy_to_clipboard(str(path))
+            self.notify(f"Copied {path}")
 
     @property
     def _phased(self) -> bool:
@@ -3256,6 +3502,7 @@ class RunApp(App[int]):
             self.write_log(f"— config override: {' · '.join(parts)} —", logging.WARNING)
 
     def on_unmount(self) -> None:
+        self._motion.stop()
         if self._handler is not None:
             splog = logging.getLogger("splinter")
             splog.removeHandler(self._handler)
@@ -3277,8 +3524,19 @@ class RunApp(App[int]):
         await self.action_quit()
 
     def action_stop(self) -> None:
-        """s — open the stop menu (pause / restart / kill)."""
+        bars = self.query("#stop-bar")
+        if self.size.height >= 30 and bars:
+            self.query_one("#footer-bar", Horizontal).display = False
+            bar = bars.first()
+            bar.display = True
+            bar.focus()
+            return
         self.push_screen(StopMenuModal(), callback=self._on_stop_choice)
+
+    def on_stop_bar_chosen(self, event: StopBar.Chosen) -> None:
+        self.query_one("#stop-bar", StopBar).display = False
+        self.query_one("#footer-bar", Horizontal).display = True
+        self._on_stop_choice(event.result)
 
     def _on_stop_choice(self, result: str | None) -> None:
         if result == "pause":
@@ -3287,6 +3545,97 @@ class RunApp(App[int]):
             self._do_pause_kill()
         elif result == "kill_exit":
             self._do_kill_exit()
+
+    def _sync_more_state(self) -> None:
+        """Publish the state the spend / tier / diff views read."""
+        set_more_state(
+            MoreState(
+                spend_by=self.spend_by,
+                tier=self.tier_pick,
+                diff=self._diff,
+                diff_cwd=self._diff_cwd,
+                budget=self._budget,
+            )
+        )
+
+    def action_open_spend(self, by: str = "cost") -> None:
+        """Rail elapsed / spent and `$` open the spend view."""
+        self.spend_by = by if by in ("cost", "time") else "cost"
+        self._sync_more_state()
+        self.view = "spend"
+
+    def action_set_spend_by(self, by: str) -> None:
+        """The `by cost | by time` switch of the spend view."""
+        self.spend_by = by if by in ("cost", "time") else "cost"
+        self._sync_more_state()
+        self._render_view()
+
+    def action_toggle_spend_by(self) -> None:
+        """b — flip the spend measure while the spend view is open."""
+        if self.view != "spend":
+            return
+        self.spend_by = "time" if self.spend_by == "cost" else "cost"
+        self._sync_more_state()
+        self._render_view()
+
+    def action_spend_story(self, n: int) -> None:
+        """A top story of the spend view — the view stays spend, filtered by it."""
+        self.select_story(n)
+        self._sync_more_state()
+        self.view = "spend"
+
+    def action_open_tier(self, tier: str = "") -> None:
+        """A ladder rung opens the tier view."""
+        self.tier_pick = tier
+        self._sync_more_state()
+        self.view = "tier"
+
+    def action_open_diff(self) -> None:
+        """d — the diff of the selected story (a second d reloads it)."""
+        if self.view == "diff":
+            self._start_diff()
+        self.view = "diff"
+
+    def action_refresh_diff(self) -> None:
+        """r — refresh the diff on demand, never on the refresh tick."""
+        if self.view != "diff":
+            return
+        self._start_diff()
+
+    def _start_diff(self) -> None:
+        self._diff = None
+        self._diff_gen += 1
+        self._sync_more_state()
+        gen = self._diff_gen
+        self.run_worker(
+            lambda: self._load_diff(gen), thread=True, name="diff", exclusive=True, group="diff"
+        )
+
+    def _story_task_id(self, story: int) -> str:
+        view = getattr(self, "_last_view", None)
+        rows = view.stories if view is not None else ()
+        return next((row.id for row in rows if row.number == story), "")
+
+    def _load_diff(self, gen: int) -> None:
+        story = self.selected_story
+        if story is None and self._last_view is not None:
+            story = self._last_view.live_story
+        cwd = Path.cwd()
+        try:
+            if story is not None:
+                cwd = story_cwd(self.session, story, self._story_task_id(story))
+            result = story_diff(cwd, self._diff_runner)
+        except Exception as exc:
+            result = StoryDiff(stat="", patch="", error=str(exc))
+        self.call_from_thread(self._set_diff, result, shown_tree(cwd), gen)
+
+    def _set_diff(self, result: StoryDiff, where: str = "", gen: int = 0) -> None:
+        if gen and gen != self._diff_gen:
+            return
+        self._diff = result
+        self._diff_cwd = where
+        self._sync_more_state()
+        self._render_view()
 
     async def action_pause_graceful(self) -> None:
         """Finish the current iteration, then pause."""
@@ -3356,21 +3705,98 @@ class RunApp(App[int]):
         self._run_pipeline_worker(resume=bool(self.run_kwargs.get("resume", False)))
 
     def write_log(self, msg: str, level: int = logging.INFO) -> None:
-        # Streamed model text/tool args are arbitrary — escape so stray `[` markup
-        # (e.g. "fix [bug]") doesn't raise MarkupError when the RichLog renders.
-        safe = escape(msg)
-        color = {logging.ERROR: "red", logging.WARNING: "yellow"}.get(level)
-        body = f"[{color}]{safe}[/]" if color else safe
-        self.query_one("#log", RichLog).write(self._log_prefix(msg) + body)
+        # Streamed model text/tool args are arbitrary — format_line escapes them so
+        # stray `[` markup (e.g. "fix [bug]") never raises MarkupError.
+        self._log_line(format_line(msg, level, self._log_prefix(msg)))
+        self._record_action(msg)
+
+    def _record_action(self, msg: str) -> None:
+        """Keep a streamed tool call or thought for the live feed of the activity view."""
+        view = getattr(self, "_last_view", None)
+        task = _TASK_NO_RE.search(msg)
+        story = int(task.group(1)) if self._parallel and task else None
+        if story is None and view is not None:
+            story = view.live_story
+        rows = view.iterations_by_story.get(story, ()) if view and story is not None else ()
+        iteration = 1 if not rows else rows[-1].n + (1 if rows[-1].verdict else 0)
+        stamp = datetime.now().strftime("%H:%M:%S")
+        action = live_action(msg, stamp, story, iteration, time.monotonic())
+        if action is None:
+            return
+        actions: list[LiveAction] = self.__dict__.setdefault("_live_actions", [])
+        actions.append(action)
+        if len(actions) > 600:
+            del actions[:200]
+        if not self.is_running:
+            return
+        with contextlib.suppress(Exception):
+            focus = self.query_one("#focus", FocusColumn)
+            focus.live_action = action
+            if view is not None:
+                focus.apply(view, self._story_number(view))
+            self._render_view()
+
+    def on_motion(self, phase: bool) -> None:
+        """Blink the caret of the live feed and fade its newest row."""
+        self._motion_phase = phase
+        if self.view == "act":
+            self._render_view()
+
+    def _log_line(self, markup: str) -> None:
+        """Write one formatted line to the log, keep it for the trace screen."""
+        history = self._log_history
+        history.append(markup)
+        if len(history) > 5000:
+            del history[:1000]
+        self.query_one("#log", RichLog).write(markup)
+        screen = self.screen
+        if isinstance(screen, TraceScreen):
+            screen.write(markup)
+
+    def build_trace_root(self) -> TraceNode:
+        """The run's trace tree from the files on disk and the latest view."""
+        view = getattr(self, "_last_view", None)
+        if view is None:
+            view = self._view_builder.build(
+                self.session, str(self.session.read_status().get("state", "")),
+                datetime.now(timezone.utc),
+            )
+        return build_trace(self.session, view)
+
+    def action_trace(self) -> None:
+        """L — the full-screen trace: tree, selected text and the live log."""
+        if isinstance(self.screen, TraceScreen):
+            self.pop_screen()
+            return
+        history = self._log_history
+        crumbs, stats = self._trace_head()
+        self.push_screen(TraceScreen(self.build_trace_root(), history, crumbs, stats))
+
+    def _trace_head(self) -> tuple[str, str]:
+        """``splinter / direct / prd.md / trace`` and ``23/58 done · 2 need you · $0.39``."""
+        status = self.session.read_status()
+        strategy = str(self.run_kwargs.get("strategy") or status.get("strategy") or "direct")
+        has_source = self.run_kwargs.get("prd_path") or self.run_kwargs.get("task_path")
+        parts = [f"[b {_LIME}]splinter[/]", f"[{_MUTED}]{escape(strategy)}[/]"]
+        if has_source:
+            parts.append(f"[{_MUTED}]{escape(self._run_source())}[/]")
+        parts.append(f"[b {_INK}]trace[/]")
+        crumbs = f" [{_DIM}]/[/] ".join(parts)
+        view = getattr(self, "_last_view", None)
+        if view is None:
+            return crumbs, ""
+        done = int(view.counts.get("pass", 0))
+        stats = f"[b {_INK}]{done}/{len(view.stories)}[/] [{_MUTED}]done[/]"
+        if view.needs_you:
+            stats += f" [{_DIM}]·[/] [b {_RED}]{len(view.needs_you)}[/] [{_MUTED}]need you[/]"
+        stats += f" [{_DIM}]·[/] [b {_LIME}]${view.total_cost:.4f}[/]"
+        return crumbs, stats
 
     def _log_prefix(self, msg: str) -> str:
         """Dim ``HH:MM:SS`` stamp, plus ``[T<n>]`` when the record names a task."""
         stamp = datetime.now().strftime("%H:%M:%S")
-        prefix = f"[dim]{stamp}[/] "
         task = _TASK_NO_RE.search(msg)
-        if self._parallel and task:
-            prefix += f"[dim][T{task.group(1)}][/] "
-        return prefix
+        return stamp_prefix(stamp, task.group(1) if self._parallel and task else "")
 
     def _running_task_choices(self) -> list[tuple[int, str]]:
         """Currently-running parallel tasks as (task_no, title). Empty in
@@ -3388,40 +3814,47 @@ class RunApp(App[int]):
         corrections at the top of the target task's next iteration, so the model
         decides when to act on it.
         """
-        log = self.query_one("#log", RichLog)
         target = f"Task {task_no}" if task_no is not None else "runner"
-        log.write(
+        self._log_line(
             self._log_prefix("")
             + f"[bold cyan]👤 User → {escape(target)}:[/] [cyan]{escape(text)}[/]"
         )
         self.session.queue_live_command(text, task_no=task_no)
-        log.write(
+        self._log_line(
             self._log_prefix("") + "[dim]queued — applies on the target session's next iteration[/]"
         )
 
     def _send_live_command(self) -> None:
-        inp = self.query_one("#user-cmd-input", Input)
+        composer = self.query_one(Composer)
+        inp = composer.query_one("#user-cmd-input", Input)
         text = inp.value.strip()
         if not text:
             return
-        running = self._running_task_choices()
-        if len(running) > 1:
-            # Multiple sessions in flight — ask which one, then dispatch. No kill.
-            def _on_pick(choice: int | None) -> None:
-                if choice is None:
-                    self.query_one("#log", RichLog).write("[dim]directive cancelled[/]")
-                    return
-                self._dispatch_directive(text, task_no=choice)
-                inp.value = ""
-                inp.focus()
-
-            self.push_screen(_SelectSessionModal(running), callback=_on_pick)
-            return
-        # Exactly one running task → scope to it; none (single-task) → shared queue.
-        task_no = running[0][0] if running else None
-        self._dispatch_directive(text, task_no=task_no)
+        view = getattr(self, "_last_view", None)
+        story = (
+            getattr(self, "selected_story", None) or getattr(view, "live_story", None) or 1
+        )
+        now = tuple(getattr(view, "now", ()) or ())
+        if composer.target == "story":
+            label = f"T{story}"
+            ids: tuple[str, ...] = (self.session.queue_live_command(text, task_no=story),)
+            self.session.append("events.md", f"[USER GUIDANCE] ({label}) {text}")
+        elif composer.target == "all":
+            label = "all agents"
+            ids = tuple(self.session.broadcast_live_command(text, now or (story,)))
+            self.session.append("events.md", f"[USER GUIDANCE] ({label}) {text}")
+        else:
+            label = "orchestrator only"
+            ids = (self.session.queue_orchestrator_note(text),)
+            self.session.append("events.md", f"[ORCHESTRATOR NOTE] {text}")
+        composer.record(label, text, ids, datetime.now().astimezone())
+        self.write_log(f"👤 User → {label}: {text}")
+        self.write_log("queued — applies on the target's next iteration")
         inp.value = ""
         inp.focus()
+
+    def action_composer_target(self, target: str) -> None:
+        self.query_one(Composer).select_target(target)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id == "user-cmd-input":
@@ -3429,20 +3862,112 @@ class RunApp(App[int]):
 
     def _write_run_complete(self) -> None:
         summary = format_run_completion(self.session)
-        log = self.query_one("#log", RichLog)
-        log.write(self._log_prefix("") + f"[bold green]✅ RUN COMPLETE[/] — {escape(summary)}")
-        log.write(
+        self._log_line(format_line(f"RUN COMPLETE — {summary}", logging.INFO, self._log_prefix("")))
+        self._log_line(
             self._log_prefix("")
-            + "[dim]press q to quit · uv run splinter analyze to inspect[/]"
+            + " " * 7
+            + "[#7a7972]press q to quit · uv run splinter analyze to inspect[/]"
         )
-        self.sub_title = f"🟢 COMPLETE · {summary}"
+
+    def _render_view(self) -> None:
+        view = getattr(self, "_last_view", None)
+        if view is None or not self.is_running:
+            return
+        story = self._story_number(view)
+        ctx = ViewContext(
+            view=view,
+            story=story,
+            opened=self.opened_iterations,
+            files=self._view_files,
+            session=self.session,
+            multi=self._parallel,
+            spend_by=getattr(self, "spend_by", "cost"),
+            tier=getattr(self, "tier_pick", ""),
+            budget=self.run_kwargs.get("budget"),
+            diff_text=getattr(self, "_diff", None),
+            width=max(0, self.query_one("#view-body").content_size.width - 1),
+            live=tuple(self.__dict__.get("_live_actions", ())),
+            phase=self.__dict__.get("_motion_phase", False),
+            now=time.monotonic(),
+        )
+        streaming = self.view == "act" and story is not None and story == view.live_story
+        base = (
+            self.view,
+            *view_content_key(ctx, self.view),
+        )
+        key = (*base, ctx.phase if streaming else None)
+        logs = self.view == "logs"
+        self.query_one("#view-body").display = not logs
+        self.query_one("#log-pane").display = logs
+        scroll = self.query_one("#view-scroll", VerticalScroll)
+        scroll.display = True
+        scroll.set_class(self.view == "act", "-bottom")
+        self.query_one("#needs-you-slot").display = self.view == "act"
+        if key != self._view_key:
+            factory = view_registry()[self.view]
+            self.query_one("#view-static", Static).update(factory(ctx))
+            moved = self._view_key is None or self._view_key[:-1] != base
+            self._view_key = key
+            if self.view == "act":
+                if moved:
+                    self.call_after_refresh(self._scroll_view_end)
+            else:
+                scroll.scroll_home(animate=False)
+
+    def _refresh_view_model(self, state: str) -> None:
+        view: RunView | None
+        try:
+            view = self._view_builder.build(
+                self.session, state, datetime.now(timezone.utc)
+            )
+        except Exception:
+            view = self._last_view
+        if view is None:
+            return
+        previous = self._last_view
+        self._last_view = view
+        self._apply_run_view(view)
+        self._sync_motion(view)
+        self._notify_toasts(previous, view)
+        source_path = self.run_kwargs.get("prd_path") or self.run_kwargs.get("task_path")
+        source = Path(str(source_path)).name if source_path else self.session.id
+        if view.live_story is None:
+            progress = f"{view.counts.get('pass', 0)}/{len(view.stories)} done"
+        else:
+            progress = f"story {view.live_story}/{len(view.stories)}"
+        self.sub_title = f"{source} · {progress} · {state}"
+
+    def _sync_motion(self, view: RunView) -> None:
+        """Pulse while the run lives; stop for good when it is done."""
+        if view.stage == "done":
+            self._motion.stop()
+        else:
+            self._motion.start()
+
+    def _notify_toasts(self, previous: RunView | None, view: RunView) -> None:
+        """Show the run's own events — each of them once."""
+        for message in self._toasts.events(previous, view):
+            self.notify(message)
 
     def _refresh(self) -> None:
         state = _run_state(self.session)
         self.title = f"splinter run · {self.session.id}"
-        self.sub_title = f"{_STATE_EMOJI.get(state, '⚪')} {state}"
+        with contextlib.suppress(Exception):
+            clock = datetime.now().strftime("%H:%M:%S")
+            self.query_one("#footer-clock", Static).update(clock)
         self._parallel = _is_parallel_mode(self.session.read("loop.md"))
-        self.query_one("#overview", Static).update(render_run_overview(self.session, state))
+        self._refresh_view_model(state)
+        try:
+            composer = self.query_one(Composer)
+            view = getattr(self, "_last_view", None)
+            live_story = getattr(view, "live_story", None)
+            for message in composer.poll(self.session):
+                is_live_target = message.target in {f"T{live_story}", "all agents"}
+                if live_story is not None and is_live_target:
+                    self.write_log(f"orch → T{live_story}: forwarded your note")
+        except Exception:
+            pass
+        self._refresh_needs_you()
         # Re-sync the mode + read-error flag from the session each tick. The
         # pipeline can seed the mode ON from --cowabunga on the worker thread
         # *after* on_mount snapshots it, so the reactive would otherwise show a
@@ -3456,6 +3981,13 @@ class RunApp(App[int]):
         except Exception:
             read_error = False
         self._render_kowabunga_ind(self._kowabunga, error=read_error)
+
+    def _run_source(self) -> str:
+        for key in ("prd_path", "task_path"):
+            value = self.run_kwargs.get(key)
+            if value:
+                return Path(str(value)).name
+        return self.session.id
 
     def _show_gap_modal(self, kind: str, provider: str = "", retry_after: object = None) -> None:
         try:
@@ -3617,10 +4149,10 @@ class RunApp(App[int]):
                 "awaiting_validation"
             ):
                 self.write_log("— final eval complete — awaiting manual validation —", logging.INFO)
-                self.call_after_refresh(self._show_manual_validation_modal)
+                self.call_after_refresh(self._open_validation)
             else:
                 self.write_log("— run PAUSED (needs your input) —", logging.WARNING)
-                self.call_after_refresh(self._show_ask_user_modal)
+                self.call_after_refresh(self._open_ask)
         else:
             from splinter import procreg
 
@@ -3676,12 +4208,7 @@ class RunApp(App[int]):
 
     def _render_kowabunga_ind(self, val: RunnerMode, *, error: bool = False) -> None:
         ind = self.query_one("#kowabunga-ind", Static)
-        if error:
-            ind.update("[b $error]⚠ cowabunga · unreadable — off[/]")
-        elif val == RunnerMode.KOWABUNGA_ON:
-            ind.update("[b $warning]🤙 cowabunga · on[/]")
-        else:
-            ind.update("[dim]cowabunga · off[/]")
+        ind.update(cowabunga_markup(val == RunnerMode.KOWABUNGA_ON, error))
 
 
 def run_with_tui(run_kwargs: dict[str, Any], session: Session | None = None) -> int:
@@ -4203,6 +4730,9 @@ _PHASE_STEPS: dict[str, int] = {
     "run": 4,
 }
 
+#: The stepper step the questions live on (clickable to go back to them).
+_QUESTIONS_STEP = 1
+
 #: What the Cowabunga button does in each phase.
 _COWABUNGA_TOOLTIPS: dict[str, str] = {
     "chat": "Answer the open questions yourself and finalize",
@@ -4223,19 +4753,64 @@ class PrdSessionApp(App[int | None]):
     CSS = (
         """
     #draftpane {
-        width: 50%;
-        border-right: solid $primary;
+        width: 34%;
+        padding: 1 2 0 2;
+        border-left: solid #1d1d1a;
+    }
+    #draft-body {
+        height: 1fr;
+    }
+    #q-index-head {
+        display: none;
+        height: 1;
+        margin-top: 1;
+        text-style: bold;
+    }
+    PrdSessionApp.-asking #q-index-head { display: block; }
+    PrdSessionApp.-asking #convo { display: none; }
+    PrdSessionApp.-asking #question-form {
+        height: 1fr;
+        max-height: 100%;
+    }
+    #draft-stage {
+        display: none;
+        height: 1fr;
+    }
+    #draft-word {
+        margin: 1 0 1 0;
+    }
+    #draft-sentence {
+        height: auto;
+        margin-bottom: 1;
     }
     #instructions {
         height: 1fr;
-        border: round $primary;
-        border-title-color: $text;
+        min-height: 5;
+        border: none;
+        border-left: wide #7a7972;
+        padding: 0 1;
     }
+    #instructions:focus {
+        border: none;
+        border-left: wide #c6f432;
+    }
+    #draft-keys {
+        height: 1;
+        margin: 1 0;
+    }
+    #task-picker { display: none; }
+    PrdSessionApp.-task #instructions { display: none; }
+    PrdSessionApp.-task #task-picker { display: block; }
+    PrdSessionApp.-drafting #draft-stage { display: block; }
+    PrdSessionApp.-drafting #draftpane { display: none; }
+    PrdSessionApp.-drafting #actions { display: none; }
+    PrdSessionApp.-drafting #question-index { display: none; }
+    PrdSessionApp.-drafting #convo { height: auto; max-height: 4; }
+    PrdSessionApp.-drafting #composer { border-top: none; padding: 0; }
+    PrdSessionApp.-drafting Footer { display: none; }
     #chatpane {
         width: 1fr;
-    }
-    #stepper {
-        height: 1;
+        padding: 1 4 0 4;
     }
     #convo {
         height: 1fr;
@@ -4250,30 +4825,37 @@ class PrdSessionApp(App[int | None]):
     #composer {
         dock: bottom;
         height: auto;
+        border-top: solid #1d1d1a;
+        padding: 1 0 0 0;
     }
     #busy {
         height: 1;
     }
     #entry {
-        height: 8;
-        border: round $primary;
+        height: 3;
+        border: none;
+        border-left: wide #7a7972;
+        padding: 0 1;
+    }
+    #entry:focus {
+        border: none;
+        border-left: wide #c6f432;
     }
     #draft-edit {
-        border-title-color: $text;
+        border: none;
+        border-top: solid #1d1d1a;
+        border-title-color: #8f8e85;
+        border-title-align: left;
+        padding: 0;
     }
     #actions {
-        height: 3;
-        padding: 0 1;
+        height: 1;
+        margin: 1 0;
+        padding: 0;
         align: left middle;
     }
-    #actions Button {
-        height: 3;
-        min-width: 10;
-        width: auto;
-        margin: 0 1 0 0;
-        padding: 0 2;
-    }
     """
+        + SHELL_CSS
         + _PALETTE_CSS
         + _MAXIMIZE_CSS
     )
@@ -4284,6 +4866,9 @@ class PrdSessionApp(App[int | None]):
         ("ctrl+c", "abort", "Abort"),
         ("escape", "abort", "Abort"),
         Binding("ctrl+s", "send", "Send"),
+        Binding("ctrl+t", "plan_task", "Plan first", show=False),
+        Binding("ctrl+o", "pick('file')", "File", show=False),
+        Binding("ctrl+l", "pick('folder')", "Folder", show=False),
     ]
 
     _maximized: reactive[bool] = reactive(False)
@@ -4292,6 +4877,7 @@ class PrdSessionApp(App[int | None]):
         super().__init__()
         self.session = session
         self.run_kwargs = run_kwargs
+        self.task_plan = False
         self.cowabunga = bool(run_kwargs.get("cowabunga"))
         self.resuming = bool(run_kwargs.get("resume"))
         self.no_ground = bool(run_kwargs.get("no_ground"))
@@ -4312,7 +4898,11 @@ class PrdSessionApp(App[int | None]):
         self._prd_name = Path(self._source_prd_path).name if self._source_prd_path else "draft"
         self._prd_base = ""
         self._questions: list[Question] = []
+        self._last_questions: list[Question] = []
+        self._last_answers: dict[int, str] = {}
         self._model_name = ""
+        self.mode = "prd"
+        self.task_handoff: str | None = None
 
     def _save_state(self) -> None:
         """Persist enough to resume this refinement: conversation id, phase, strategy."""
@@ -4330,25 +4920,32 @@ class PrdSessionApp(App[int | None]):
         )
 
     def compose(self) -> ComposeResult:
-        yield Header(show_clock=True)
+        label = self._prd_name if self._source_prd_path else f"new {self.mode}"
+        yield ShellBar(crumb_markup("prd", label), PhaseStepper(PRD_STEPS, id="stepper"))
         with Horizontal():
-            with Vertical(id="draftpane"):
-                entry = ComposerTextArea(id="instructions", soft_wrap=True)
-                entry.border_title = "Instructions"
-                entry.border_subtitle = "↵ newline"
-                yield entry
             with Vertical(id="chatpane"):
-                yield PhaseStepper(PRD_STEPS, id="stepper")
+                with Vertical(id="draft-stage"):
+                    mode = MODES[self.mode]
+                    yield BlockWord(mode.word, id="draft-word")
+                    yield Static(mode.sentence(), id="draft-sentence")
+                    entry = ComposerTextArea(id="instructions", soft_wrap=True)
+                    entry.placeholder = mode.placeholder
+                    yield entry
+                    yield Ink(mode.keys(), id="draft-keys")
                 yield RichLog(id="convo", markup=True, wrap=True)
                 with Vertical(id="questions-host"):
                     yield QuestionForm(id="question-form")
                 with Vertical(id="composer"):
                     yield BusyStatus(id="busy")
                     entry_reply = ComposerTextArea(id="entry", soft_wrap=True)
-                    entry_reply.border_subtitle = "↵ newline"
+                    entry_reply.placeholder = "anything else the writer should know"
                     yield entry_reply
                     with Horizontal(id="actions"):
                         yield Button("Generate PRD", id="generate", variant="primary")
+            with Vertical(id="draftpane"):
+                yield Vertical(id="draft-body")
+                yield Static("Open questions", id="q-index-head")
+                yield QuestionIndex(id="question-index")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -4357,6 +4954,7 @@ class PrdSessionApp(App[int | None]):
         from splinter import prd_session
 
         self.title = "splinter · PRD"
+        use_splinter_theme(self)
         self._update_stepper()
 
         if not self.resuming:
@@ -4399,14 +4997,80 @@ class PrdSessionApp(App[int | None]):
             self._spawn(self._questions_worker)
 
     def _enter_generate_phase(self) -> None:
-        """Instructions-only phase: one composer on the left, one action button."""
+        """Draft phase: one column, the stage word, one input and its keys."""
         self._generating = True
         self._set_phase("generate")
         self._set_composer_visible(False)
         self._render_actions("generate")
-        self._say("[dim]Write instructions on the left, then click 'Generate PRD'.[/]")
         self._set_busy(False)
         self._focus_instructions()
+
+    def action_mode(self, name: str) -> None:
+        """Header chip: switch between ``--prd`` and ``--task`` while drafting."""
+        if name not in MODES or name == self.mode:
+            return
+        if not self._generating or self._busy:
+            self.notify("The mode is fixed once the PRD exists.", severity="warning")
+            return
+        self.mode = name
+        self.set_class(name == "task", "-task")
+        if name == "task" and not self.query(TaskPicker):
+            self.query_one("#draft-stage").mount(
+                TaskPicker(id="task-picker"), before="#draft-keys"
+            )
+        mode = MODES[name]
+        label = self._prd_name if self._source_prd_path else f"new {name}"
+        self.query_one(ShellBar).set_crumb(crumb_markup(name, label))
+        self.query_one("#stepper", PhaseStepper).set_steps(mode.steps)
+        self.query_one("#draft-word", BlockWord).word = mode.word
+        self.query_one("#draft-sentence", Static).update(mode.sentence())
+        self.query_one("#draft-keys", Ink).update(mode.keys())
+        self.query_one("#instructions", TextArea).placeholder = mode.placeholder
+        self._update_stepper()
+        self._focus_instructions()
+
+    def _run_task(self, plan: bool = False) -> None:
+        """``^s`` hands the task to the run screen; ``^t`` plans it with you first."""
+        picker = self.query_one(TaskPicker)
+        text = picker.value
+        if not text:
+            self.notify("Type a path, pick a file, or write the task in a line.",
+                        severity="warning")
+            return
+        if looks_like_path(text) and not Path(text).expanduser().exists():
+            self.notify(f"No such file or folder: {text}", severity="warning")
+            picker.focus_path()
+            return
+        self.task_plan = plan
+        self.task_handoff = str(task_source(self.session, text))
+        self.exit(0)
+
+    def on_task_picker_chosen(self, event: TaskPicker.Chosen) -> None:
+        """A file was taken: back to the path, where ↵ runs it."""
+        self.query_one(TaskPicker).focus_path()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "task-path" and self._generating and self.mode == "task":
+            event.stop()
+            self._run_task()
+
+    def action_plan_task(self) -> None:
+        if self._generating and self.mode == "task" and not self._busy:
+            self._run_task(plan=True)
+
+    def action_pick(self, kind: str) -> None:
+        """``^o`` / ``^l``: the system's own file or folder chooser, off the UI thread."""
+        if not (self._generating and self.mode == "task"):
+            return
+        if sys.platform != "darwin":
+            self.notify("No system chooser here: type the path or pick it in the tree.")
+            return
+
+        def work() -> None:
+            picked = system_pick(kind == "folder")
+            self.call_from_thread(self.query_one(TaskPicker).take_system_pick, picked)
+
+        self.run_worker(work, thread=True, name="system-pick")
 
     def _set_composer_visible(self, visible: bool) -> None:
         """Show or hide the right-hand composer (hidden while generating)."""
@@ -4418,6 +5082,7 @@ class PrdSessionApp(App[int | None]):
     def _set_phase(self, phase: str) -> None:
         """Move to a phase and keep the stepper in sync."""
         self.phase = phase
+        self.set_class(phase == "generate", "-drafting")
         self._update_stepper()
         if phase != "chat":
             # The question form belongs to the questions phase only.
@@ -4488,16 +5153,18 @@ class PrdSessionApp(App[int | None]):
 
         def _complete_mount() -> None:
             prd_session.log_phase(self.session, "trust")
-            self._say("[green]PRD loaded — edit it on the left if needed.[/]")
+            self._say("[green]PRD loaded — edit it on the right if needed.[/]")
             self._render_actions("trust")
             self._set_busy(False, "edit / send PRD / cowabunga")
             self._save_state()
 
         async def _mount_edit() -> None:
-            draftpane = self.query_one("#draftpane", Vertical)
+            draftpane = self.query_one("#draft-body", Vertical)
             await draftpane.remove_children()
             self._prd_base = self._initial_prd
-            edit = TextArea(id="draft-edit", soft_wrap=True, text=self._initial_prd)
+            edit = TextArea(
+                id="draft-edit", soft_wrap=True, text=self._initial_prd, language="markdown"
+            )
             edit.border_title = self._draft_title()
             edit.border_subtitle = ""
             await draftpane.mount(edit)
@@ -4587,8 +5254,13 @@ class PrdSessionApp(App[int | None]):
         entry.disabled = busy
         for btn in self.query("#actions Button"):
             btn.disabled = busy
-        for radio in self.query("#question-form RadioSet"):
-            radio.disabled = busy
+        for selector in (
+            "#question-form RadioSet",
+            "#question-form Button",
+            "#question-form Input",
+        ):
+            for widget in self.query(selector):
+                widget.disabled = busy
         try:
             status = self.query_one("#busy", BusyStatus)
         except Exception:
@@ -4628,11 +5300,13 @@ class PrdSessionApp(App[int | None]):
 
     def _draft_title(self) -> str:
         """Title of the left pane: the PRD file name, or 'draft'."""
-        return f"PRD · {self._prd_name}"
+        return f"PRD draft · {self._prd_name} · edit freely"
 
     def _set_questions(self, questions: list[Question]) -> None:
         """Show the question form for these questions (empty list hides it)."""
         self._questions = list(questions)
+        if questions:
+            self._last_questions = list(questions)
         try:
             form = self.query_one("#question-form", QuestionForm)
         except Exception:
@@ -4644,7 +5318,56 @@ class PrdSessionApp(App[int | None]):
             await form.set_questions(self._questions)
             form.display = bool(self._questions)
 
+        self.set_class(bool(self._questions), "-asking")
+        model = self._model_name or "sonnet"
+        count = len(self._questions)
+        form.meta = f"PRD writer · {model} · {count} question{'s' if count != 1 else ''}"
         self.run_worker(_swap, name="questions")  # type: ignore[arg-type]
+        self._refresh_question_index()
+
+    def _refresh_question_index(self) -> None:
+        """Point the right-pane question list at the current questions."""
+        try:
+            index = self.query_one("#question-index", QuestionIndex)
+        except Exception:
+            return
+        index.refresh_from(self._questions, self._last_answers)
+
+    def on_question_form_answers_changed(self, event: QuestionForm.AnswersChanged) -> None:
+        self._last_answers = dict(event.answers)
+        self._refresh_question_index()
+
+    def on_question_form_completed(self, event: QuestionForm.Completed) -> None:
+        """Auto-advance ended: focus Finalize; the form never submits alone."""
+        try:
+            self.query_one("#fulfilled", Button).focus()
+        except Exception:
+            pass
+
+    def action_jump_question(self, n: int | str) -> None:
+        """QuestionIndex row click: jump to that question in the form."""
+        try:
+            self.query_one("#question-form", QuestionForm).jump_to(int(n))
+        except Exception:
+            return
+
+    def on_phase_stepper_step_clicked(self, event: PhaseStepper.StepClicked) -> None:
+        if self._busy or event.index != _QUESTIONS_STEP or not self._last_questions:
+            return
+        self._back_to_questions()
+
+    def _back_to_questions(self) -> None:
+        """Go back to the questions step, re-filled with the saved answers."""
+        self._set_phase("chat")
+
+        async def _swap() -> None:
+            form = self.query_one("#question-form", QuestionForm)
+            await form.set_questions(self._last_questions)
+            form.restore_answers(self._last_answers)
+
+        self.run_worker(_swap, name="questions")  # type: ignore[arg-type]
+        self._render_actions("chat")
+        self._set_busy(False, "answers · fulfilled · cowabunga")
 
     def _render_actions(self, phase: str) -> None:
         """Swap the action buttons to match the phase (chat / review / trust / generate)."""
@@ -4725,6 +5448,9 @@ class PrdSessionApp(App[int | None]):
             self._say(f"[red]ERROR: {escape(f'cannot write PRD: {exc}')}[/]")
 
     def _focus_instructions(self) -> None:
+        if self.mode == "task":
+            self.call_after_refresh(lambda: self.query_one("#task-path", Input).focus())
+            return
         self.query_one("#instructions", TextArea).focus()
 
     def _fail(self, msg: str) -> None:
@@ -4906,10 +5632,10 @@ class PrdSessionApp(App[int | None]):
         """Replace left pane with editable PRD draft after generation."""
 
         async def _do() -> None:
-            draftpane = self.query_one("#draftpane", Vertical)
+            draftpane = self.query_one("#draft-body", Vertical)
             await draftpane.remove_children()
             self._prd_base = content
-            edit = TextArea(id="draft-edit", soft_wrap=True, text=content)
+            edit = TextArea(id="draft-edit", soft_wrap=True, text=content, language="markdown")
             edit.border_title = self._draft_title()
             edit.border_subtitle = ""
             await draftpane.mount(edit)
@@ -4990,6 +5716,9 @@ class PrdSessionApp(App[int | None]):
 
     def action_send(self) -> None:
         """Ctrl+S / Send button — generate/send/accept depending on phase."""
+        if self._generating and self.mode == "task":
+            self._run_task()
+            return
         if self._generating:
             self._on_generate()
             return
@@ -5284,7 +6013,17 @@ def run_prd_interactive(run_kwargs: dict[str, Any]) -> int:
     from splinter.prd_session import prd_session_is_resumable
 
     session = Session(new_session_id())
-    result = PrdSessionApp(session, run_kwargs).run()
+    app = PrdSessionApp(session, run_kwargs)
+    result = app.run()
+    handoff = getattr(app, "task_handoff", None)
+    if result == 0 and isinstance(handoff, str) and handoff:
+        task_kwargs = {**run_kwargs, "prd_path": None, "task_path": handoff}
+        if getattr(app, "task_plan", False) is True:
+            from splinter import tui_plan
+
+            planned = tui_plan.PlanSessionApp(session, task_kwargs).run()
+            return tui_plan._handoff(session, task_kwargs, planned)
+        return run_with_tui(task_kwargs, session=session)
     if result is None:
         # Abandoned with no runnable PRD (a stub passes is_empty but has no
         # user stories) — delete instead of littering a dead refining session.

@@ -16,6 +16,17 @@ def _clear_config_cache() -> None:
 
 
 @pytest.fixture(autouse=True)
+def _isolate_ui_prefs(
+    monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    """Keep ``.splinter/ui.yaml`` writes out of the real working tree."""
+    from splinter import ui_prefs
+
+    root = tmp_path_factory.mktemp("ui-prefs")
+    monkeypatch.setattr(ui_prefs, "_default_root", lambda: root)
+
+
+@pytest.fixture(autouse=True)
 def _mock_cursor_list_models(monkeypatch: pytest.MonkeyPatch) -> None:
     """Prevent tests from spawning ``agent --list-models`` subprocess."""
     from splinter.providers import cursor as _cursor

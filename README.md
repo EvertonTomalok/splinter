@@ -87,11 +87,17 @@ The loop continues until the judge is satisfied or you hit the top of the ladder
 
 ## Quickstart
 
+Run `uv run splinter` to open the interactive PRD flow. With no subcommand,
+`splinter` is an alias for `splinter prd`.
+
 Create a PRD interactively, then run it. `splinter prd` asks a few lettered
 questions (including which turtle to use), writes the PRD into the session, and
 records the strategy in its frontmatter:
 
 ```bash
+# open the PRD flow (same as uv run splinter prd)
+uv run splinter
+
 # describe the work; answer the clarifying questions it asks
 uv run splinter prd "add priority levels to tasks"
 
@@ -404,6 +410,7 @@ per-token rates are relative cost proxies for ladder ranking, not billing.
 
 | Command | Description |
 |---------|-------------|
+| `splinter` | Open the interactive PRD flow (alias for `splinter prd`) |
 | `splinter setup` | Verify environment — pings each provider CLI, validates the ladder |
 | `splinter prd [description]` | Generate a PRD interactively (Q&A with the sensei) |
 | `splinter run` | Run a task or PRD through a strategy |
@@ -438,6 +445,10 @@ splinter run [OPTIONS]
 **Parallel execution.** `--parallel` lets independent user stories run at the same time, each isolated in its own `git worktree`, merged back on PASS while dependency edges (`Depends on US-NNN`) are honored. It applies only to multi-task strategies (`cascade`, `adaptive`, `sprint`) — `direct`/`raphael` is single-shot and ignores it — and needs `git worktree` support in the repo. If you don't pass `--parallel` or `--no-parallel`, an interactive PRD run asks you on the accept screen (only when the strategy is multi-task and the PRD has 2+ stories); `--quiet`/non-interactive runs default to sequential.
 
 ### `splinter prd`
+
+Running `splinter` or `uv run splinter` without arguments starts this flow.
+Use `splinter prd` to pass a description or PRD options. Use `splinter --help`
+to list all commands.
 
 ```
 splinter prd [description]

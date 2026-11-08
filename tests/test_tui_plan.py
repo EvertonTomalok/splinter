@@ -79,7 +79,7 @@ def test_full_flow_questions_answer_plan_run(
             await _settle(app, pilot)
             assert "Approach?" in _convo(app)
             task_edit = app.query_one("#task-edit", TextArea)
-            assert task_edit.border_title == "Task · hello.yaml"
+            assert "hello.yaml" in str(app.query_one("#shell-crumb").content)
             assert "Add a hello command" in task_edit.text
             assert app.title == "splinter · plan"
             assert app.sub_title == "Questions"
@@ -97,7 +97,7 @@ def test_full_flow_questions_answer_plan_run(
             await _settle(app, pilot)
             plan_edit = app.query_one("#plan-edit", TextArea)
             assert plan_edit.display and not task_edit.display
-            assert plan_edit.border_title == "Plan"
+            assert plan_edit.display
             assert plan_edit.text == "1. Edit cli.py"
             assert planner["write"][0]["autodecide"] is False
             assert _buttons(app) == ["send", "run", "cowabunga"]
@@ -141,7 +141,7 @@ def test_run_from_review_writes_plan_task_and_status(
         async with app.run_test(size=SIZE) as pilot:
             await _settle(app, pilot)
             app.query_one("#plan-edit", TextArea).text = "1. Edit cli.py\n2. Add tests"
-            await pilot.click("#run")
+            await pilot.click("#plan-run")
             await _settle(app, pilot)
         assert app.return_value == 0
 
@@ -187,7 +187,7 @@ def test_review_typed_text_revises_plan(
             await pilot.click("#send")
             await _settle(app, pilot)
             app.query_one("#entry", TextArea).text = "use tui.py instead"
-            await pilot.click("#send")
+            await pilot.press("ctrl+s")
             await _settle(app, pilot)
             assert planner["revise"][0]["current_plan"] == "1. Edit cli.py"
             assert app.query_one("#plan-edit", TextArea).text == "1. Edit tui.py"
@@ -276,7 +276,7 @@ def test_resume_reenters_review(task_file: Path, planner: dict[str, Any]) -> Non
             assert app.claude_session == "sid-old"
             assert app.query_one("#plan-edit", TextArea).text == "1. Saved step"
             assert "Resumed task" in app.query_one("#task-edit", TextArea).text
-            assert "earlier reply" in _convo(app)
+            assert any("earlier reply" in line for line in app._convo_lines)
             assert "run" in _buttons(app)
             assert "q" not in planner
 
@@ -339,5 +339,59 @@ def test_plan_mode_question_form_stepper_and_busy_line(
             await _settle(app, pilot)
             assert sent and sent[0].startswith("1A"), sent
             assert "keep it small" in sent[0]
+
+    asyncio.run(drive())
+
+
+def test_plan_ready_presentation_and_r_key_triggers_run(
+    task_file: Path, planner: dict[str, list[dict[str, Any]]]
+) -> None:
+    from textual.containers import Vertical
+    from textual.widgets import Static
+
+    app = _app(task_file)
+
+    async def drive() -> None:
+        async with app.run_test(size=SIZE) as pilot:
+            await _settle(app, pilot)
+            await pilot.click("#write-plan")
+            await _settle(app, pilot)
+
+            plan_ready = app.query_one("#plan-ready", Vertical)
+            assert plan_ready.display is True
+            title = app.query_one("#plan-ready-title", Static)
+            assert str(title.render()) == "Plan ready."
+            lead = app.query_one("#plan-ready-lead", Static)
+            assert "step" in str(lead.render())
+            steps = app.query_one("#plan-ready-steps", Static)
+            assert "1  " in str(steps.render())
+
+            btn = app.query_one("#plan-run", Button)
+            assert "run with" in str(btn.label)
+
+            await pilot.press("r")
+            await _settle(app, pilot)
+
+        assert app.return_value == 0
+
+    asyncio.run(drive())
+    session = Session("ses_plan")
+    status = session.read_status()
+    assert status["phase"] == "run"
+
+
+def test_plan_run_button_triggers_run(
+    task_file: Path, planner: dict[str, list[dict[str, Any]]]
+) -> None:
+    app = _app(task_file)
+
+    async def drive() -> None:
+        async with app.run_test(size=SIZE) as pilot:
+            await _settle(app, pilot)
+            await pilot.click("#write-plan")
+            await _settle(app, pilot)
+            await pilot.click("#plan-run")
+            await _settle(app, pilot)
+        assert app.return_value == 0
 
     asyncio.run(drive())

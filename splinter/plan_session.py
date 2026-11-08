@@ -265,6 +265,7 @@ def save_task(
 
 _TASK_PLAN_HEAD = re.compile(r"^##[ \t]+([A-Z]{1,3}\d+[a-z]?)\b.*$", re.MULTILINE)
 PLAN_ALL_FILE = "knowledge/plan-all.md"
+PLAN_BUNDLE_FILE = "knowledge/plan-bundle.md"
 
 
 def task_plan_path(task_id: str) -> str:

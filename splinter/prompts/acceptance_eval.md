@@ -14,6 +14,8 @@ behavior the diff claims but does not show.
 
 {diff}
 
+{orchestrator_notes_section}
+
 Rules:
 - An acceptance line passes only when the diff itself shows it satisfied; never
   assume work that is not visible in the diff.

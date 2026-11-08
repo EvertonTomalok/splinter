@@ -121,6 +121,7 @@ def check_acceptance(
     diff: str = "",
     trace: Trace | None = None,
     task_index: int = 0,
+    orchestrator_notes: str = "",
 ) -> AcceptanceResult:
     """Check a brief: mechanical gate first, then (per mode) a light LLM check of
     the diff against the acceptance lines.
@@ -153,6 +154,7 @@ def check_acceptance(
         goal=goal,
         acceptance=_acceptance_text(acceptance),
         diff=diff,
+        orchestrator_notes_section=orchestrator_notes,
     )
     try:
         raw = run_text(

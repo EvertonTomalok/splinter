@@ -5,9 +5,11 @@ import logging
 import os
 import re
 import threading
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from splinter.enums import DEFAULT_RUNNER_MODE, RunnerMode
 
@@ -41,6 +43,8 @@ _PRE_RUN_USAGE_LOCK = threading.Lock()
 #: RunStage writes the descriptor before spawning run_task and clears it after the
 #: turn from parallel worker threads; the TUI poll thread reads concurrently.
 _RUN_LIVE_LOCK = threading.Lock()
+
+_DIRECTIVE_LOCK = threading.Lock()
 
 
 def _append_lock(session_id: str) -> threading.Lock:
@@ -382,7 +386,22 @@ class Session:
             return self.dir / "pending_directive.txt"
         return self.dir / f"pending_directive.task-{task_no}.txt"
 
-    def queue_live_command(self, text: str, task_no: int | None = None) -> None:
+    def write_receipt(self, directive_id: str) -> None:
+        """Mark a directive or note as read by its consumer."""
+        receipt = self.dir / "receipts" / directive_id
+        receipt.parent.mkdir(parents=True, exist_ok=True)
+        receipt.touch()
+
+    def receipt_exists(self, directive_id: str) -> bool:
+        return (self.dir / "receipts" / directive_id).exists()
+
+    def _append_directive(self, text: str, task_no: int | None, directive_id: str) -> None:
+        self._ensure_dir()
+        payload = f"<!-- id:{directive_id} -->\n{text.strip()}\n---\n"
+        with open(self._directive_path(task_no), "a") as f:
+            f.write(payload)
+
+    def queue_live_command(self, text: str, task_no: int | None = None) -> str:
         """Append a live user directive to the pending queue (TUI → pipeline).
 
         ``task_no`` (1-based) targets a single running parallel task; when omitted
@@ -391,11 +410,31 @@ class Session:
         provider — it is merged into corrections at the top of the next iteration,
         so the model decides when to act on it.
         """
-        self._ensure_dir()
-        p = self._directive_path(task_no)
-        with open(p, "a") as f:
-            f.write(text.strip())
-            f.write("\n---\n")
+        directive_id = uuid4().hex[:12]
+        with _DIRECTIVE_LOCK:
+            self._append_directive(text, task_no, directive_id)
+        return directive_id
+
+    def broadcast_live_command(self, text: str, task_nos: Sequence[int]) -> list[str]:
+        """Queue a separate directive for every active task."""
+        base_id = uuid4().hex[:12]
+        directive_ids = [f"{base_id}-{task_no}" for task_no in task_nos]
+        with _DIRECTIVE_LOCK:
+            for task_no, directive_id in zip(task_nos, directive_ids, strict=True):
+                self._append_directive(text, task_no, directive_id)
+        return directive_ids
+
+    def directive_pending(self, task_no: int | None = None) -> bool:
+        paths = [self._directive_path(None)]
+        if task_no is not None:
+            paths.append(self._directive_path(task_no))
+        for path in paths:
+            try:
+                if path.exists() and path.stat().st_size > 0:
+                    return True
+            except OSError:
+                continue
+        return False
 
     def pop_live_commands(self, task_no: int | None = None) -> str:
         """Read and clear pending live directives for ``task_no`` plus the shared
@@ -405,21 +444,32 @@ class Session:
         its scoped queue (no cross-task races) and the shared queue. A single-task
         loop passing ``None`` drains just the shared queue.
         """
-        paths = [self.dir / "pending_directive.txt"]
+        paths = [self._directive_path(None)]
         if task_no is not None:
             paths.append(self._directive_path(task_no))
         parts: list[str] = []
-        for p in paths:
-            if not p.exists():
-                continue
-            try:
-                content = p.read_text().strip()
-                p.unlink()
-                if content:
-                    parts.append(content)
-            except Exception:
-                continue
+        with _DIRECTIVE_LOCK:
+            for p in paths:
+                if not p.exists():
+                    continue
+                try:
+                    content = p.read_text().strip()
+                    p.unlink()
+                    if content:
+                        directive_ids = re.findall(r"^<!-- id:([\w-]+) -->$", content, re.MULTILINE)
+                        for directive_id in directive_ids:
+                            self.write_receipt(directive_id)
+                        clean = re.sub(r"^<!-- id:[\w-]+ -->\n?", "", content, flags=re.MULTILINE)
+                        if clean:
+                            parts.append(clean)
+                except Exception:
+                    continue
         return "\n---\n".join(parts)
+
+    def queue_orchestrator_note(self, text: str) -> str:
+        from splinter.memory.orchestrator_notes import queue_note
+
+        return queue_note(self, text, datetime.now(timezone.utc))
 
     def _run_live_path(self, task_no: int) -> Path:
         """Live-run descriptor file for a single task (1-based ``task_no``),

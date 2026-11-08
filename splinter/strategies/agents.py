@@ -35,6 +35,7 @@ from splinter.engines.pool import EnginePool, PoolExhausted
 from splinter.engines.routing import chain_for_effort
 from splinter.enums import Effort
 from splinter.memory.knowledge import KnowledgeStore
+from splinter.memory.orchestrator_notes import notes_for as _notes_for
 from splinter.memory.session import Session
 from splinter.models.roster import Ladder
 from splinter.obs.trace import Trace, log_run
@@ -172,6 +173,7 @@ class AgentsStrategy(DirectStrategy):
                 prd_text=session.read(PLAN_INDEX_FILE),
                 session=session,
                 trace=trace,
+                orchestrator_notes=_notes_for(session, "refine", "agents"),
             )
         )
         session.write("agents-run/briefs.json", json.dumps([asdict(b) for b in briefs]))
@@ -387,6 +389,12 @@ class AgentsStrategy(DirectStrategy):
                     )
                 exclude.clear()
                 continue
+            live = session.pop_live_commands(task_no=task_index + 1)
+            if live:
+                with ctx.session_lock:
+                    brief_path.write_text(
+                        brief_path.read_text() + f"\n\n## User guidance\n\n{live}\n"
+                    )
             prompt = _engine_prompt(brief.id, brief_path.read_text(), contract)
             resume_session = (
                 engine_session if engine.key == last_engine and engine.supports_continue else None
@@ -457,6 +465,11 @@ class AgentsStrategy(DirectStrategy):
                 diff=_worktree_diff(wt.path),
                 trace=trace,
                 task_index=task_index,
+                orchestrator_notes=(
+                    _notes_for(session, "acceptance", "agents")
+                    if ctx.mode is not AcceptanceMode.GATE
+                    else ""
+                ),
             )
             if acc.passed:
                 report = _move_report(wt.path, ctx.run_dir / "reports" / f"{brief.id}.md")

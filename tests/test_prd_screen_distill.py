@@ -186,7 +186,7 @@ def test_left_pane_title_names_the_prd_file(
         async with app.run_test(size=(160, 44)) as pilot:
             await pilot.pause()
             editor = app.query_one("#draft-edit")
-            assert editor.border_title == "PRD · my-feature-prd.md"
+            assert editor.border_title == "PRD draft · my-feature-prd.md · edit freely"
             assert editor.border_subtitle == ""
 
     asyncio.run(drive())
@@ -263,6 +263,8 @@ def test_send_button_label_and_border_hint_are_not_duplicated(
             app._after_questions(QUESTIONS, "sid")
             await pilot.pause()
             assert app.query_one("#send", Button).label == "Send"
-            assert app.query_one("#entry").border_subtitle == "↵ newline"
+            entry = app.query_one("#entry", TextArea)
+            assert entry.border_subtitle is None
+            assert entry.placeholder == "anything else the writer should know"
 
     asyncio.run(drive())

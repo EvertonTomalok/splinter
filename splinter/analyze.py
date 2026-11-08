@@ -16,6 +16,8 @@ import os
 import re
 import sys
 import time
+from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from rich.console import Console
@@ -146,7 +148,9 @@ _REVIEW_DECISION_RE = re.compile(r"^- decision:\s*(\w+)", re.MULTILINE)
 _RUN_FILE_RE = re.compile(r"^(?:task-(\d+)-)?iter-(\d+)\.md$")
 
 
-def _parallel_task_iters(session: Session) -> dict[int, dict[int, tuple[str, str]]]:
+def _parallel_task_iters(
+    session: Session, *, read_file: Callable[[Path], str] | None = None
+) -> dict[int, dict[int, tuple[str, str]]]:
     r"""Map ``task_no -> {iter_no: (tier, verdict)}`` for a parallel run.
 
     Parallel workers append their ``## Iteration`` bodies to ``loop.md``
@@ -160,6 +164,7 @@ def _parallel_task_iters(session: Session) -> dict[int, dict[int, tuple[str, str
       iteration, recorded with verdict ``?``.
     """
     per_task: dict[int, dict[int, tuple[str, str]]] = {}
+    read = read_file if read_file is not None else Path.read_text
 
     kdir = session.dir / "knowledge"
     if kdir.exists():
@@ -169,7 +174,7 @@ def _parallel_task_iters(session: Session) -> dict[int, dict[int, tuple[str, str
                 continue
             task_no = int(m.group(1)) + 1  # review notes key on 0-based index
             iter_no = int(m.group(2))
-            content = path.read_text()
+            content = read(path)
             tier_m = _REVIEW_TIER_RE.search(content)
             dec_m = _REVIEW_DECISION_RE.search(content)
             tier = tier_m.group(1) if tier_m else "?"
@@ -186,7 +191,7 @@ def _parallel_task_iters(session: Session) -> dict[int, dict[int, tuple[str, str
             iter_no = int(m.group(2))
             iters = per_task.setdefault(task_no, {})
             if iter_no not in iters:  # no review yet → iteration still in flight
-                tier_m = re.search(r"tier (\d+)", path.read_text())
+                tier_m = re.search(r"tier (\d+)", read(path))
                 iters[iter_no] = (tier_m.group(1) if tier_m else "?", "?")
     return per_task
 
@@ -202,7 +207,9 @@ def _running_tasks(session: Session) -> list[int]:
     return sorted(running)
 
 
-def _parse_parallel_tasks(session: Session, loop_md: str) -> list[tuple[int, str, str]]:
+def _parse_parallel_tasks(
+    session: Session, loop_md: str, *, read_file: Callable[[Path], str] | None = None
+) -> list[tuple[int, str, str]]:
     r"""Parse parallel-mode loop.md into (task_no, title, body) tuples.
 
     Titles come from the ``# Task N [parallel]:`` headers (written up front);
@@ -224,7 +231,7 @@ def _parse_parallel_tasks(session: Session, loop_md: str) -> list[tuple[int, str
     if not task_headers:
         return [(1, "", loop_md)]
 
-    per_task = _parallel_task_iters(session)
+    per_task = _parallel_task_iters(session, read_file=read_file)
     result: list[tuple[int, str, str]] = []
     for task_no, title in task_headers:
         iters = per_task.get(task_no, {})
@@ -487,10 +494,11 @@ def _collapse_phases(phases: list[tuple[str, str]]) -> list[tuple[str, int]]:
 
 
 def _task_iters(
-    loop_md: str, *, session: Session | None = None
+    loop_md: str, *, session: Session | None = None,
+    read_file: Callable[[Path], str] | None = None,
 ) -> list[tuple[int, str, list[tuple[int, str, str]]]]:
     if session is not None and _is_parallel_mode(loop_md):
-        parallel_tasks = _parse_parallel_tasks(session, loop_md)
+        parallel_tasks = _parse_parallel_tasks(session, loop_md, read_file=read_file)
         result: list[tuple[int, str, list[tuple[int, str, str]]]] = []
         for task_no, title, body in parallel_tasks:
             raw = _iterations_in_range(body, 0, len(body))

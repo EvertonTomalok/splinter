@@ -209,11 +209,13 @@ def _refine_via_llm(
     prd_text: str,
     trace: Trace | None,
     task_index: int,
+    orchestrator_notes: str,
 ) -> list[Brief]:
     prompt = render(
         "refine",
         tasks=section("Tasks", _tasks_block(tasks)),
         prd=section("PRD", prd_text),
+        orchestrator_notes_section=orchestrator_notes,
     )
     raw = run_text(
         prompt,
@@ -251,6 +253,7 @@ def refine_briefs(
     session: Session | None = None,
     trace: Trace | None = None,
     task_index: int = 0,
+    orchestrator_notes: str = "",
 ) -> list[Brief]:
     """Refine PRD tasks into workhorse briefs through the refine template.
 
@@ -262,7 +265,8 @@ def refine_briefs(
     if tasks:
         try:
             briefs = _inherit_effort(
-                _refine_via_llm(tasks, ladder, prd_text, trace, task_index), tasks
+                _refine_via_llm(tasks, ladder, prd_text, trace, task_index, orchestrator_notes),
+                tasks,
             )
             validate_briefs(briefs)
             return briefs

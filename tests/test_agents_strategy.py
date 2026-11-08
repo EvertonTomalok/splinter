@@ -171,6 +171,16 @@ class TestHappyPath:
         assert "q1" in brief_doc
         assert (tmp_path / "agents-run" / "README.md").exists()
 
+    def test_composer_directive_reaches_the_brief(self, tmp_path: Path) -> None:
+        session = _session(tmp_path)
+        directive_id = session.queue_live_command("keep the public API", task_no=1)
+        with _mocked(tmp_path) as patches:
+            AgentsStrategy().execute(_tasks(), session, _ladder(), max_iterations=2)
+
+        prompt = patches["run_engine"].call_args.args[1]
+        assert "## User guidance" in prompt and "keep the public API" in prompt
+        assert session.receipt_exists(directive_id)
+
     def test_engine_prompt_includes_brief_and_result_line(self, tmp_path: Path) -> None:
         session = _session(tmp_path)
         with _mocked(tmp_path) as patches:

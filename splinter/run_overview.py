@@ -14,9 +14,7 @@ rather than printed as ``?``.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
 
 from rich.markup import escape
 
@@ -24,11 +22,31 @@ from splinter.analyze import (
     _has_final_eval_artifacts,
     _plan_files,
     _prd_phases,
-    _task_iters,
 )
 from splinter.memory.session import Session
-from splinter.obs.trace import RunEntry, Trace
+from splinter.obs.trace import RunEntry
 from splinter.run_overview_agents import render_waves
+from splinter.run_snapshot import (
+    _FILE_RE,
+    Snapshot,
+    TaskRow,
+    Verdict,
+    blocked_task_ids,
+    cost_split,
+    current_task_no,
+    fmt_span,
+    last_verdict,
+    latest_review_note,
+    loop_verdicts,
+    pre_run_models,
+    snapshot,
+    stage_label,
+    task_rows,
+    task_status,
+    tier_effort,
+    trace_span,
+    verdict_from_note,
+)
 
 _STATE_EMOJI = {
     "RUNNING": "🟡",
@@ -90,43 +108,24 @@ _DETAIL_LIMIT = 110
 #: The PRD trajectory stays on one line — phases past the budget are dropped.
 _PRD_LINE_BUDGET = 60
 
-_FILE_RE = re.compile(r"^file:\s*(.+)$", re.MULTILINE)
-_BLOCKED_HEAD_RE = re.compile(r"^##\s+blocked tasks", re.IGNORECASE)
-_BLOCKED_ITEM_RE = re.compile(r"^-\s+(\S+?):")
-_VERDICT_LINE_RE = re.compile(r"^-\s*verdict:\s*(\w+)\s*(.*)$", re.MULTILINE)
-_REVIEW_FILE_RE = re.compile(r"^task(\d+)-review-iter-(\d+)\.md$")
-
-
-@dataclass(frozen=True)
-class _Snapshot:
-    """Everything the overview reads, captured once per render."""
-
-    session: Session
-    state: str
-    status: dict[str, Any]
-    loop_md: str
-    localization: str
-    plan: str
-    phases_md: str
-    final_eval_md: str
-    entries: list[RunEntry]
-    pre_run_models: dict[str, Any]
-
-
-@dataclass(frozen=True)
-class _Verdict:
-    name: str = ""
-    detail: str = ""
-
-
-@dataclass(frozen=True)
-class _TaskRow:
-    number: int
-    title: str
-    status: str = "pending"
-    tier: str = ""
-    iters: int = 0
-    verdict: str = ""
+_Snapshot = Snapshot
+_Verdict = Verdict
+_TaskRow = TaskRow
+_snapshot = snapshot
+_pre_run_models = pre_run_models
+_cost_split = cost_split
+_fmt_span = fmt_span
+_trace_span = trace_span
+_tier_effort = tier_effort
+_stage_label = stage_label
+_last_verdict = last_verdict
+_loop_verdicts = loop_verdicts
+_latest_review_note = latest_review_note
+_verdict_from_note = verdict_from_note
+_task_rows = task_rows
+_task_status = task_status
+_current_task_no = current_task_no
+_blocked_task_ids = blocked_task_ids
 
 
 def render_run_overview(session: Session, state: str) -> str:
@@ -147,30 +146,6 @@ def render_run_overview(session: Session, state: str) -> str:
     return "\n".join(lines)
 
 
-# --- snapshot ---------------------------------------------------------------
-
-
-def _snapshot(session: Session, state: str) -> _Snapshot:
-    trace = Trace.from_jsonl(session)
-    return _Snapshot(
-        session=session,
-        state=state,
-        status=session.read_status(),
-        loop_md=session.read("loop.md"),
-        localization=session.read("knowledge/localization.md"),
-        plan=session.read("knowledge/plan.md"),
-        phases_md=session.read("prd_phases.md"),
-        final_eval_md=session.read("final_eval.md"),
-        entries=list(trace.entries),
-        pre_run_models=_pre_run_models(session),
-    )
-
-
-def _pre_run_models(session: Session) -> dict[str, Any]:
-    models = session.read_pre_run_usage().get("models", {})
-    return models if isinstance(models, dict) else {}
-
-
 # --- header -----------------------------------------------------------------
 
 
@@ -188,23 +163,6 @@ def _header_line(snap: _Snapshot) -> str:
     if elapsed:
         parts.append(f"[dim]⏱[/] {elapsed}")
     return "  ·  ".join(parts)
-
-
-def _cost_split(snap: _Snapshot) -> tuple[float, float, float, int]:
-    """(run, pre-run without jev, jev, jev calls) spend of the session."""
-    run_cost = sum(e.cost for e in snap.entries)
-    pre_run = jev_cost = 0.0
-    jev_calls = 0
-    for name, entry in snap.pre_run_models.items():
-        if not isinstance(entry, dict):
-            continue
-        cost = float(entry.get("cost", 0.0) or 0.0)
-        if str(name).startswith("jev:"):
-            jev_cost += cost
-            jev_calls += int(entry.get("calls", 0) or 0)
-        else:
-            pre_run += cost
-    return run_cost, pre_run, jev_cost, jev_calls
 
 
 def _cost_part(snap: _Snapshot) -> str:
@@ -241,20 +199,6 @@ def _elapsed(snap: _Snapshot) -> str:
     return _fmt_span(span)
 
 
-def _fmt_span(seconds: float) -> str:
-    """Human span: ``45s`` · ``2m14s`` · ``1h05m`` · ``3d04h``."""
-    if seconds < 60:
-        return f"{seconds:.0f}s"
-    minutes, sec = divmod(int(seconds), 60)
-    if minutes < 60:
-        return f"{minutes}m{sec:02d}s"
-    hours, minutes = divmod(minutes, 60)
-    if hours < 24:
-        return f"{hours}h{minutes:02d}m"
-    days, hours = divmod(hours, 24)
-    return f"{days}d{hours:02d}h"
-
-
 def _seconds_since(stamp: str) -> float | None:
     try:
         then = datetime.fromisoformat(stamp)
@@ -263,17 +207,6 @@ def _seconds_since(stamp: str) -> float | None:
     if then.tzinfo is None:
         then = then.replace(tzinfo=timezone.utc)
     return (datetime.now(timezone.utc) - then).total_seconds()
-
-
-def _trace_span(entries: list[RunEntry]) -> float:
-    stamps = [e.ts for e in entries if e.ts]
-    if len(stamps) < 2:
-        return 0.0
-    try:
-        parsed = sorted(datetime.fromisoformat(s) for s in stamps)
-    except ValueError:
-        return 0.0
-    return (parsed[-1] - parsed[0]).total_seconds()
 
 
 # --- NOW card ---------------------------------------------------------------
@@ -352,79 +285,7 @@ def _current_entry(snap: _Snapshot, stage: str) -> RunEntry | None:
     return pool[-1] if pool else None
 
 
-def _tier_effort(level: int, model: str) -> str:
-    """Reasoning effort configured for the tier that ran ``model``."""
-    try:
-        from splinter.models.roster import load_ladder
-
-        ladder = load_ladder()
-    except Exception:
-        return ""
-    return ladder.model_variant(level, model) or ladder.tier_variant(level) or ""
-
-
-def _stage_label(stage: str) -> str:
-    label = (stage or "").strip().lower()
-    if not label:
-        return ""
-    if label in ("filter", "localize"):
-        return "localize"
-    if label in ("gate", "run"):
-        return "run"
-    return label
-
-
 # --- verdict ----------------------------------------------------------------
-
-
-def _last_verdict(snap: _Snapshot) -> _Verdict:
-    note = _latest_review_note(snap.session)
-    if note is not None:
-        return note
-    iters = _loop_verdicts(snap.loop_md)
-    if not iters:
-        return _Verdict()
-    name, detail = iters[-1]
-    return _Verdict(name, detail)
-
-
-def _loop_verdicts(loop_md: str) -> list[tuple[str, str]]:
-    return [(m.group(1), m.group(2).strip()) for m in _VERDICT_LINE_RE.finditer(loop_md)]
-
-
-def _latest_review_note(session: Session) -> _Verdict | None:
-    """Newest per-iteration review note — carries the verdict and its reason."""
-    kdir = session.dir / "knowledge"
-    if not kdir.exists():
-        return None
-    best: tuple[int, int] = (-1, -1)
-    chosen: _Verdict | None = None
-    for path in kdir.glob("task*-review-iter-*.md"):
-        m = _REVIEW_FILE_RE.match(path.name)
-        if not m:
-            continue
-        key = (int(m.group(2)), int(m.group(1)))
-        if key <= best:
-            continue
-        verdict = _verdict_from_note(path.read_text())
-        if verdict is not None:
-            best = key
-            chosen = verdict
-    return chosen
-
-
-def _verdict_from_note(text: str) -> _Verdict | None:
-    name = ""
-    detail = ""
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("- decision:"):
-            name = stripped.split(":", 1)[1].strip().upper()
-        elif stripped.startswith("- reason:") and not detail:
-            detail = stripped.split(":", 1)[1].strip()
-    if not name:
-        return None
-    return _Verdict(name, detail)
 
 
 # --- STEPS ------------------------------------------------------------------
@@ -540,67 +401,6 @@ def _plan_detail(snap: _Snapshot) -> str:
 # --- TASKS ------------------------------------------------------------------
 
 
-def _task_rows(snap: _Snapshot) -> list[_TaskRow]:
-    groups = _task_iters(snap.loop_md, session=snap.session)
-    blocked = _blocked_task_ids(snap.loop_md)
-    current = _current_task_no(snap, groups)
-    rows: list[_TaskRow] = []
-    for number, title, iters in groups:
-        raw_verdict = iters[-1][2] if iters else ""
-        raw_tier = iters[-1][1] if iters else ""
-        verdict = "" if raw_verdict == "?" else raw_verdict
-        tier = "" if raw_tier.endswith("?") else raw_tier
-        rows.append(
-            _TaskRow(
-                number=number,
-                title=title,
-                status=_task_status(number, title, verdict, iters, blocked, current, snap),
-                tier=tier,
-                iters=len(iters),
-                verdict=verdict,
-            )
-        )
-    rows.sort(key=lambda row: row.number)
-    return rows
-
-
-def _task_status(
-    number: int,
-    title: str,
-    verdict: str,
-    iters: list[tuple[int, str, str]],
-    blocked: set[str],
-    current: int | None,
-    snap: _Snapshot,
-) -> str:
-    if verdict == "PASS":
-        return "pass"
-    if blocked and title.split(":", 1)[0].strip() in blocked:
-        return "blocked"
-    if not iters:
-        return "pending"
-    if not verdict:
-        return "running"
-    if verdict in ("RETRY", "ESCALATE", "JUMP_PREMIUM"):
-        active = current == number and snap.state in LIVE_STATES
-        return "running" if active else "failed"
-    return "failed"
-
-
-def _current_task_no(
-    snap: _Snapshot, groups: list[tuple[int, str, list[tuple[int, str, str]]]]
-) -> int | None:
-    """The task the run is on right now (in-flight first, else the status index)."""
-    for number, _title, iters in groups:
-        if iters and iters[-1][2] == "?":
-            return number
-    raw = snap.status.get("task_index")
-    try:
-        return int(raw) + 1  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return None
-
-
 def _running_row(rows: list[_TaskRow]) -> _TaskRow | None:
     for row in rows:
         if row.status == "running":
@@ -622,22 +422,6 @@ def _task_label(rows: list[_TaskRow]) -> str:
     if len(running) > 1:
         label += f"  [dim](+{len(running) - 1} more running)[/]"
     return label
-
-
-def _blocked_task_ids(loop_md: str) -> set[str]:
-    ids: set[str] = set()
-    in_section = False
-    for line in loop_md.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("##"):
-            in_section = bool(_BLOCKED_HEAD_RE.match(stripped))
-            continue
-        if not in_section:
-            continue
-        m = _BLOCKED_ITEM_RE.match(stripped)
-        if m:
-            ids.add(m.group(1))
-    return ids
 
 
 def _tasks_lines(rows: list[_TaskRow]) -> list[str]:

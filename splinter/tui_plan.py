@@ -20,7 +20,7 @@ from textual.app import App, ComposeResult, SystemCommand
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.reactive import reactive
-from textual.widgets import Button, Footer, Header, RichLog, TextArea
+from textual.widgets import Button, Footer, RichLog, Static, TextArea
 
 from splinter import plan_session
 from splinter.agents.runner import Task
@@ -28,6 +28,7 @@ from splinter.memory.session import Session
 from splinter.prd_session import Turn, is_cowabunga
 from splinter.task_file import read_task_mapping
 from splinter.task_plan import PLAN_INDEX_FILE, PlanIndex, is_plan_index, load_plan_index
+from splinter.task_waves import format_plan_steps
 from splinter.tui import (
     _MAXIMIZE_CSS,
     _PALETTE_CSS,
@@ -42,6 +43,9 @@ from splinter.tui_questions import (
     extract_open_questions,
     parse_questions,
 )
+from splinter.tui_questions_one import QuestionIndex
+from splinter.tui_run_palette import Ink
+from splinter.tui_shell import SHELL_CSS, ShellBar, crumb_markup, use_splinter_theme
 from splinter.tui_status import BusyStatus
 from splinter.tui_stepper import PLAN_STEPS, PhaseStepper
 
@@ -49,10 +53,12 @@ DEFAULT_STRATEGY = "raphael"
 _PLAN_WORDS = {"fulfilled", "done", "plan", "write plan"}
 _RUN_WORDS = {"accept", "run", "go"}
 _HINTS = {
-    "chat": "your answers / write plan / cowabunga",
-    "review": "describe changes / run / cowabunga",
+    "chat": "anything else the planner should know",
+    "review": "or tell the planner what to change · ^s sends",
 }
 _PHASE_STEPS = {"init": 0, "clarify": 1, "chat": 1, "review": 2, "run": 3}
+#: The stepper step the questions live on (clickable to go back to them).
+_QUESTIONS_STEP = 1
 _COWABUNGA_TOOLTIPS = {
     "chat": "Let the planner answer the open questions, write the plan and run it",
     "review": "Run this plan now",
@@ -63,27 +69,67 @@ class PlanSessionApp(App[int | None]):
     """Plan one task with the planner model before it runs.
 
     Phases: ``clarify`` (planner asks) → ``chat`` (answers until Write plan) →
-    ``review`` (edit the plan on the left) → ``run`` (save + exit 0).
+    ``review`` (edit the plan on the right) → ``run`` (save + exit 0).
     """
 
     CSS = (
         """
-    #draftpane { width: 50%; border-right: solid $primary; }
-    #task-edit, #plan-edit { height: 1fr; border: round $primary; }
-    #chatpane { width: 1fr; }
+    #chatpane { width: 1fr; padding: 1 4 0 4; }
+    #draftpane {
+        width: 40%;
+        max-width: 64;
+        padding: 1 2 0 2;
+        border-left: solid #1d1d1a;
+    }
+    #doc-head { height: 1; margin-bottom: 1; }
+    #task-edit, #plan-edit {
+        height: 1fr;
+        border: none;
+        padding: 0;
+        background: #0a0a09;
+    }
+    #task-edit:focus, #plan-edit:focus { border: none; background-tint: #0a0a09 0%; }
+    #answered-head { height: 2; margin-top: 1; border-top: solid #1d1d1a; color: #8f8e85; }
+    #question-index { height: auto; max-height: 8; }
+    #doc-cost { height: 1; color: #7a7972; }
+    #plan-ready { height: auto; margin-top: 1; }
+    #plan-ready-title { text-style: bold; color: #ecebe4; }
+    #plan-ready-lead { color: #8f8e85; margin-bottom: 1; }
+    #plan-ready-steps { color: #8f8e85; margin-bottom: 1; }
+    #plan-ready-keys { height: 1; margin-top: 1; }
+    #plan-ready-keys Button { height: 1; min-width: 0; margin: 0 3 0 0; }
+    PlanSessionApp.-ready #convo { display: none; }
+    PlanSessionApp.-ready #questions-host { display: none; }
+    PlanSessionApp.-ready #actions { display: none; }
+    PlanSessionApp.-ready Footer { display: none; }
+    PlanSessionApp.-ready #plan-ready { height: 1fr; }
+    PlanSessionApp.-ready #plan-ready-gap { height: 1fr; }
+    PlanSessionApp.-asking #convo { display: none; }
+    PlanSessionApp.-asking #question-form { height: 1fr; max-height: 100%; }
+    #plan-ready-gap { height: 0; }
     #convo {
         height: 1fr; padding: 0 1;
+        overflow-x: hidden;
         scrollbar-size-horizontal: 0; scrollbar-size-vertical: 1;
     }
     #questions-host { height: auto; }
     #busy { height: 1; }
-    #composer { dock: bottom; height: auto; }
-    #entry { height: 8; border: round $primary; }
-    #actions { height: 3; padding: 0 1; align: left middle; }
-    #actions Button {
-        height: 3; min-width: 10; width: auto; margin: 0 1 0 0; padding: 0 2;
+    #composer {
+        dock: bottom;
+        height: auto;
+        border-top: solid #1d1d1a;
+        padding: 1 0 0 0;
     }
+    #entry {
+        height: 3;
+        border: none;
+        border-left: wide #7a7972;
+        padding: 0 1;
+    }
+    #entry:focus { border: none; border-left: wide #c6f432; }
+    #actions { height: 1; margin: 1 0; padding: 0; align: left middle; }
     """
+        + SHELL_CSS
         + _PALETTE_CSS
         + _MAXIMIZE_CSS
     )
@@ -92,8 +138,10 @@ class PlanSessionApp(App[int | None]):
 
     BINDINGS = [
         Binding("ctrl+c", "abort", "Abort", show=False),
-        Binding("escape", "abort", "Abort"),
+        Binding("escape", "plan_back", "Back"),
         Binding("ctrl+s", "send", "Send", key_display="ctrl+s"),
+        Binding("r", "run_plan", "Run"),
+        Binding("e", "edit_plan", "Edit plan", show=False),
     ]
 
     FATAL_EXIT_DELAY = 2.0
@@ -119,38 +167,64 @@ class PlanSessionApp(App[int | None]):
         self._last_job: tuple[Callable[..., None], dict[str, Any]] | None = None
         self._started_at = datetime.now(timezone.utc).isoformat()
         self._questions: list[Question] = []
+        self._last_questions: list[Question] = []
+        self._last_answers: dict[int, str] = {}
         self._model_name = ""
         self._plan_index: PlanIndex | None = None
 
     # --- layout ---
     def compose(self) -> ComposeResult:
-        yield Header(show_clock=True)
+        stepper = PhaseStepper(PLAN_STEPS, id="stepper")
+        yield ShellBar(crumb_markup("task", self._task_name), stepper)
         with Horizontal():
-            with Vertical(id="draftpane"):
-                task_edit = TextArea(id="task-edit", soft_wrap=True)
-                task_edit.border_subtitle = "editable"
-                yield task_edit
-                plan_edit = TextArea(id="plan-edit", soft_wrap=True)
-                plan_edit.border_title = "Plan"
-                plan_edit.border_subtitle = "editable"
-                plan_edit.display = False
-                yield plan_edit
             with Vertical(id="chatpane"):
-                yield PhaseStepper(PLAN_STEPS, id="stepper")
+                plan_ready = Vertical(id="plan-ready")
+                plan_ready.display = False
+                with plan_ready:
+                    yield Static("Plan ready.", id="plan-ready-title")
+                    yield Static("", id="plan-ready-lead")
+                    yield Static("", id="plan-ready-steps")
+                    yield Static("", id="plan-ready-gap")
+                    with Horizontal(id="plan-ready-keys"):
+                        yield Button(
+                            f"[b #c6f432]↵[/] [b]run with {self.strategy}[/]", id="plan-run"
+                        )
+                        yield Button("[b #c6f432]e[/] edit plan", id="plan-edit-key")
+                        yield Button("[b #c6f432]esc[/] back to questions", id="plan-back")
                 yield RichLog(id="convo", markup=True, wrap=True)
                 with Vertical(id="questions-host"):
                     yield QuestionForm(id="question-form")
                 with Vertical(id="composer"):
                     yield BusyStatus(id="busy")
                     entry = ComposerTextArea(id="entry", soft_wrap=True)
-                    entry.border_subtitle = "↵ newline"
+                    entry.placeholder = "anything else the planner should know"
                     yield entry
                     with Horizontal(id="actions"):
                         yield from self._action_buttons("chat")
+            with Vertical(id="draftpane"):
+                yield Ink(self._doc_head(), id="doc-head")
+                yield TextArea(id="task-edit", soft_wrap=True, language="markdown")
+                plan_edit = TextArea(id="plan-edit", soft_wrap=True, language="markdown")
+                plan_edit.display = False
+                yield plan_edit
+                yield Static("answered", id="answered-head")
+                yield QuestionIndex(id="question-index")
+                yield Static("", id="doc-cost")
         yield Footer()
+
+    def _doc_head(self) -> str:
+        return (
+            "[#8f8e85]task + plan[/] [#7a7972]· e to edit · click a question to jump[/]"
+        )
+
+    def action_mode(self, name: str) -> None:
+        """The ``--prd`` chip: fixed here, the task is already chosen."""
+        if name != "task":
+            self.notify("This session plans a task; start a new one for a PRD.")
 
     def on_mount(self) -> None:
         self.title = "splinter · plan"
+        use_splinter_theme(self)
         if self.resuming:
             self._resume()
             return
@@ -204,7 +278,7 @@ class PlanSessionApp(App[int | None]):
     def _load_task_editor(self, text: str) -> None:
         editor = self.query_one("#task-edit", TextArea)
         editor.text = text
-        editor.border_title = f"Task · {self._task_name}"
+        self.query_one(ShellBar).set_crumb(crumb_markup("task", self._task_name))
 
     def _ask_questions(self) -> None:
         self._say("[dim]planner reading the task, drafting implementation questions…[/]")
@@ -233,7 +307,7 @@ class PlanSessionApp(App[int | None]):
         plan = self._saved_plan()
         self._say(f"[magenta]⟳ resumed {self.session.id} at phase '{phase}'.[/]")
         if phase in ("review", "run") and plan:
-            self._enter_review(plan, "[green]Plan restored. Edit it on the left, then Run.[/]")
+            self._enter_review(plan, "[green]Plan restored. Edit it on the right, then run.[/]")
         elif phase == "clarify" and not self.claude_session:
             self._set_phase("clarify")
             self._ask_questions()
@@ -246,7 +320,7 @@ class PlanSessionApp(App[int | None]):
         except (OSError, ValueError) as exc:
             self._fatal(f"cannot read task plan: {exc}")
             return
-        saved = self.session.read(PLAN_INDEX_FILE)
+        saved = self.session.read(plan_session.PLAN_BUNDLE_FILE)
         self._load_task_editor(saved or plan_session.plan_bundle(self._plan_index))
 
     def _read_saved_task(self, status: dict[str, Any]) -> dict[str, Any]:
@@ -299,7 +373,8 @@ class PlanSessionApp(App[int | None]):
 
     def _persist_task(self) -> Path:
         if self._plan_index is not None:
-            return self.session.write(PLAN_INDEX_FILE, self._task_md())
+            self.session.write(PLAN_INDEX_FILE, self._plan_index.text)
+            return self.session.write(plan_session.PLAN_BUNDLE_FILE, self._task_md())
         description, acceptance = plan_session.parse_task_text(self._task_md())
         return plan_session.save_task(self.session, description, acceptance, self._task_base)
 
@@ -330,8 +405,13 @@ class PlanSessionApp(App[int | None]):
         entry.disabled = busy
         for btn in self.query("#actions Button"):
             btn.disabled = busy
-        for radio in self.query("#question-form RadioSet"):
-            radio.disabled = busy
+        for selector in (
+            "#question-form RadioSet",
+            "#question-form Button",
+            "#question-form Input",
+        ):
+            for widget in self.query(selector):
+                widget.disabled = busy
         try:
             status = self.query_one("#busy", BusyStatus)
         except Exception:
@@ -342,7 +422,7 @@ class PlanSessionApp(App[int | None]):
             else:
                 status.stop()
         if placeholder and not busy:
-            entry.border_title = placeholder
+            entry.placeholder = placeholder
         if not busy:
             entry.focus()
 
@@ -358,6 +438,9 @@ class PlanSessionApp(App[int | None]):
 
     def _set_questions(self, questions: list[Question]) -> None:
         self._questions = list(questions)
+        self.set_class(bool(questions), "-asking")
+        if questions:
+            self._last_questions = list(questions)
         if not self.is_running:
             return
         try:
@@ -365,11 +448,60 @@ class PlanSessionApp(App[int | None]):
         except Exception:
             return
 
+        count = len(self._questions)
+        form.meta = f"planner · {self._busy_model() or 'planner'} · {count} questions"
+
         async def _swap() -> None:
             await form.set_questions(self._questions)
             form.display = bool(self._questions)
 
         self.run_worker(_swap, name="questions")  # type: ignore[arg-type]
+        self._refresh_question_index()
+
+    def _refresh_question_index(self) -> None:
+        """Point the right-pane question list at the current questions."""
+        try:
+            index = self.query_one("#question-index", QuestionIndex)
+        except Exception:
+            return
+        index.refresh_from(self._questions, self._last_answers)
+
+    def on_question_form_answers_changed(self, event: QuestionForm.AnswersChanged) -> None:
+        self._last_answers = dict(event.answers)
+        self._refresh_question_index()
+
+    def on_question_form_completed(self, event: QuestionForm.Completed) -> None:
+        """Auto-advance ended: focus Write plan; the form never submits alone."""
+        try:
+            self.query_one("#write-plan", Button).focus()
+        except Exception:
+            pass
+
+    def action_jump_question(self, n: int | str) -> None:
+        """QuestionIndex row click: jump to that question in the form."""
+        try:
+            self.query_one("#question-form", QuestionForm).jump_to(int(n))
+        except Exception:
+            return
+
+    def on_phase_stepper_step_clicked(self, event: PhaseStepper.StepClicked) -> None:
+        if self._busy or event.index != _QUESTIONS_STEP or not self._last_questions:
+            return
+        self._back_to_questions()
+
+    def _back_to_questions(self) -> None:
+        """Go back to the questions step, re-filled with the saved answers."""
+        self._hide_plan_ready()
+        self._set_phase("chat")
+
+        async def _swap() -> None:
+            form = self.query_one("#question-form", QuestionForm)
+            await form.set_questions(self._last_questions)
+            form.restore_answers(self._last_answers)
+
+        self.run_worker(_swap, name="questions")  # type: ignore[arg-type]
+        self._render_actions("chat")
+        self._set_busy(False, _HINTS["chat"])
 
     def _compile_answers(self, text: str) -> str:
         stripped = text.strip()
@@ -517,7 +649,7 @@ class PlanSessionApp(App[int | None]):
             self._show_plan(plan)
             self._run()
             return
-        self._enter_review(plan, "[green]Plan written. Edit it on the left, then Run.[/]")
+        self._enter_review(plan, "[green]Plan written. Edit it on the right, then run.[/]")
 
     def _after_revise(self, turn: Turn) -> None:
         self._take_session(turn)
@@ -538,6 +670,26 @@ class PlanSessionApp(App[int | None]):
         plan_edit.text = plan
         self.query_one("#task-edit", TextArea).display = False
         plan_edit.display = True
+        self.set_class(True, "-ready")
+        try:
+            plan_ready = self.query_one("#plan-ready", Vertical)
+            steps = format_plan_steps(plan)
+            answered = ", written with your answers" if self._last_answers else ""
+            self.query_one("#plan-ready-lead", Static).update(
+                f"{steps} on the right{answered}. Edit it there, or run it as is."
+            )
+            self.query_one("#entry", TextArea).placeholder = (
+                "or tell the planner what to change · ^s sends"
+            )
+            self.query_one("#plan-ready-steps", Static).update(_step_lines(plan))
+            plan_ready.display = True
+        except Exception:
+            pass
+
+    def _hide_plan_ready(self) -> None:
+        self.set_class(False, "-ready")
+        self.query_one("#entry", TextArea).placeholder = "anything else the planner should know"
+        self.query_one("#plan-ready", Vertical).display = False
 
     def _enter_review(self, plan: str, hint: str) -> None:
         self._show_plan(plan)
@@ -546,8 +698,27 @@ class PlanSessionApp(App[int | None]):
         self._say(hint)
         self._render_actions("review")
         self._set_busy(False, _HINTS["review"])
+        try:
+            self.query_one("#plan-run", Button).focus()
+        except Exception:
+            return
 
     # --- input dispatch ---
+    def action_edit_plan(self) -> None:
+        if self.phase == "review":
+            self.query_one("#plan-edit", TextArea).focus()
+
+    def action_plan_back(self) -> None:
+        """``esc``: back to the questions from the plan, else leave."""
+        if self.phase == "review" and self._last_questions and not self._busy:
+            self._back_to_questions()
+            return
+        self.action_abort()
+
+    def action_run_plan(self) -> None:
+        if self.phase == "review":
+            self._run()
+
     def action_send(self) -> None:
         self._submit(self._compile_answers(self.query_one("#entry", TextArea).text))
 
@@ -561,6 +732,12 @@ class PlanSessionApp(App[int | None]):
             self._submit("plan")
         elif bid in ("run", "cowabunga"):
             self._submit(bid)
+        elif bid == "plan-run":
+            self.action_run_plan()
+        elif bid == "plan-edit-key":
+            self.action_edit_plan()
+        elif bid == "plan-back":
+            self.action_plan_back()
 
     def _submit(self, raw: str) -> None:
         if self._busy:
@@ -632,6 +809,16 @@ class PlanSessionApp(App[int | None]):
 
     def watch__maximized(self, val: bool) -> None:
         self.set_class(val, "--maximized")
+
+
+def _step_lines(plan: str) -> str:
+    """The numbered steps of the plan, lime numbers, muted text."""
+    rows = []
+    for line in plan.splitlines():
+        number, dot, rest = line.strip().partition(". ")
+        if dot and number.isdigit():
+            rows.append(f"[#c6f432]{number}[/]  [#ecebe4]{escape(rest.strip()[:90])}[/]")
+    return "\n".join(rows[:12])
 
 
 def _handoff(session: Session, run_kwargs: dict[str, Any], result: int | None) -> int:

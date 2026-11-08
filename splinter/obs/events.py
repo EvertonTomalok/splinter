@@ -11,6 +11,7 @@ import json
 import logging
 import re
 import threading
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -175,16 +176,21 @@ def load_run_entries(session: Session) -> list["RunEntry"]:
     Malformed records are skipped (counted + logged), never silently dropped
     without a trace.
     """
+    return decode_run_entries(_read_records(session))
+
+
+def decode_run_entries(records: Iterable[dict[str, Any]]) -> list["RunEntry"]:
     from splinter.obs.trace import RunEntry
 
-    path = events_path(session)
     entries: list[RunEntry] = []
     skipped = 0
-    for rec in _read_records(session):
+    for rec in records:
         if rec.get("type") != "run":
             continue
         payload = rec.get("payload") or {}
         try:
+            if not isinstance(payload, dict) or not isinstance(payload.get("tokens") or {}, dict):
+                raise TypeError("run payload and tokens must be objects")
             entries.append(
                 RunEntry(
                     model=str(payload["model"]),
@@ -202,7 +208,7 @@ def load_run_entries(session: Session) -> list["RunEntry"]:
         except (KeyError, TypeError, ValueError):
             skipped += 1
     if skipped:
-        log.warning("events: skipped %d malformed run record(s) in %s", skipped, path)
+        log.warning("events: skipped %d malformed run record(s)", skipped)
     return entries
 
 

@@ -1,7 +1,7 @@
 """US-004: Pipeline round meta-loop — integration tests.
 
 Covers:
- 1. final-eval PASS  → status "completed", no AskUserPause, localize called once
+ 1. final-eval PASS  → status "completed", no AskUserPause; a task run skips localize
  2. final-eval FAIL  → AskUserPause / status "awaiting_user", round_index=1,
                        next_effort = bump_effort(start)
  3. resume round>0   → plan files kept (no cache clearing), localize re-invoked,
@@ -116,7 +116,7 @@ class TestFinalEvalPass:
         assert rc == 0
         assert session.read_status()["state"] == "completed"
 
-    def test_localize_called_exactly_once(
+    def test_task_run_skips_localize_and_seeds_the_plan(
         self,
         session: Session,
         task_yaml: str,
@@ -138,7 +138,8 @@ class TestFinalEvalPass:
         )
 
         run_pipeline(task_path=task_yaml, session=session)
-        assert len(calls) == 1
+        assert calls == []
+        assert session.read("knowledge/plan-1.md").startswith("# Plan\n\nImplement feature X")
 
     def test_no_ask_user_pause(
         self,

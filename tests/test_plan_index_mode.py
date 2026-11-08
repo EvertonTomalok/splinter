@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from textual.widgets import RichLog, TextArea
+from textual.widgets import RichLog
 
 from splinter import plan_session
 from splinter.memory.session import Session
@@ -114,15 +114,14 @@ def test_readme_opens_plan_mode_and_run_saves_plan_per_task(
                 await pilot.pause()
             convo = "\n".join(str(x.text) for x in app.query_one("#convo", RichLog).lines)
             assert "Shared helper?" in convo
-            task_edit = app.query_one("#task-edit", TextArea)
-            assert task_edit.border_title == "Task · README.md · 2 tasks"
+            assert "README.md · 2 tasks" in str(app.query_one("#shell-crumb").content)
             assert "Build b." in planner["q"][0]["task_md"]
             await pilot.click("#write-plan")
             for _ in range(2):
                 await app.workers.wait_for_complete()
                 await pilot.pause()
             assert planner["write"][0]["task_ids"] == ("T01", "T02")
-            await pilot.click("#run")
+            await pilot.click("#plan-run")
             await pilot.pause()
 
     asyncio.run(drive())
@@ -131,7 +130,8 @@ def test_readme_opens_plan_mode_and_run_saves_plan_per_task(
     status = session.read_status()
     assert status["plan_index"] is True and status["task_path"] == str(readme)
     assert status["strategy"] == "cascade" and status["phase"] == "run"
-    assert "Orchestrator: keep tui.py diffs small." in session.read("knowledge/plan-index.md")
+    assert session.read("knowledge/plan-index.md") == _README
+    assert session.read(plan_session.PLAN_BUNDLE_FILE).startswith("# Task plan: 2 tasks")
 
 
 def test_handoff_runs_the_readme_not_task_yaml(

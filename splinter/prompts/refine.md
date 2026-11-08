@@ -21,6 +21,8 @@ Split the tasks below into briefs a workhorse can finish alone:
 
 {prd}
 
+{orchestrator_notes_section}
+
 Output STRICT JSON only — no prose, no markdown fences:
 
 {{"briefs": [{{"id": "q1", "task": "US-001", "goal": "...", "files": ["..."], "sketch": "...", "acceptance": ["..."], "deps": [], "effort": "normal"}}]}}

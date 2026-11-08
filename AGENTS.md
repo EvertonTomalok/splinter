@@ -57,12 +57,31 @@ splinter/
   prd.py              # Interactive PRD generation
   pipeline.py         # Orchestrates locate → plan → run → gate → eval
   analyze.py          # Session state viewer
+  run_snapshot.py     # Shared read-side snapshot of the session files
+  run_view.py         # Pure run view model: RunView, build_run_view
+  run_view_files.py   # File cache, mtime keys, review/run file paths
+  run_view_rows.py    # Story, iteration, stage and ladder projections
+  run_view_spend.py   # Spend aggregation (cost, time) for the rail
+  task_waves.py       # PRD tasks → waves
+  ui_prefs.py         # .splinter/ui.yaml preferences (questions_mode)
   configure.py        # Project config writer
   configure_chain.py  # Fallback-chain state for the configure TUI
   tui_configure.py    # configure TUI (list + detail), widgets in tui_configure_widgets.py
+  tui_blockword.py    # ANSI Shadow block word with a left-to-right wipe
+  tui_run_palette.py  # Design colours as Textual CSS variables
+  tui_run_focus.py    # Left column: block word, sentence, stage strip, tabs, body
+  tui_run_rail.py     # Right column: clock, ladder, iteration bars, heatmap, groups
+  tui_run_views.py    # View registry: act, plan, gate, eval
+  tui_run_views_more.py # View registry: diff, spend, tier
+  tui_run_composer.py # Orchestrator composer with targets and delivery state
+  tui_run_banner.py   # Needs-you banner (answer, validate, retry with guidance)
+  tui_run_stop.py     # Stop bar and the stop modal
+  tui_run_motion.py   # Motion clock (pulses, caret) and the toast tracker
+  tui_questions_one.py # Question index in "one at a time" mode
   memory/
     session.py        # Session dir management, markdown I/O
     knowledge.py      # Topic-scoped markdown notes (no embeddings)
+    orchestrator_notes.py # Once-per-consumer notes for the orchestrator
   models/
     ladder.yaml       # Tier definitions, effort map, model roster
     roster.py         # Ladder dataclass + loader
@@ -91,6 +110,7 @@ splinter/
     agy.py            # Subprocess wrapper for `agy`
   vcs/
     worktree.py       # Worktree lifecycle, --no-ff merges into integration
+    diff.py           # Story diff for the `diff` view
     guard.py          # guard.sh + PATH shims (workhorses may only edit files)
   tools/
     search.py         # grep/cat/file-list through rtk
@@ -298,6 +318,9 @@ inferred from the sonnet ping. New provider CLIs: `mcode/…`, `kimi/…` and
 - `mypy --strict` compatible: `disallow_untyped_defs = true`
 - Ruff: E, F, W, I (isort)
 - Line length: 100
+- Small files (800 lines max), except `splinter/tui.py`: it holds the app classes
+  (`RunApp`, `PrdSessionApp`) and their modals, and may stay larger. New widgets and
+  views still go to their own `tui_*.py` module.
 - No comments unless asked
 - Dataclasses for structured data
 - Subprocess wrappers for external CLIs (claude, opencode, rtk)
@@ -354,3 +377,102 @@ Each round also appends a config-used line to `events.md`:
 ```
 round N config · planner=<model>@<effort> · runner=<model>@<variant> · eval=<model>@<effort>
 ```
+
+## Run screen (C2)
+
+`splinter run` opens the C2 screen (`RunApp` in `splinter/tui.py`). It is built for
+long runs: 60 stories, one screen, no horizontal story rail.
+
+### Layout
+
+| Side | Widgets |
+|---|---|
+| Focus column (`#focus`) | block word (`#block-word`), sentence (`#sentence`), stage strip (`#stage-strip`), view tabs (`#view-tabs`), view body (`#view-body` → `#view-scroll` + `#log`) |
+| Right rail (`#rail`) | clock (`#clock`), model ladder (`#ladder`), iteration bars (`#iter-bars`), story heatmap (`#heatmap`), groups (`#groups`) |
+| Bottom | orchestrator composer (`#composer`), footer bar (`#footer-bar`), stop bar (`#stop-bar`) |
+
+The header shows `story 24/58` only. The rail groups the stories: `needs you`,
+`now`, `next` (5) and a count for the rest. Every visible cell, row, tab, rung
+and bar is clickable and changes the screen state.
+
+### Views and keys
+
+| View | Key | Reads |
+|---|---|---|
+| `act` | `1` | activity log, collapsible iteration blocks, escalation lines |
+| `diff` | `2` / `d` | the story's diff (`vcs/diff.py`) |
+| `plan` | `3` | `knowledge/plan.md`, `knowledge/plan-N.md` |
+| `gate` | `4` | the gate lines of `loop.md` |
+| `eval` | `5` | `knowledge/task{N}-review-iter-{M}.md` |
+| `spend` | `6` / `$` | spend by cost or by time |
+| `tier` | `7` / `t` | the ladder, its models and their breakers |
+
+Other keys: `←`/`→` previous/next story, `i` instruct (focus the composer), `o` open
+the latest iteration, `/` find a story by id or title, `l` logs, `L` the full-screen
+trace (needs you / now / done / queued tree, selected text, live log), `g` back to
+the live story, `b` toggle spend by cost/time, `r` reload the diff, `s` stop,
+`ctrl+k` cowabunga, `q` quit (or stop while the run lives). A view reads session
+files only — no view calls a model.
+
+### View model
+
+`splinter/run_view.py` holds the pure model: `RunView`, `StoryRow`,
+`IterationRow`, `SpendRow`, `LadderRung` and `build_run_view`. `RunViewBuilder`
+caches every session file by its mtime and size (`run_view_files.FileCache`) and
+groups the trace entries by story once per build, so a 60-story session rebuilds
+in well under 50 ms.
+
+The widgets never rebuild the tree. Each widget keeps its own render keys and
+re-renders only the slice that changed (`FocusColumn.renders`,
+`RunRail.renders` count those repaints). A tick with no file change rebuilds
+nothing.
+
+### Composer
+
+The composer (`splinter/tui_run_composer.py`) replaces the old guide input. It
+has three targets and shows the real delivery state of every message:
+
+| Target | Backend |
+|---|---|
+| `story` | `Session.queue_live_command(text, task_no)` → `pending_directive.task-N.txt` (the shared queue is `pending_directive.txt`) |
+| `all agents` | `Session.broadcast_live_command(text, task_nos)` → one directive per task |
+| `orchestrator only` | `Session.queue_orchestrator_note(text)` → `knowledge/orchestrator-notes.md` |
+
+Each directive carries an id; the pipeline writes a receipt under `receipts/`
+when it drains the queue, and the composer flips `queued` → `delivered` from
+those receipts (`Session.receipt_exists`, `Session.directive_pending`).
+
+`knowledge/orchestrator-notes.md` has a `## Pending` and an `## Applied`
+section. A note is applied when every consumer required by the strategy read it
+(`direct`: replan, final eval — `agents`: refine, acceptance, final eval);
+notes left over when the run ends are marked `(run ended)`.
+
+### Needs you and stop
+
+A story that needs the user (`asked`, `paused`, `fail`) raises a banner in the
+focus column (`tui_run_banner.py`): answer the question, validate the result or
+retry with guidance. The banner acts inline; below 30 rows the modals
+(`_AskUserModal`, `_ManualValidationModal`) are the fallback. `s` opens the
+inline stop bar (same outcomes as `StopMenuModal`).
+
+### Preferences and motion
+
+`.splinter/ui.yaml` keeps the PRD and plan questions mode:
+`questions_mode: one` (default) or `all`. `splinter/ui_prefs.py` reads and
+writes it.
+
+`splinter/tui_run_motion.py` owns the motion: one timer (`MotionClock`)
+alternates a phase every 0.5 s and the widgets repaint only what moves — the
+live heatmap cell, the live ladder rung, the stage-strip connector and the
+caret after the sentence while the runner streams. The timer is never created
+when `App.animation_level == "none"` (`TEXTUAL_ANIMATIONS=none`), and it stops
+when the run is done, when the app is suspended and when the app unmounts.
+
+The live iteration on `act` streams every 🔧 tool call and 💬 thought as it lands
+(`tui_run_live.py`): the newest row lights up, a caret blinks after it, and the
+sentence above the stage strip says what the runner does now.
+
+The toasts are the run's own events, each of them once (`ToastTracker`):
+`Gate passed · T24`, `Escalated T24 to T1`, `T17 is asking you`,
+`Run complete · 58/58 · $12.4120`.
+

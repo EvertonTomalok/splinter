@@ -52,14 +52,15 @@ def run_final_eval(
     project_dir: str = ".",
     ladder: "Ladder | None" = None,
     timeout: int | None = None,
+    extra: str = "",
 ) -> FinalEvalResult:
     """Dispatch ``entry`` to the appropriate executor and return a structured result."""
     if entry.kind == FinalEvalKind.COMMAND:
         return _run_command(entry, project_dir=project_dir, timeout=timeout)
     if entry.kind == FinalEvalKind.SKILL:
-        return _run_skill(entry, task=task, ladder=ladder, timeout=timeout)
+        return _run_skill(entry, task=task, ladder=ladder, timeout=timeout, extra=extra)
     if entry.kind == FinalEvalKind.REVIEW:
-        return _run_review(entry, task=task, ladder=ladder, timeout=timeout)
+        return _run_review(entry, task=task, ladder=ladder, timeout=timeout, extra=extra)
     if entry.kind == FinalEvalKind.ASK_USER:
         return _run_ask_user(entry, task=task)
     raise ValueError(f"unknown final_eval kind: {entry.kind!r}")
@@ -73,12 +74,18 @@ def run_all_final_evals(
     ladder: "Ladder | None" = None,
     timeout: int | None = None,
     fail_fast: bool = True,
+    extra: str = "",
 ) -> list[FinalEvalResult]:
     """Run every entry in order; stop on first failure when ``fail_fast`` is set."""
     results: list[FinalEvalResult] = []
     for entry in entries:
         result = run_final_eval(
-            entry, task=task, project_dir=project_dir, ladder=ladder, timeout=timeout
+            entry,
+            task=task,
+            project_dir=project_dir,
+            ladder=ladder,
+            timeout=timeout,
+            extra=extra,
         )
         results.append(result)
         if fail_fast and not result.passed:
@@ -183,7 +190,9 @@ def _resolve_model(entry: FinalEvalEntry, ladder: "Ladder | None") -> tuple[str,
     return base, variant
 
 
-def _skill_prompt(entry: FinalEvalEntry, task: "Task | None", eval_mode: bool) -> str:
+def _skill_prompt(
+    entry: FinalEvalEntry, task: "Task | None", eval_mode: bool, extra: str = ""
+) -> str:
     """Build the LLM prompt for skill / review kinds."""
     from splinter.skills import resolve_eval_skill
 
@@ -198,8 +207,8 @@ def _skill_prompt(entry: FinalEvalEntry, task: "Task | None", eval_mode: bool) -
     task_accept = task.acceptance if task else ""
 
     if eval_mode:
-        return skill_text
-    return (
+        return skill_text + (f"\n{extra.strip()}\n" if extra.strip() else "")
+    prompt = (
         f"{skill_text}"
         f"Review whether the following task has been completed correctly.\n\n"
         f"Task:\n{task_desc}\n\n"
@@ -207,6 +216,7 @@ def _skill_prompt(entry: FinalEvalEntry, task: "Task | None", eval_mode: bool) -
         "Provide a detailed evaluation report. Describe what works, what doesn't, "
         "and what corrections are needed if any."
     )
+    return prompt + (f"\n\n{extra.strip()}" if extra.strip() else "")
 
 
 def _run_skill(
@@ -215,12 +225,13 @@ def _run_skill(
     task: "Task | None" = None,
     ladder: "Ladder | None" = None,
     timeout: int | None = None,
+    extra: str = "",
 ) -> FinalEvalResult:
     """Run skill via the configured provider; auto-pass/fail on VERDICT in output."""
     from splinter.providers.dispatch import run_provider_session
 
     model, variant = _resolve_model(entry, ladder)
-    prompt = _skill_prompt(entry, task, eval_mode=True)
+    prompt = _skill_prompt(entry, task, eval_mode=True, extra=extra)
     log.info("skill final_eval '%s' → %s @ %s", entry.name, model, variant)
 
     try:
@@ -257,6 +268,7 @@ def _run_review(
     task: "Task | None" = None,
     ladder: "Ladder | None" = None,
     timeout: int | None = None,
+    extra: str = "",
 ) -> FinalEvalResult:
     """Run skill via the configured provider; return raw output for human review.
 
@@ -266,7 +278,7 @@ def _run_review(
     from splinter.providers.dispatch import run_provider_session
 
     model, variant = _resolve_model(entry, ladder)
-    prompt = _skill_prompt(entry, task, eval_mode=False)
+    prompt = _skill_prompt(entry, task, eval_mode=False, extra=extra)
     log.info("review final_eval '%s' → %s @ %s", entry.name, model, variant)
 
     try:

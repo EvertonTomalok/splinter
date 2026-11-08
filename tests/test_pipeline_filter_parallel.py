@@ -134,3 +134,14 @@ def test_filter_resume_skips_fanout(monkeypatch: pytest.MonkeyPatch, tmp_session
     _run(tmp_session, ladder, tasks, anchors, resume=True, resume_round=1)
 
     assert [t.filtered_context for t in tasks] == ["cached-0", "cached-1"]
+
+
+def test_existing_localization_is_reported_as_reused(
+    monkeypatch: pytest.MonkeyPatch, tmp_session: Session, caplog: pytest.LogCaptureFixture
+) -> None:
+    tmp_session.write("knowledge/localization.md", "loc")
+    monkeypatch.setattr("splinter.pipeline.localize", _stub_localize(_make_anchors(2)))
+    with caplog.at_level("INFO", logger="splinter.pipeline"):
+        _run(tmp_session, load_ladder(), [], _make_anchors(2))
+    assert "localizing against the codebase" not in caplog.text
+    assert "reused localization.md · 2 anchor(s), no new localizer call" in caplog.text

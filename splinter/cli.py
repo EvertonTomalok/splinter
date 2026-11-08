@@ -10,7 +10,7 @@ import typer
 app = typer.Typer(
     name="splinter",
     help="Multiagent orchestration harness: expensive model plans, cheap models execute.",
-    no_args_is_help=True,
+    no_args_is_help=False,
     add_completion=False,
 )
 
@@ -163,6 +163,12 @@ def prd(
         "phased": False,
     }
     raise typer.Exit(run_prd_interactive(run_kwargs))
+
+
+@app.callback(invoke_without_command=True)
+def default_command(ctx: typer.Context) -> None:
+    if ctx.invoked_subcommand is None:
+        prd()
 
 
 @app.command()
@@ -338,13 +344,8 @@ def run(
 
         raise typer.Exit(run_prd_interactive(run_kwargs))
 
-    # A task on a TTY opens plan mode: the planner asks, plans, the user edits, then
-    # it runs. --cowabunga skips the plan screen entirely.
-    if task and not cowabunga:
-        from splinter.tui_plan import run_plan_interactive
-
-        raise typer.Exit(run_plan_interactive(run_kwargs))
-
+    # A task (file, plan folder or README) is already planned: it goes straight to
+    # the run screen, no questions and no planner.
     from splinter.tui import run_with_tui
 
     raise typer.Exit(run_with_tui(run_kwargs))

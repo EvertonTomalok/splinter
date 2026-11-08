@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import yaml
 from rich.text import Text
@@ -20,6 +20,7 @@ from splinter.agents import gate
 from splinter.prd_session import user_story_titles
 from splinter.strategies.registry import registered_strategies
 from splinter.strategy_pick import recommend_strategy
+from splinter.task_waves import extract_task_deps, facts_line, wave_facts
 
 if TYPE_CHECKING:
     from splinter.memory.session import Session
@@ -243,6 +244,16 @@ class RunSetupModal(ModalScreen[RunSetup | None]):
         text-style: bold;
         color: $primary;
     }
+    RunSetupModal #run-setup-facts {
+        color: $text-muted;
+        margin-bottom: 1;
+    }
+    RunSetupModal #setup-sweep {
+        height: 1;
+        display: none;
+        color: $accent;
+        margin-bottom: 1;
+    }
     RunSetupModal #run-setup-scroll {
         height: auto;
         max-height: 1fr;
@@ -290,6 +301,7 @@ class RunSetupModal(ModalScreen[RunSetup | None]):
     BINDINGS = [
         Binding("enter", "run", "Run"),
         Binding("escape", "back", "Back"),
+        Binding("p", "toggle_parallel", "Parallel", show=False),
     ]
 
     def __init__(
@@ -307,10 +319,37 @@ class RunSetupModal(ModalScreen[RunSetup | None]):
         self._on_note = on_note
         self._strategies = registered_strategies()
         self._recommended, self._reason = recommend_strategy(prd_text)
+        self._deps = extract_task_deps(prd_text, session)
+        self._facts = wave_facts(self._deps)
+        self._sweep_timer: Any = None
+        self._sweep_pos = 0
 
     @property
     def _session_dir(self) -> Path | None:
         return self._session.dir if self._session is not None else None
+
+    def _current_parallel(self) -> bool:
+        if self._parallel_override is not None:
+            return self._parallel_override
+        try:
+            cb = self.query_one("#run-setup-parallel", Checkbox)
+            if cb.display:
+                return bool(cb.value)
+        except Exception:
+            pass
+        return False
+
+    def _facts_line(self) -> str:
+        return facts_line(self._facts, self._current_parallel())
+
+    def _strategy_tag(self, name: str) -> str:
+        if self._reason == "set in the PRD" and name == self._recommended:
+            return "★ set in the PRD"
+        if name == "agents" and self._facts.widest > 3:
+            return f"fits {self._facts.widest}-wide waves"
+        if name == self._recommended:
+            return "recommended"
+        return ""
 
     def _strategy_options(self) -> list[Option]:
         options: list[Option] = []
@@ -322,11 +361,12 @@ class RunSetupModal(ModalScreen[RunSetup | None]):
                 (alias.ljust(alias_w), "bold"),
                 "  ",
                 (cls.name.ljust(name_w), "dim"),
-                "  ",
+                "  — ",
                 cls.summary,
             )
-            if cls.name == self._recommended:
-                label.append(f"  ★ recommended · {self._reason}", style="bold green")
+            tag = self._strategy_tag(cls.name)
+            if tag:
+                label.append(f"  {tag}", style="bold green" if "★" in tag else "bold")
             options.append(Option(label, id=cls.name))
         return options
 
@@ -338,11 +378,17 @@ class RunSetupModal(ModalScreen[RunSetup | None]):
         dialog = Vertical(id="run-setup-dialog")
         dialog.border_subtitle = "enter Run · esc Back"
         with dialog:
-            yield Static("Run setup", id="run-setup-title")
+            yield Static("Run it how?", id="run-setup-title")
+            yield Static(self._facts_line(), id="run-setup-facts")
+            yield Static(id="setup-sweep")
             with VerticalScroll(id="run-setup-scroll"):
                 yield Static(format_stories_preview(self._prd_text), id="run-setup-stories")
                 yield Static("Strategy", id="run-setup-strat-label")
-                yield OptionList(*self._strategy_options(), id="run-setup-strategy")
+                yield OptionList(
+                    *self._strategy_options(),
+                    id="run-setup-strategy",
+                    classes="strategy-list",
+                )
                 yield Checkbox(
                     "Run stories in parallel (git worktrees)",
                     id="run-setup-parallel",
@@ -356,19 +402,25 @@ class RunSetupModal(ModalScreen[RunSetup | None]):
                 yield Button("Back to chat", id="run-setup-back", variant="default")
                 yield Button("Cowabunga", id="run-setup-cowabunga", variant="warning")
 
+    def query_one(self, selector: Any = None, expect_type: Any = None) -> Any:
+        if selector == "#strategy-list":
+            return super().query_one("#run-setup-strategy", expect_type)
+        return super().query_one(selector, expect_type)
+
     def on_mount(self) -> None:
         ol = self.query_one("#run-setup-strategy", OptionList)
         names = [cls.name for cls in self._strategies]
         if self._recommended in names:
             ol.highlighted = names.index(self._recommended)
         self._update_parallel_visibility()
+        self._update_facts()
         ol.focus()
 
     def _highlighted_strategy(self) -> str:
         ol = self.query_one("#run-setup-strategy", OptionList)
         idx = ol.highlighted
         if idx is not None and 0 <= idx < len(self._strategies):
-            return self._strategies[idx].name
+            return str(self._strategies[idx].name)
         return self._recommended
 
     def _update_parallel_visibility(self) -> None:
@@ -378,6 +430,54 @@ class RunSetupModal(ModalScreen[RunSetup | None]):
             self._highlighted_strategy(),
             self._parallel_override,
         )
+        self._update_facts()
+
+    def _update_facts(self) -> None:
+        try:
+            facts_widget = self.query_one("#run-setup-facts", Static)
+            text = self._facts_line()
+            facts_widget.update(text)
+            facts_widget.display = bool(text)
+        except Exception:
+            pass
+
+    def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
+        if event.checkbox.id == "run-setup-parallel":
+            self._update_facts()
+
+    def action_toggle_parallel(self) -> None:
+        cb = self.query_one("#run-setup-parallel", Checkbox)
+        if cb.display:
+            cb.value = not cb.value
+            self._update_facts()
+
+    def start_scan(self) -> None:
+        sweep = self.query_one("#setup-sweep", Static)
+        sweep.display = True
+        if getattr(self.app, "animation_level", None) == "none":
+            sweep.update("scanning…")
+            return
+        self._sweep_pos = 0
+        if self._sweep_timer is None:
+            self._sweep_timer = self.set_interval(0.05, self._tick_sweep)
+
+    def stop_scan(self) -> None:
+        if self._sweep_timer is not None:
+            self._sweep_timer.stop()
+            self._sweep_timer = None
+        sweep = self.query_one("#setup-sweep", Static)
+        sweep.display = False
+
+    def _tick_sweep(self) -> None:
+        if getattr(self.app, "animation_level", None) == "none":
+            self.query_one("#setup-sweep", Static).update("scanning…")
+            return
+        width = 30
+        self._sweep_pos = (self._sweep_pos + 1) % width
+        chars = [" "] * width
+        for i in range(3):
+            chars[(self._sweep_pos + i) % width] = "━"
+        self.query_one("#setup-sweep", Static).update("".join(chars))
 
     def _refresh_summary(self) -> None:
         self.query_one("#run-setup-summary", Static).update(self._summary_line())
