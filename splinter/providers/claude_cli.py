@@ -232,7 +232,14 @@ def run(
     disallowed_tools: Sequence[str] = (),
     permission_mode: str | None = None,
     unset_env: Sequence[str] = (),
+    text_only: bool = False,
 ) -> ClaudeResult:
+    """Run ``claude -p``.
+
+    ``text_only`` is for a quick written answer: no user settings (their hooks
+    and plugins rewrite the reply), no tools, no MCP servers, no skills. Login
+    still works, unlike ``--bare``, which only takes ``ANTHROPIC_API_KEY``.
+    """
     if timeout is None:
         from splinter.configure import configured_timeout
 
@@ -256,6 +263,8 @@ def run(
         cmd.extend(list(disallowed_tools))
     if stream_json:
         cmd.append("--verbose")
+    if text_only:
+        cmd.extend(TEXT_ONLY_FLAGS)
     effort = _normalize_effort(effort)
     if effort is not None:
         cmd.extend(["--effort", effort])
@@ -316,6 +325,19 @@ def ping(model: str = "sonnet", timeout: int = 30) -> bool:
         return False
 
 
+#: Flags for a plain written answer (see ``run(text_only=True)``).
+TEXT_ONLY_FLAGS: tuple[str, ...] = (
+    "--setting-sources",
+    "",
+    "--tools",
+    "",
+    "--disable-slash-commands",
+    "--strict-mcp-config",
+)
+#: Pipeline roles that only need text back, never a tool.
+TEXT_ONLY_ROLES = frozenset({"explain"})
+
+
 class ClaudeProvider(ModelProvider):
     """Routes runs through ``claude -p``; ``variant`` maps onto ``--effort``."""
 
@@ -348,6 +370,7 @@ class ClaudeProvider(ModelProvider):
                 session_id=session_id,
                 timeout=timeout,
                 cwd=cwd,
+                text_only=agent in TEXT_ONLY_ROLES,
             )
         except Exception as exc:
             gap = detect_provider_gap(exc, self.name, model)

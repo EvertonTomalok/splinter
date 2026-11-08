@@ -80,11 +80,14 @@ def test_excerpt_finds_the_sections_that_name_the_ids() -> None:
 
 def test_prompt_asks_for_the_question_language_and_forbids_filler() -> None:
     prompt = explain_prompt(_question(), prd_excerpt(PRD, _question()), "INS-322")
-    assert "same language the question is written in" in prompt
-    assert "no praise of the question" in prompt
+    assert "language the question is written in" in prompt
+    assert "speak to the reader directly" in prompt
+    assert "Never write: excerpt" in prompt
     assert "never invent it" in prompt
+    assert "Do not run tools" in prompt
     assert "A) Aprovar todas as fórmulas" in prompt
-    assert "[4. Gates]" in prompt
+    assert "Section 4. Gates:" in prompt
+    assert "[4. Gates]" not in prompt
 
 
 def test_clean_explanation_drops_markdown() -> None:
@@ -93,7 +96,7 @@ def test_clean_explanation_drops_markdown() -> None:
     )
 
 
-def test_explain_uses_the_tier_zero_model(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_explain_runs_low_effort_outside_the_repo(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[dict[str, Any]] = []
 
     def fake_session(prompt: str, model: str, **kw: Any) -> tuple[Any, str]:
@@ -112,6 +115,8 @@ def test_explain_uses_the_tier_zero_model(monkeypatch: pytest.MonkeyPatch) -> No
     )
     assert calls[0]["model"] == "cheap/flash"
     assert calls[0]["role"] == "explain"
+    assert calls[0]["variant"] == "low"
+    assert calls[0]["cwd"] != str(Path.cwd())
 
 
 def test_question_mark_opens_the_context_pane(
@@ -161,3 +166,55 @@ def test_question_mark_opens_the_context_pane(
             assert len(asked) == 1
 
     asyncio.run(drive())
+
+
+def test_explainer_is_haiku_then_tier_zero(monkeypatch: pytest.MonkeyPatch) -> None:
+    from splinter.models import roster
+
+    tier = SimpleNamespace(models=["zai/glm-flash", "haiku"])
+    monkeypatch.setattr(roster, "_project_config", lambda: {})
+    monkeypatch.setattr(roster, "load_ladder", lambda: SimpleNamespace(tiers=[tier]))
+    model, pool = question_context.explain_model()
+    assert model == "haiku"
+    assert pool == ["haiku@low", "zai/glm-flash@low"]
+
+
+def test_models_explain_in_config_wins(monkeypatch: pytest.MonkeyPatch) -> None:
+    from splinter.models import roster
+
+    config = {"models": {"explain": ["opencode/glm-flash", "sonnet@medium"]}}
+    monkeypatch.setattr(roster, "_project_config", lambda: config)
+    model, pool = question_context.explain_model()
+    assert model == "opencode/glm-flash"
+    assert pool == ["opencode/glm-flash@low", "sonnet@medium"]
+
+
+def test_claude_explain_role_runs_text_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    from splinter.providers import claude_cli
+
+    seen: list[list[str]] = []
+
+    def fake_subprocess(cmd: list[str], **_: Any) -> Any:
+        seen.append(cmd)
+        line = '{"type":"result","result":"ok","usage":{}}'
+        return SimpleNamespace(returncode=0, stdout=line, stderr="")
+
+    monkeypatch.setattr(claude_cli, "run_subprocess", fake_subprocess)
+    provider = claude_cli.ClaudeProvider()
+    provider.run("hi", "haiku", variant="low", agent="explain", timeout=5)
+    provider.run("hi", "haiku", variant="low", agent="prd", timeout=5)
+    explain_cmd, prd_cmd = seen
+    assert explain_cmd[explain_cmd.index("--setting-sources") + 1] == ""
+    assert explain_cmd[explain_cmd.index("--tools") + 1] == ""
+    assert "--strict-mcp-config" in explain_cmd
+    assert "--setting-sources" not in prd_cmd
+
+
+def test_context_pane_shows_the_loader_while_waiting() -> None:
+    from splinter.tui_prd_outline import context_markup
+
+    waiting = context_markup(_question(), [], model="haiku", waiting="⠹ 3s")
+    assert "⠹ 3s" in waiting
+    assert "haiku is reading the question" in waiting
+    done = context_markup(_question(), [], explanation=Explanation(text="ok", model="haiku"))
+    assert "reading the question" not in done

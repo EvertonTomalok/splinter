@@ -4741,6 +4741,9 @@ _PHASE_STEPS: dict[str, int] = {
     "run": 4,
 }
 
+#: Spinner frames for the explanation loader in the context pane.
+_SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
 #: The last questions the writer asked, kept so a resumed session can show them again.
 _QUESTIONS_FILE = "questions.md"
 
@@ -4976,7 +4979,9 @@ class PrdSessionApp(App[int | None]):
         self.task_handoff: str | None = None
         self._explanations: dict[str, Explanation] = {}
         self._explain_errors: dict[str, str] = {}
-        self._explaining: set[str] = set()
+        self._explaining: dict[str, float] = {}
+        self._explain_ticker: Any = None
+        self._explain_frame = 0
 
     def _save_state(self) -> None:
         """Persist enough to resume this refinement: conversation id, phase, strategy."""
@@ -5567,11 +5572,13 @@ class PrdSessionApp(App[int | None]):
                 explanation=self._explanations.get(key),
                 error=self._explain_errors.get(key, ""),
                 model=model,
+                waiting=self._waiting_label(key),
             )
         )
         if key in self._explanations or key in self._explain_errors or key in self._explaining:
             return
-        self._explaining.add(key)
+        self._explaining[key] = time.monotonic()
+        self._start_explain_ticker()
         title = self._outline_title(draft)
         self.run_worker(
             lambda: self._explain_worker(question, sections, title),
@@ -5596,8 +5603,33 @@ class PrdSessionApp(App[int | None]):
         self.session.log_llm_usage(result.model, result.tokens, result.cost)
         self.call_from_thread(self._explained, question.text, result, "")
 
+    def _waiting_label(self, key: str) -> str:
+        """``⠹ 4s`` while the explanation for ``key`` is on its way."""
+        started = self._explaining.get(key)
+        if started is None:
+            return ""
+        frame = _SPINNER[self._explain_frame % len(_SPINNER)]
+        return f"{frame} {int(time.monotonic() - started)}s"
+
+    def _start_explain_ticker(self) -> None:
+        if self._explain_ticker is None:
+            self._explain_ticker = self.set_interval(0.12, self._tick_explain)
+
+    def _tick_explain(self) -> None:
+        """Advance the spinner; stop the timer once nothing is being explained."""
+        if not self._explaining:
+            if self._explain_ticker is not None:
+                self._explain_ticker.stop()
+                self._explain_ticker = None
+            return
+        self._explain_frame += 1
+        if self.has_class("-context"):
+            question = self._context_question()
+            if question is not None and question.text in self._explaining:
+                self._refresh_context()
+
     def _explained(self, key: str, result: Explanation | None, error: str) -> None:
-        self._explaining.discard(key)
+        self._explaining.pop(key, None)
         if result is not None:
             self._explanations[key] = result
         else:

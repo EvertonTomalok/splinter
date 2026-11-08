@@ -5,16 +5,19 @@ approval starts US-002?"). Two helps sit behind ``?`` on the questions screen:
 
 * :func:`prd_excerpt` — free and instant: the PRD sections that name the
   question's ids (``US-002``, ``G0``, ``B4``) and words, with their best lines.
-* :func:`explain` — on demand: the cheapest model of the ladder (tier 0)
-  explains the question in the language it is written in, in plain spoken
-  words, from the question, its options and that excerpt only.
+* :func:`explain` — on demand: a quick model (``models.explain``, else Haiku,
+  then the ladder's tier 0, all at low effort) explains the question in the
+  language it is written in, as a colleague would, from the question, its
+  options and that excerpt only.
 """
 
 from __future__ import annotations
 
 import re
+import tempfile
 from dataclasses import dataclass, field
 
+from splinter.models.roster import parse_pool_entry
 from splinter.providers.dispatch import run_provider_session
 from splinter.tui_questions import Question
 
@@ -34,7 +37,10 @@ _STOPWORDS = frozenset(
     """.split()
 )
 _LINE_MAX = 160
-_EXPLAIN_TIMEOUT = 120
+_EXPLAIN_TIMEOUT = 90
+#: The explanation is a quick read, not a reasoning task: the lowest effort every
+#: provider accepts (``none``/``minimal`` are not offered by every opencode model).
+_EXPLAIN_EFFORT = "low"
 
 
 @dataclass(frozen=True)
@@ -118,56 +124,94 @@ def prd_excerpt(
 
 
 def excerpt_text(sections: list[Section]) -> str:
-    """The excerpt as plain text for the prompt."""
+    """The excerpt as plain text for the prompt: section title, then its lines."""
     if not sections:
-        return "(nothing in the PRD names this question directly)"
+        return "(the PRD says nothing about this question directly)"
     blocks = []
     for section in sections:
-        body = "\n".join(f"- {line}" for line in section.lines)
-        blocks.append(f"[{section.heading}]\n{body}" if body else f"[{section.heading}]")
+        body = "\n".join(f"  {line}" for line in section.lines)
+        head = f"Section {section.heading}"
+        blocks.append(f"{head}:\n{body}" if body else head)
     return "\n\n".join(blocks)
 
 
+#: Tone sample for the explainer: same facts, written for a machine and for a person.
+_TONE_SAMPLE = (
+    "Not like this: \"Decide-se o provider primário; fallback condicionado ao 3DS.\"\n"
+    "Like this: \"A pergunta é por onde o pagamento passa primeiro. Hoje tudo vai pelo "
+    "Stripe; se ele cair, a compra falha e o cliente vai embora.\""
+)
+
+
 def explain_prompt(question: Question, sections: list[Section], prd_title: str = "") -> str:
-    """The prompt the cheap model gets: plain spoken words, no filler, no invention."""
+    """The prompt the cheap model gets: a person explaining to a person, no jargon."""
     options = "\n".join(f"{option.letter}) {option.text}" for option in question.options)
-    why = f"Why the writer asked: {question.context}\n" if question.context else ""
-    title = f"PRD: {prd_title}\n" if prd_title else ""
+    why = f"Why it was asked: {question.context}\n" if question.context else ""
+    title = f"Product spec: {prd_title}\n" if prd_title else ""
     return (
-        "Someone reviewing a PRD must answer the question below and finds it vague. "
-        "Explain it the way a senior engineer would, sitting next to them: plain spoken "
-        "words, concrete, about this project only.\n\n"
-        "Rules:\n"
-        "- Write in the same language the question is written in.\n"
-        "- At most 110 words. Plain text: no markdown headings, no bold, no tables.\n"
-        "- No greeting, no preamble, no praise of the question, no closing summary, "
-        "no hedging.\n"
-        "- No generic advice that would fit any project.\n"
-        "- Use only the question, its options and the PRD excerpt. If something is not "
-        "there, say it is not in the PRD; never invent it.\n\n"
-        "Write, in this order:\n"
-        "1. One or two sentences: what is actually being decided, and what it changes "
-        "here.\n"
-        "2. One line per option, starting with its letter: what happens if it is picked.\n"
-        "3. Only if the PRD already leans to one option: one line saying which, and "
-        "where the PRD says so.\n\n"
+        "Answer straight from the text below. Do not run tools, do not open or search "
+        "files, do not plan: write the answer and stop.\n\n"
+        "A person must answer one question about their product spec and finds it "
+        "confusing. Explain it to them the way a colleague would at their desk.\n\n"
+        "How to write:\n"
+        "- Use the language the question is written in, the way people really talk in "
+        "it, and speak to the reader directly (in Portuguese: \"você\").\n"
+        "- Short everyday sentences, active voice: say who does what and what happens.\n"
+        "- The first time a code appears (US-002, G0, A1-A4, B1), say in words what it is, "
+        "e.g. \"US-002 (o relatório de agenda)\". If the spec does not say what a code "
+        "means, say that plainly.\n"
+        "- Never write: excerpt, trecho, prompt, baseline, congelar, escopo, alinhar, "
+        "decide-se, \"em suma\", \"vale ressaltar\". Never mention the material you were "
+        "given; talk about the spec itself.\n"
+        "- Plain text. No headings, no bold, no bullet symbols, no brackets around "
+        "section names.\n"
+        "- No greeting, no praise, no closing summary. Never say \"depende\" without "
+        "saying on what.\n"
+        "- Use only what is below. If the spec does not say something, say it does not; "
+        "never invent it.\n"
+        "- At most 140 words.\n\n"
+        f"Tone:\n{_TONE_SAMPLE}\n\n"
+        "What to write, in this order:\n"
+        "1. What the question is really asking, in one or two sentences anyone on the "
+        "team would get, with a concrete example from this spec.\n"
+        "2. One line per option, starting with its letter and \")\": what happens in "
+        "practice if they pick it (what gets built now, what waits, what risk they take).\n"
+        "3. One last line: if the spec already points to one option, which one and why, in "
+        "plain words; if not, what they need to know to choose.\n\n"
         f"Question: {question.text}\n"
         f"{why}"
         f"Options:\n{options}\n\n"
         f"{title}"
-        f"PRD excerpt:\n{excerpt_text(sections)}\n"
+        f"What the spec says about it:\n{excerpt_text(sections)}\n"
     )
 
 
-def explain_model() -> tuple[str, list[str]]:
-    """The cheapest model of the ladder (tier 0) and its pool."""
-    from splinter.models.roster import load_ladder
+#: Default explainer: Claude Haiku first (most setups have the claude CLI), then
+#: the ladder's cheapest tier. ``models.explain`` in the project config wins.
+_DEFAULT_EXPLAINER = "haiku"
 
-    tiers = load_ladder().tiers
-    if not tiers or not tiers[0].models:
-        raise RuntimeError("no tier-0 model configured to explain questions")
-    models = list(tiers[0].models)
-    return models[0], models
+
+def explain_model() -> tuple[str, list[str]]:
+    """The explainer model and its fallback pool, every entry at low effort.
+
+    ``models.explain`` (a model or a list) in ``.splinter/config.yaml`` wins;
+    otherwise Haiku, then the tier-0 models of the ladder.
+    """
+    from splinter.models.roster import _project_config, load_ladder
+
+    models = _project_config().get("models")
+    raw = models.get("explain") if isinstance(models, dict) else None
+    entries = (
+        [str(x).strip() for x in raw if str(x).strip()]
+        if isinstance(raw, (list, tuple))
+        else [str(raw).strip()] if raw else []
+    )
+    if not entries:
+        tiers = load_ladder().tiers
+        tier_zero = list(tiers[0].models) if tiers and tiers[0].models else []
+        entries = [_DEFAULT_EXPLAINER, *[m for m in tier_zero if m != _DEFAULT_EXPLAINER]]
+    pool = [entry if "@" in entry else f"{entry}@{_EXPLAIN_EFFORT}" for entry in entries]
+    return parse_pool_entry(pool[0])[0], pool
 
 
 def clean_explanation(text: str) -> str:
@@ -185,10 +229,12 @@ def explain(question: Question, sections: list[Section], prd_title: str = "") ->
     result, _sid = run_provider_session(
         explain_prompt(question, sections, prd_title),
         model,
+        variant=parse_pool_entry(pool[0])[1] or _EXPLAIN_EFFORT,
         output_format="json",
         timeout=_EXPLAIN_TIMEOUT,
         role="explain",
         pool=pool,
+        cwd=tempfile.gettempdir(),
     )
     tokens = {
         "input": result.tokens.get("input", 0) or 0,

@@ -84,7 +84,7 @@ def test_naval_grid_conceals_fleet_and_marks_a_sunk_ship() -> None:
     assert len(rows) == 24 and all(row.cell_length == 128 for row in rows)
     for cell in game.fleet:
         x, y = layout.center(cell)
-        assert rows[y].text[x] == "~"
+        assert rows[y].text[x] == "·"
     for cell in game.ships[0]:
         game.cursor = cell
         game.key("space")
@@ -92,4 +92,18 @@ def test_naval_grid_conceals_fleet_and_marks_a_sunk_ship() -> None:
     rows = naval_rows(game, 128, 24)
     for cell in game.ships[0]:
         x, y = layout.center(cell)
-        assert rows[y].text[x] == "#"
+        assert "╳" in rows[y].text[x - 4:x + 5]
+
+
+def test_defeat_reveals_remaining_ships_without_marking_them_sunk() -> None:
+    game = Arcade("naval")
+    misses = [(x, y) for y in range(5) for x in range(8) if (x, y) not in game.fleet]
+    for cell in misses[:18]:
+        game.cursor = cell
+        game.key("space")
+    assert game.over
+    layout = NavalLayout.for_size(64, 12)
+    rows = naval_rows(game, 64, 12)
+    for cell in game.fleet:
+        x, y = layout.center(cell)
+        assert rows[y].text[x - 2:x + 3] == "\\___/"

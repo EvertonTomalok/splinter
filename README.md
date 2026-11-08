@@ -434,6 +434,10 @@ Pong, Dino, Star patrol and Battleship share the arcade shown during PRD and
 plan generation. The demo runs without agents, model calls or provider setup.
 Use `1`–`4` to choose a game, `Space` to play, `P` to pause, `N` to shuffle,
 `G` to toggle logs and `Esc` to exit. Controls appear below each game.
+In Battleship, click any square to start and fire; hovering highlights its
+coordinate. Hits show wrecked ships, misses show blue waves, and unexplored
+cells show a dot. Wrecks turn pale when the whole ship sinks. Repeated shots
+do not consume ammunition. Arrow keys and `Space` remain available.
 
 Real-time games update at 120 Hz with elapsed-time physics. Only changed rows
 are repainted; the default Textual refresh ceiling is 120 Hz and can be
