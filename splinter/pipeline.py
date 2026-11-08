@@ -24,6 +24,8 @@ from splinter.providers.base import ProviderGapError
 from splinter.scheduling import default_max_concurrency
 from splinter.strategies.base import AskUserPause, GracefulPause, ManualValidationPause
 from splinter.strategies.registry import available_strategies, get_strategy
+from splinter.task_file import read_task_mapping
+from splinter.task_plan import PLAN_INDEX_FILE, is_plan_index, load_plan_index
 
 DEFAULT_STRATEGY = "cascade"
 
@@ -181,8 +183,7 @@ def _run_final_eval_cli(
 
 
 def _load_task_from_yaml(path: str) -> Task:
-    with open(path) as f:
-        data = yaml.safe_load(f) or {}
+    data = read_task_mapping(Path(path))
     return Task(
         description=data.get("description", ""),
         acceptance=data.get("acceptance", ""),
@@ -669,7 +670,14 @@ def run_pipeline(
     _warn_ladder_pricing(ladder)
 
     tasks: list[Task] = []
-    if task_path:
+    if task_path and is_plan_index(Path(task_path)):
+        plan_index = load_plan_index(Path(task_path))
+        tasks = list(plan_index.tasks)
+        if not session.read(PLAN_INDEX_FILE).strip():
+            session.write(PLAN_INDEX_FILE, plan_index.text)
+        if strategy is None and len(tasks) == 1:
+            strategy = "direct"
+    elif task_path:
         tasks.append(_load_task_from_yaml(task_path))
     elif prd_path:
         prd_tasks, prd_strategy = _load_tasks_from_prd(prd_path)

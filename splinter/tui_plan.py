@@ -14,7 +14,6 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
-import yaml
 from rich.markup import escape
 from rich.text import Text
 from textual.app import App, ComposeResult, SystemCommand
@@ -27,6 +26,8 @@ from splinter import plan_session
 from splinter.agents.runner import Task
 from splinter.memory.session import Session
 from splinter.prd_session import Turn, is_cowabunga
+from splinter.task_file import read_task_mapping
+from splinter.task_plan import PLAN_INDEX_FILE, PlanIndex, is_plan_index, load_plan_index
 from splinter.tui import (
     _MAXIMIZE_CSS,
     _PALETTE_CSS,
@@ -119,6 +120,7 @@ class PlanSessionApp(App[int | None]):
         self._started_at = datetime.now(timezone.utc).isoformat()
         self._questions: list[Question] = []
         self._model_name = ""
+        self._plan_index: PlanIndex | None = None
 
     # --- layout ---
     def compose(self) -> ComposeResult:
@@ -153,11 +155,12 @@ class PlanSessionApp(App[int | None]):
             self._resume()
             return
         path = Path(str(self.run_kwargs.get("task_path") or ""))
+        if is_plan_index(path):
+            self._open_plan_index(path)
+            return
         try:
-            loaded = yaml.safe_load(path.read_text()) or {}
-            if not isinstance(loaded, dict):
-                raise ValueError("task yaml must be a mapping")
-        except (OSError, ValueError, yaml.YAMLError) as exc:
+            loaded = read_task_mapping(path)
+        except (OSError, ValueError) as exc:
             self._fatal(f"cannot read task: {exc}")
             return
         self._task_base = loaded
@@ -169,6 +172,34 @@ class PlanSessionApp(App[int | None]):
         self._set_phase("clarify")
         self._save_state()
         self._ask_questions()
+
+    def _open_plan_index(self, path: Path) -> None:
+        try:
+            self._plan_index = load_plan_index(path)
+        except (OSError, ValueError) as exc:
+            self._fatal(f"cannot read task plan: {exc}")
+            return
+        if not self.run_kwargs.get("strategy"):
+            self.strategy = "cascade"
+        self._task_name = f"{path.name} · {len(self._plan_index.tasks)} tasks"
+        self._load_task_editor(plan_session.plan_bundle(self._plan_index))
+        self._set_phase("clarify")
+        self._save_state()
+        self._ask_questions()
+
+    def _task_ids(self) -> tuple[str, ...]:
+        return tuple(t.id for t in self._plan_index.tasks) if self._plan_index else ()
+
+    def _save_plan(self, plan: str) -> None:
+        if self._plan_index is None:
+            plan_session.save_plan(self.session, plan)
+            return
+        missing = plan_session.save_task_plans(self.session, plan, self._task_ids())
+        if missing:
+            self._say(
+                f"[yellow]No plan section for {', '.join(missing)}: "
+                "the planner plans them during the run.[/]"
+            )
 
     def _load_task_editor(self, text: str) -> None:
         editor = self.query_one("#task-edit", TextArea)
@@ -188,12 +219,15 @@ class PlanSessionApp(App[int | None]):
         if saved and saved != "?" and not self.run_kwargs.get("strategy"):
             self.strategy = str(saved)
         self._task_name = str(status.get("task_name") or self._task_name)
-        self._task_base = self._read_saved_task(status)
-        task = Task(
-            description=str(self._task_base.get("description", "")),
-            acceptance=str(self._task_base.get("acceptance", "")),
-        )
-        self._load_task_editor(plan_session.task_text(task))
+        if status.get("plan_index"):
+            self._resume_plan_index(Path(str(status.get("task_path") or "")))
+        else:
+            self._task_base = self._read_saved_task(status)
+            task = Task(
+                description=str(self._task_base.get("description", "")),
+                acceptance=str(self._task_base.get("acceptance", "")),
+            )
+            self._load_task_editor(plan_session.task_text(task))
         self._replay_convo()
         phase = str(status.get("phase") or "chat")
         plan = self._saved_plan()
@@ -206,20 +240,28 @@ class PlanSessionApp(App[int | None]):
         else:
             self._enter_chat()
 
+    def _resume_plan_index(self, path: Path) -> None:
+        try:
+            self._plan_index = load_plan_index(path)
+        except (OSError, ValueError) as exc:
+            self._fatal(f"cannot read task plan: {exc}")
+            return
+        saved = self.session.read(PLAN_INDEX_FILE)
+        self._load_task_editor(saved or plan_session.plan_bundle(self._plan_index))
+
     def _read_saved_task(self, status: dict[str, Any]) -> dict[str, Any]:
         for raw in (self.session.dir / "task.yaml", status.get("task_path")):
             if not raw:
                 continue
             try:
-                loaded = yaml.safe_load(Path(str(raw)).read_text()) or {}
-            except (OSError, yaml.YAMLError):
+                return read_task_mapping(Path(str(raw)))
+            except (OSError, ValueError):
                 continue
-            if isinstance(loaded, dict):
-                return loaded
         return {}
 
     def _saved_plan(self) -> str:
-        text = self.session.read("knowledge/plan.md")
+        name = plan_session.PLAN_ALL_FILE if self._plan_index else "knowledge/plan.md"
+        text = self.session.read(name)
         return plan_session.strip_plan_header(text) if text.strip() else ""
 
     def _replay_convo(self) -> None:
@@ -256,6 +298,8 @@ class PlanSessionApp(App[int | None]):
         return str(self.query_one("#plan-edit", TextArea).text)
 
     def _persist_task(self) -> Path:
+        if self._plan_index is not None:
+            return self.session.write(PLAN_INDEX_FILE, self._task_md())
         description, acceptance = plan_session.parse_task_text(self._task_md())
         return plan_session.save_task(self.session, description, acceptance, self._task_base)
 
@@ -266,7 +310,8 @@ class PlanSessionApp(App[int | None]):
             source="task",
             phase=self.phase,
             claude_session=self.claude_session,
-            task_path=str(task_path),
+            task_path=str(self._plan_index.path if self._plan_index else task_path),
+            plan_index=self._plan_index is not None,
             task_name=self._task_name,
             strategy=self.strategy,
             started_at=self._started_at,
@@ -437,6 +482,7 @@ class PlanSessionApp(App[int | None]):
             current_task=task_md,
             autodecide=autodecide,
             localization=self._grounding(task_md),
+            task_ids=self._task_ids(),
         )
 
     def _revise_worker(self, instructions: str, plan_md: str) -> None:
@@ -446,6 +492,7 @@ class PlanSessionApp(App[int | None]):
             instructions=instructions,
             resume=self.claude_session,
             current_plan=plan_md,
+            task_ids=self._task_ids(),
         )
 
     # --- worker callbacks (UI thread) ---
@@ -465,7 +512,7 @@ class PlanSessionApp(App[int | None]):
     def _after_plan(self, turn: Turn) -> None:
         self._take_session(turn)
         plan = plan_session.strip_plan_header(turn.text)
-        plan_session.save_plan(self.session, plan)
+        self._save_plan(plan)
         if self._auto_run:
             self._show_plan(plan)
             self._run()
@@ -475,7 +522,7 @@ class PlanSessionApp(App[int | None]):
     def _after_revise(self, turn: Turn) -> None:
         self._take_session(turn)
         plan = plan_session.strip_plan_header(turn.text)
-        plan_session.save_plan(self.session, plan)
+        self._save_plan(plan)
         self._enter_review(plan, "[green]Plan revised. Run, or describe more changes.[/]")
 
     def _enter_chat(self, questions: list[Question] | None = None) -> None:
@@ -554,7 +601,7 @@ class PlanSessionApp(App[int | None]):
         if not plan.strip():
             self._say("[yellow]The plan is empty — write or revise it before running.[/]")
             return
-        plan_session.save_plan(self.session, plan)
+        self._save_plan(plan)
         self._set_phase("run")
         self._save_state()
         self._say(f"[green]▶ running with strategy '{self.strategy}'…[/]")
@@ -593,9 +640,10 @@ def _handoff(session: Session, run_kwargs: dict[str, Any], result: int | None) -
 
     status = session.read_status()
     if result == 0 and status.get("phase") == "run":
+        task_path = status.get("task_path") if status.get("plan_index") else None
         final = {
             **run_kwargs,
-            "task_path": str(session.dir / "task.yaml"),
+            "task_path": str(task_path or session.dir / "task.yaml"),
             "prd_path": None,
             "strategy": str(status.get("strategy") or DEFAULT_STRATEGY),
             "resume": False,

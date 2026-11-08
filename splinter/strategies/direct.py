@@ -37,6 +37,7 @@ from splinter.memory.session import Session
 from splinter.models.roster import Ladder
 from splinter.obs.agentic import agentic_scope, record_exchange
 from splinter.obs.trace import Trace
+from splinter.plan_session import task_plan_path
 from splinter.providers.dispatch import run_text
 from splinter.scheduling import default_max_concurrency
 from splinter.skills import resolve_eval_skill
@@ -376,6 +377,7 @@ class DirectStrategy(Strategy):
                 log.info("plan skipped for task %d (already completed)", i + 1)
                 continue
             task_plan_file = f"knowledge/plan-{i + 1}.md"
+            _adopt_id_plan(session, task, i)
             if not skip_planner and not force_replan and session.read(task_plan_file).strip():
                 log.info("plan exists for task %d — reusing", i + 1)
                 continue
@@ -492,6 +494,7 @@ class DirectStrategy(Strategy):
             session.append("events.md", f"[USER GUIDANCE] {user_guidance}\n")
 
         task_plan_file = f"knowledge/plan-{task_index + 1}.md"
+        _adopt_id_plan(session, task, task_index)
 
         from_ask_user = checkpoint is not None and not checkpoint.stage
         if from_ask_user and corrections.strip():
@@ -977,6 +980,22 @@ def _plan_task(
     return plan
 
 
+def _adopt_id_plan(session: Session, task: Task, task_index: int) -> None:
+    """Copy the plan written for ``task.id`` in plan mode into ``plan-N.md`` when empty."""
+    path = f"knowledge/plan-{task_index + 1}.md"
+    if not task.id or session.read(path).strip():
+        return
+    by_id = session.read(task_plan_path(task.id)).strip()
+    if by_id:
+        session.write(path, f"{by_id}\n")
+
+
+def _plan_index(session: object) -> str:
+    from splinter.task_plan import PLAN_INDEX_FILE
+
+    return session.read(PLAN_INDEX_FILE) if isinstance(session, Session) else ""
+
+
 def _make_plan(
     task: Task,
     ladder: Ladder,
@@ -995,6 +1014,7 @@ def _make_plan(
         acceptance_section=section("Acceptance Criteria", task.acceptance),
         code_context_section=section("Code Context", code_ctx),
         standards_section=section("Code Conventions", load_standards()),
+        plan_index_section=section("Plan index (README of the task plan)", _plan_index(session)),
     )
     plan = run_text(
         prompt,

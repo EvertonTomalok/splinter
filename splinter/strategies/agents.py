@@ -43,6 +43,7 @@ from splinter.scheduling import BudgetPool, DagScheduler, TaskState, default_max
 from splinter.strategies.cascade import _append_task_header_once
 from splinter.strategies.direct import DirectStrategy, TaskOutcome
 from splinter.strategies.registry import register
+from splinter.task_plan import PLAN_INDEX_FILE
 from splinter.templating import load_standards
 from splinter.vcs.guard import GuardEnv, guarded_env, setup_guard
 from splinter.vcs.worktree import (
@@ -164,7 +165,14 @@ class AgentsStrategy(DirectStrategy):
         saved_briefs = session.read("agents-run/briefs.json") if resume else ""
         briefs = (
             [Brief(**item) for item in json.loads(saved_briefs)]
-            if saved_briefs else refine_briefs(tasks, ladder, session=session, trace=trace)
+            if saved_briefs
+            else refine_briefs(
+                tasks,
+                ladder,
+                prd_text=session.read(PLAN_INDEX_FILE),
+                session=session,
+                trace=trace,
+            )
         )
         session.write("agents-run/briefs.json", json.dumps([asdict(b) for b in briefs]))
         waves = brief_waves(briefs)

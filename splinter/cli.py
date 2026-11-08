@@ -169,7 +169,10 @@ def prd(
 def run(
     strategy: Annotated[str | None, typer.Option(help="Strategy name or turtle alias")] = None,
     prd: Annotated[str | None, typer.Option(help="Path to prd.md")] = None,
-    task: Annotated[str | None, typer.Option(help="Path to task.yaml")] = None,
+    task: Annotated[
+        str | None,
+        typer.Option(help="Path to task.yaml or a markdown task (tasks/<plan>/T01-….md)"),
+    ] = None,
     effort: Annotated[str | None, typer.Option(help="Override reasoning effort")] = None,
     budget: Annotated[float | None, typer.Option(help="Max cost in dollars")] = None,
     max_iterations: Annotated[int, typer.Option(help="Max loop iterations")] = 5,

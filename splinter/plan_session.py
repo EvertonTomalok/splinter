@@ -27,17 +27,23 @@ from splinter.providers.dispatch import run_provider_session
 from splinter.templating import load_standards, render, section
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from splinter.agents.runner import Task
     from splinter.memory.session import Session
+    from splinter.task_plan import PlanIndex
 
 __all__ = [
     "Turn",
     "open_plan_questions",
     "parse_task_text",
+    "plan_bundle",
     "refine_plan",
     "revise_plan",
     "save_plan",
     "save_task",
+    "save_task_plans",
+    "split_task_plans",
     "strip_plan_header",
     "task_text",
     "write_plan",
@@ -175,6 +181,18 @@ def _plan_contract(current_task: str, localization: str) -> str:
     )
 
 
+def _sections_rule(task_ids: Sequence[str]) -> str:
+    if not task_ids:
+        return ""
+    order = ", ".join(task_ids)
+    return (
+        f"This plan covers {len(task_ids)} tasks. Write one section per task, headed exactly "
+        f"`## <task id>`, in this order: {order}. Each section is a numbered list of steps for "
+        "that task only, naming files and functions; a task may rely on what earlier "
+        "sections build. Nothing outside the sections.\n"
+    )
+
+
 def write_plan(
     *,
     resume: str,
@@ -182,6 +200,7 @@ def write_plan(
     autodecide: bool,
     localization: str = "",
     session: object = None,
+    task_ids: Sequence[str] = (),
 ) -> Turn:
     """Emit the final implementation plan (pipeline planner contract)."""
     decide = (
@@ -197,13 +216,19 @@ def write_plan(
         "Output a numbered list of steps naming the specific files and functions to change. "
         "Write direct, unambiguous instructions for another LLM to implement exactly as "
         "written.\n"
+        f"{_sections_rule(task_ids)}"
         "Output ONLY the plan markdown — no preamble, no questions, no trailing commentary."
     )
     return _ask(prompt, resume=resume, session=session)
 
 
 def revise_plan(
-    instructions: str, *, resume: str, current_plan: str, session: object = None
+    instructions: str,
+    *,
+    resume: str,
+    current_plan: str,
+    session: object = None,
+    task_ids: Sequence[str] = (),
 ) -> Turn:
     """Apply free-form edits to the plan and re-emit it in full."""
     prompt = (
@@ -211,6 +236,7 @@ def revise_plan(
         "## Current Plan in Editor (source of truth)\n"
         f"{current_plan.strip()}\n\n"
         f"Apply these changes to the plan:\n{instructions}\n\n"
+        f"{_sections_rule(task_ids)}"
         "Output the COMPLETE updated plan markdown only — same numbered format, "
         "no preamble."
     )
@@ -235,3 +261,64 @@ def save_task(
     """Write the (possibly edited) task to ``<session>/task.yaml``; keep other keys."""
     data = {**base, "description": description, "acceptance": acceptance}
     return session.write("task.yaml", yaml.safe_dump(data, sort_keys=False, allow_unicode=True))
+
+
+_TASK_PLAN_HEAD = re.compile(r"^##[ \t]+([A-Z]{1,3}\d+[a-z]?)\b.*$", re.MULTILINE)
+PLAN_ALL_FILE = "knowledge/plan-all.md"
+
+
+def task_plan_path(task_id: str) -> str:
+    """Session path of the plan written for one task of a task plan."""
+    return f"knowledge/plan-{task_id}.md"
+
+
+def plan_bundle(index: "PlanIndex") -> str:
+    """The editable text of a task plan: README first, then every task with its criteria."""
+    ids = ", ".join(task.id for task in index.tasks)
+    parts = [
+        f"# Task plan: {len(index.tasks)} tasks ({ids})",
+        "Plan the whole set. The README is the orchestrator's guide; every task follows it.",
+        "",
+        f"# README (`{index.path}`)",
+        index.text.strip(),
+    ]
+    for task in index.tasks:
+        parts += ["", f"# {task.id}", task.description.strip()]
+        if task.acceptance.strip():
+            parts += ["", "Acceptance:", task.acceptance.strip()]
+    return "\n".join(parts) + "\n"
+
+
+def split_task_plans(plan_md: str, task_ids: "Sequence[str]") -> dict[str, str]:
+    """Map each task id to the body of its ``## <id>`` section (first one wins)."""
+    heads = list(_TASK_PLAN_HEAD.finditer(plan_md))
+    plans: dict[str, str] = {}
+    for position, head in enumerate(heads):
+        task_id = head.group(1)
+        if task_id not in task_ids or task_id in plans:
+            continue
+        end = heads[position + 1].start() if position + 1 < len(heads) else len(plan_md)
+        body = plan_md[head.end() : end].strip()
+        if body:
+            plans[task_id] = body
+    return plans
+
+
+def save_task_plans(session: "Session", plan_md: str, task_ids: "Sequence[str]") -> list[str]:
+    """Write ``plan-<id>.md`` per task section; return the ids left without a plan.
+
+    Keyed by task id, not position: strategies reorder tasks by their deps. The
+    whole plan goes to :data:`PLAN_ALL_FILE`, never to ``knowledge/plan.md``, which
+    the direct strategy reuses for task 1. Tasks without a section are planned
+    during the run.
+    """
+    body = strip_plan_header(plan_md)
+    session.write(PLAN_ALL_FILE, f"# Plan\n\n{body}\n")
+    plans = split_task_plans(body, task_ids)
+    for task_id in task_ids:
+        path = task_plan_path(task_id)
+        if task_id in plans:
+            session.write(path, f"# Plan\n\n{plans[task_id]}\n")
+        elif session.read(path).strip():
+            session.write(path, "")
+    return [task_id for task_id in task_ids if task_id not in plans]
