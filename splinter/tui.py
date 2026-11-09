@@ -6571,7 +6571,7 @@ def _resume_prd(session: Session, status: dict[str, Any]) -> int:
         "max_iterations": 5,
         "cowabunga": False,
         "resume": True,
-        "parallel": bool(status.get("parallel", False)),
+        "parallel": status.get("parallel"),
     }
     from splinter.prd_session import prd_session_is_resumable
 
