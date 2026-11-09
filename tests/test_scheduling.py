@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import pytest
+
 from splinter.agents.runner import Task
 from splinter.scheduling import (
     BudgetPool,
     DagScheduler,
     TaskState,
     default_max_concurrency,
+    llm_max_concurrency,
     topo_order,
 )
 
@@ -137,6 +140,11 @@ class TestDefaultMaxConcurrency:
 
     def test_returns_int(self) -> None:
         assert isinstance(default_max_concurrency(), int)
+
+
+def test_llm_concurrency_does_not_follow_the_cpu_count(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("splinter.scheduling.os.cpu_count", lambda: 2)
+    assert llm_max_concurrency() == 16
 
 
 class TestBudgetPool:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -145,3 +146,36 @@ def test_existing_localization_is_reported_as_reused(
         _run(tmp_session, load_ladder(), [], _make_anchors(2))
     assert "localizing against the codebase" not in caplog.text
     assert "reused localization.md · 2 anchor(s), no new localizer call" in caplog.text
+
+
+def test_filter_runs_sixteen_tasks_at_once_on_a_small_machine(
+    monkeypatch: pytest.MonkeyPatch, tmp_session: Session
+) -> None:
+    tasks = _make_tasks(16)
+    together = threading.Barrier(16, timeout=5)
+
+    def _stub_filter(task: Task, ladder: Ladder, *, session: Session) -> str:
+        together.wait()
+        return f"ctx-{task.description}"
+
+    monkeypatch.setattr("splinter.scheduling.os.cpu_count", lambda: 2)
+    monkeypatch.setattr("splinter.pipeline.localize", _stub_localize(_make_anchors(16)))
+    monkeypatch.setattr("splinter.pipeline.filter_task_context", _stub_filter)
+
+    _run(tmp_session, load_ladder(), tasks, _make_anchors(16), max_concurrency=None)
+
+    assert all(task.filtered_context for task in tasks)
+
+
+def test_filter_reports_each_finished_task(
+    monkeypatch: pytest.MonkeyPatch, tmp_session: Session, caplog: pytest.LogCaptureFixture
+) -> None:
+    def _stub_filter(task: Task, ladder: Ladder, *, session: Session) -> str:
+        return f"ctx-{task.description}"
+
+    monkeypatch.setattr("splinter.pipeline.localize", _stub_localize(_make_anchors(2)))
+    monkeypatch.setattr("splinter.pipeline.filter_task_context", _stub_filter)
+    with caplog.at_level("INFO", logger="splinter.pipeline"):
+        _run(tmp_session, load_ladder(), _make_tasks(2), _make_anchors(2))
+    assert "filter: 1/2 done" in caplog.text
+    assert "filter: 2/2 done" in caplog.text

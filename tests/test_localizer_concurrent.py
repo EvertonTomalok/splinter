@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
+import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
+from queue import Empty, Queue
 
 import pytest
 
@@ -15,6 +18,7 @@ from splinter.agents.localizer import CodeAnchor, _localize_items, localize
 from splinter.memory.knowledge import KnowledgeStore
 from splinter.memory.session import Session
 from splinter.models.roster import Ladder
+from splinter.tui_waiting import ActivityHandler, _job
 
 _THREE_STORY_PRD = """# PRD
 
@@ -141,12 +145,12 @@ def test_localize_byte_identical_serial_vs_concurrent(
     monkeypatch.setattr(localizer, "_recall_phase", _fake_recall_phase())
     ladder = _ladder()
 
-    monkeypatch.setattr(localizer, "default_max_concurrency", lambda: 1)
+    monkeypatch.setattr(localizer, "llm_max_concurrency", lambda: 1)
     session_serial = _session(tmp_path, monkeypatch, "serial")
     localize(_THREE_STORY_PRD, session_serial, ladder, repo_path=str(tmp_path))
     serial_bytes = session_serial.read("knowledge/localization.md")
 
-    monkeypatch.setattr(localizer, "default_max_concurrency", lambda: 8)
+    monkeypatch.setattr(localizer, "llm_max_concurrency", lambda: 8)
     session_concurrent = _session(tmp_path, monkeypatch, "concurrent")
     localize(_THREE_STORY_PRD, session_concurrent, ladder, repo_path=str(tmp_path))
     concurrent_bytes = session_concurrent.read("knowledge/localization.md")
@@ -161,7 +165,7 @@ def test_localize_single_writer_no_double_write(
 ) -> None:
     """KnowledgeStore.write_note is called exactly once per localize() call."""
     monkeypatch.setattr(localizer, "_recall_phase", _fake_recall_phase())
-    monkeypatch.setattr(localizer, "default_max_concurrency", lambda: 4)
+    monkeypatch.setattr(localizer, "llm_max_concurrency", lambda: 4)
     ladder = _ladder()
     session = _session(tmp_path, monkeypatch, "single-writer")
 
@@ -184,7 +188,7 @@ def test_localize_deterministic_order_under_jitter(
 ) -> None:
     """First-in-input item finishes last but still appears first in output."""
     monkeypatch.setattr(localizer, "_recall_phase", _fake_recall_phase(delays={"US-001": 0.05}))
-    monkeypatch.setattr(localizer, "default_max_concurrency", lambda: 4)
+    monkeypatch.setattr(localizer, "llm_max_concurrency", lambda: 4)
     ladder = _ladder()
     session = _session(tmp_path, monkeypatch, "jitter")
 
@@ -224,7 +228,7 @@ Add user profile to the app."""
         )
 
     monkeypatch.setattr(localizer, "_recall_phase", fake_recall)
-    monkeypatch.setattr(localizer, "default_max_concurrency", lambda: 2)
+    monkeypatch.setattr(localizer, "llm_max_concurrency", lambda: 2)
     ladder = _ladder()
     session = _session(tmp_path, monkeypatch, "dedup-symbol")
 
@@ -366,3 +370,65 @@ def test_localize_respects_max_concurrency(
 
     assert len(anchors) == 3
     assert max_concurrent == 1, f"max_concurrent was {max_concurrent}, expected 1"
+
+
+def _waiting_screen_messages(run: Callable[[], object]) -> list[str]:
+    """What a waiting screen that owns the calling job shows while ``run`` runs."""
+    owner = object()
+    records: Queue[logging.LogRecord] = Queue()
+    handler = ActivityHandler(owner, records)
+    logger = logging.getLogger("splinter")
+    level = logger.level
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    token = _job.set(owner)
+    try:
+        run()
+    finally:
+        _job.reset(token)
+        logger.removeHandler(handler)
+        logger.setLevel(level)
+    messages: list[str] = []
+    while True:
+        try:
+            messages.append(records.get_nowait().getMessage())
+        except Empty:
+            return messages
+
+
+def test_each_story_of_localize_shows_on_the_waiting_screen(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(localizer, "_recall_phase", _fake_recall_phase())
+    monkeypatch.setattr(localizer, "_run_search_tools", lambda *_a, **_k: "")
+    session = _session(tmp_path, monkeypatch, "visible")
+
+    messages = _waiting_screen_messages(
+        lambda: localize(_THREE_STORY_PRD, session, _ladder(), repo_path=str(tmp_path))
+    )
+
+    for index in range(3):
+        assert f"localize[{index}]: recall via recall-model" in messages
+    assert "localize: 3 item(s), 3 at a time" in messages
+    assert [m for m in messages if m.endswith("/3 done")] == [
+        "localize: 1/3 done",
+        "localize: 2/3 done",
+        "localize: 3/3 done",
+    ]
+
+
+def test_localize_runs_sixteen_stories_at_once_on_a_small_machine(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prd = "# PRD\n\n" + "".join(f"### US-{n:03d}: Story\nDo it.\n\n" for n in range(1, 17))
+    together = threading.Barrier(16, timeout=5)
+
+    def recall(*_args: object, **_kwargs: object) -> str:
+        together.wait()
+        return "[]"
+
+    monkeypatch.setattr("splinter.scheduling.os.cpu_count", lambda: 2)
+    monkeypatch.setattr(localizer, "_recall_phase", recall)
+    monkeypatch.setattr(localizer, "_run_search_tools", lambda *_a, **_k: "")
+
+    localize(prd, _session(tmp_path, monkeypatch, "wide"), _ladder(), repo_path=str(tmp_path))

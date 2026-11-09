@@ -8,7 +8,8 @@ import re
 import shutil
 import subprocess
 from collections.abc import Sequence
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextvars import copy_context
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -19,7 +20,7 @@ from splinter.models.roster import Ladder
 from splinter.obs.agentic import agentic_scope, record_exchange
 from splinter.providers.base import ProviderGapError
 from splinter.providers.dispatch import run_text
-from splinter.scheduling import default_max_concurrency
+from splinter.scheduling import llm_max_concurrency
 from splinter.tools import search as search_tools
 from splinter.tools.project_files import (
     is_project_path,
@@ -677,7 +678,7 @@ def _localize_item(
     repo_path: str = ".",
     session: Session,
 ) -> list[CodeAnchor]:
-    """Opens its own agentic_scope — ContextVars don't cross thread boundaries."""
+    """Opens its own agentic_scope: each item records under its own index."""
     with agentic_scope(session, "locate", index, 0):
         log.info("localize[%d]: running search tools", index)
         search_results = _run_search_tools(item_text, repo_path)
@@ -801,17 +802,25 @@ def localize(
     items = _localize_items(prd_text)
 
     results: list[list[CodeAnchor]] = [[] for _ in items]
-    cap = max_concurrency if max_concurrency else default_max_concurrency()
+    cap = max_concurrency if max_concurrency else llm_max_concurrency()
     cap = max(1, min(len(items), cap))
+    log.info("localize: %d item(s), %d at a time", len(items), cap)
     with ThreadPoolExecutor(max_workers=cap) as ex:
         futs = {
             ex.submit(
-                _localize_item, i, item, ladder, repo_path=repo_path, session=session
+                copy_context().run,
+                _localize_item,
+                i,
+                item,
+                ladder,
+                repo_path=repo_path,
+                session=session,
             ): i
             for i, item in enumerate(items)
         }
-        for fut in futs:
+        for done, fut in enumerate(as_completed(futs), 1):
             results[futs[fut]] = fut.result()
+            log.info("localize: %d/%d done", done, len(items))
 
     # Reassemble by submit index, not completion order, for determinism.
     if len(items) > 1:

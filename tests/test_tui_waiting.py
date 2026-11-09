@@ -138,3 +138,21 @@ def test_board_layout_puts_the_log_beside_the_biggest_board_that_fits(
     from splinter.tui_waiting import board_layout
 
     assert board_layout(*size) == expected
+
+
+def test_second_job_writes_its_first_line_at_full_width(app: PrdSessionApp) -> None:
+    async def drive() -> None:
+        async with app.run_test(size=(140, 40)) as pilot:
+            app._set_busy(True, "generating PRD…")
+            await pilot.pause()
+            app._set_busy(False, "ready")
+            await pilot.pause()
+            app._set_busy(True, "finalizing the PRD with your answers…")
+            await pilot.pause()
+            room = app.query_one(WaitingRoom)
+            room._poll()
+            rows = [strip.text.strip() for strip in room.query_one("#wait-log", RichLog).lines]
+            assert any("finalizing the PRD with your answers" in row for row in rows), rows
+            assert not [row for row in rows if len(row) == 1], rows
+
+    asyncio.run(drive())

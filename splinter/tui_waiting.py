@@ -208,6 +208,7 @@ class WaitingRoom(Vertical, can_focus=True):
         self._last_event = 0.0
         self._last_meta = ""
         self._queue: Queue[logging.LogRecord] = Queue(maxsize=256)
+        self._held: list[Text] = []
         self._handler: ActivityHandler | None = None
         self._levels: dict[str, int] = {}
         self._clock: Timer | None = None
@@ -264,6 +265,7 @@ class WaitingRoom(Vertical, can_focus=True):
             self.display = True
             self._started = self._last_event = time.monotonic()
             self._queue = Queue(maxsize=256)
+            self._held.clear()
             self.query_one("#wait-log", RichLog).clear()
             self._handler = ActivityHandler(self, self._queue)
             for name in ("splinter", "splinter.live"):
@@ -313,10 +315,23 @@ class WaitingRoom(Vertical, can_focus=True):
         color = AMBER if level >= logging.WARNING else INK
         row = Text(f"{elapsed // 60:02}:{elapsed % 60:02}  ", style=MUTED)
         row.append(message, style=color)
-        self.query_one("#wait-log", RichLog).write(row)
+        self._held.append(row)
+        self._flush_rows()
+        if self._held:
+            self.call_after_refresh(self._flush_rows)
         self.query_one("#wait-latest", Static).update(Text(message, style=INK))
 
+    def _flush_rows(self) -> None:
+        """Write the held rows once the log has a width: a row is wrapped when written."""
+        log_view = self.query_one("#wait-log", RichLog)
+        if log_view.scrollable_content_region.width <= 1:
+            return
+        for row in self._held:
+            log_view.write(row)
+        self._held.clear()
+
     def _poll(self) -> None:
+        self._flush_rows()
         for _ in range(64):
             try:
                 record = self._queue.get_nowait()

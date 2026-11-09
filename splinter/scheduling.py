@@ -127,9 +127,17 @@ def topo_order(tasks: list[Task]) -> list[Task] | None:
     return result + no_id
 
 
+_LLM_CONCURRENCY = 16
+
+
 def default_max_concurrency() -> int:
     """CPU-based default: max(1, cpu_count - 1)."""
     return max(1, (os.cpu_count() or 2) - 1)
+
+
+def llm_max_concurrency() -> int:
+    """Calls that wait on a provider: the CPU count does not bound them."""
+    return _LLM_CONCURRENCY
 
 
 @dataclass

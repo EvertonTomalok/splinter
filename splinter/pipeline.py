@@ -6,6 +6,7 @@ import asyncio
 import logging
 import os
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,7 +22,7 @@ from splinter.obs.agentic import agentic_scope
 from splinter.obs.errors import report_obs_error
 from splinter.obs.trace import Trace
 from splinter.providers.base import ProviderGapError
-from splinter.scheduling import default_max_concurrency
+from splinter.scheduling import llm_max_concurrency
 from splinter.strategies.base import AskUserPause, GracefulPause, ManualValidationPause
 from splinter.strategies.registry import available_strategies, get_strategy
 from splinter.task_file import read_task_mapping
@@ -497,16 +498,24 @@ def _localize_and_filter(
             pending.append((i, task, cache_key))
 
     if pending:
-        filter_limit = max_concurrency if max_concurrency else default_max_concurrency()
+        filter_limit = max_concurrency if max_concurrency else llm_max_concurrency()
+        bound = max(1, min(filter_limit, len(pending)))
+        finished = 0
 
         async def _one(t: Task, cache_key: str) -> str:
+            nonlocal finished
             result = await asyncio.to_thread(filter_task_context, t, ladder, session=session)
             if result:
                 session.write(cache_key, result)
+            finished += 1
+            log.info("filter: %d/%d done", finished, len(pending))
             return result
 
         async def _run_all() -> None:
-            sem = asyncio.Semaphore(max(1, min(filter_limit, len(pending))))
+            asyncio.get_running_loop().set_default_executor(
+                ThreadPoolExecutor(max_workers=bound)
+            )
+            sem = asyncio.Semaphore(bound)
 
             async def _guarded(task: Task, cache_key: str) -> str:
                 async with sem:
