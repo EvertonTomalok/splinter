@@ -28,7 +28,7 @@ _US_PATTERN = re.compile(
 )
 
 _DEP_PATTERN = re.compile(
-    r"(?:Depends on|Blocked until)\s+(US-\d+)",
+    r"(?:Depends on|Blocked until)[:*\s]+(US-\d+(?:\s*,\s*US-\d+)*)",
     re.IGNORECASE,
 )
 
@@ -67,7 +67,10 @@ def _parse_one_story(match: re.Match[str]) -> Task:
     _deps_field = re.search(r"deps:\s*\[([^\]]*)\]", block, re.IGNORECASE)
     if _deps_field:
         deps_list = re.findall(r"US-\d+", _deps_field.group(1))
-    deps = list(dict.fromkeys(deps_list + _DEP_PATTERN.findall(block))) or None
+    prose_deps = [
+        dep for found in _DEP_PATTERN.findall(block) for dep in re.findall(r"US-\d+", found)
+    ]
+    deps = list(dict.fromkeys(deps_list + prose_deps)) or None
 
     parallelizable: bool | None = None
     _par_match = re.search(r"parallelizable:\s*(true|false)", block, re.IGNORECASE)

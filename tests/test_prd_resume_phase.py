@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from splinter import tui, tui_run_setup
+from splinter.agents.planner import parse_stories
 from splinter.memory.session import Session
 from splinter.tui import PrdSessionApp
 
@@ -57,3 +58,18 @@ def test_resumed_prd_that_never_ran_still_asks_about_parallel(
 
     assert captured["parallel"] is None
     assert tui_run_setup.should_ask_parallel(prd, "cascade", None)
+
+
+@pytest.mark.parametrize(
+    ("line", "deps"),
+    [
+        ("Depends on: US-001", ["US-001"]),
+        ("Depends on: US-001, US-002", ["US-001", "US-002"]),
+        ("Depends on US-001", ["US-001"]),
+        ("**Depends on:** US-002", ["US-002"]),
+        ("Blocked until US-001", ["US-001"]),
+    ],
+)
+def test_story_dependencies_are_read_in_every_written_form(line: str, deps: list[str]) -> None:
+    prd = f"### US-001: One\nDo it.\n\n### US-002: Two\nDo it.\n\n### US-003: Three\n{line}\n"
+    assert parse_stories(prd)[2].deps == deps
