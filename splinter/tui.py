@@ -5286,7 +5286,7 @@ class PrdSessionApp(App[int | None]):
             self._set_phase("trust")
             self.trusted = True
             self._enter_trusted()
-        elif phase in ("review", "strategy"):
+        elif phase in ("review", "strategy", "run"):
             self._set_phase("review")
             self._show_stories()
             self._show_final_eval_hint()
