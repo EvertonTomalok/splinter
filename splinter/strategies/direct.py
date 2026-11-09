@@ -587,6 +587,7 @@ class DirectStrategy(Strategy):
                 if applied.note:
                     corrections = _merge_guidance(corrections, applied.note)
 
+            session.set_story_tier(task_index + 1, tier)
             live_cmd = session.pop_live_commands(task_no=task_index + 1)
             if live_cmd:
                 log.info("live directive received from TUI — injecting into corrections")

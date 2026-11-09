@@ -28,12 +28,17 @@ def apply_intervention(
 ) -> Applied:
     """The tier the story continues on, and what its next engine should be told."""
     if action == ORCHESTRATOR:
-        return Applied(max(tier, premium_tier), _HANDOVER)
+        return Applied(max(tier, _orchestrator_tier(ladder, premium_tier)), _HANDOVER)
     if action == REROUTE and _has_sibling(tier, ladder):
         model, _variant = resolve_model(tier, ladder)
         report_model_failure(model)
         return Applied(tier)
     return Applied(min(tier + 1, max_tier))
+
+
+def _orchestrator_tier(ladder: Ladder, premium_tier: int) -> int:
+    planner_levels = [row.level for row in ladder.tiers if ladder.planner_model in row.models]
+    return max([premium_tier, *planner_levels])
 
 
 def _has_sibling(tier: int, ladder: Ladder) -> bool:

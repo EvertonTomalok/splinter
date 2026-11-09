@@ -272,8 +272,10 @@ class RunViewBuilder:
         engine_live: bool = False,
     ) -> StoryRow:
         entries = grouped.get(number, [])
+        live_tier = self._text(snap.session.dir / f"tier.task-{number}.txt").strip()
         key = (
             snap.session.dir,
+            live_tier,
             task,
             number == current,
             snap.status.get("state"),
@@ -300,7 +302,11 @@ class RunViewBuilder:
             id=f"T{number}",
             title=(task.title if task else "") or prd_title,
             state=state,
-            tier=f"T{runs[-1].tier}" if runs else (task.tier if task else ""),
+            tier=(
+                f"T{live_tier}"
+                if state == "live" and live_tier
+                else f"T{runs[-1].tier}" if runs else (task.tier if task else "")
+            ),
             model=runs[-1].model if runs else "",
             iterations=task.iters if task else 0,
             cost=sum(entry.cost for entry in entries),

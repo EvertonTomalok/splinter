@@ -83,6 +83,7 @@ from splinter.analyze import (
 from splinter.enums import DEFAULT_RUNNER_MODE, RunnerMode
 from splinter.memory.session import Session, delete_session, list_sessions
 from splinter.obs.events import events_path
+from splinter.orchestrator_chat import OrchestratorAnswer, ask_orchestrator
 from splinter.procreg import current_log_story
 from splinter.question_context import Explanation, explain, explain_model, prd_excerpt
 from splinter.run_graph import RunGraph, StoryBrief, build_graph, plan_excerpt, run_stories
@@ -4011,11 +4012,41 @@ class RunApp(App[int]):
             label = "orchestrator only"
             ids = (self.session.queue_orchestrator_note(text),)
             self.session.append("events.md", f"[ORCHESTRATOR NOTE] {text}")
+            self._deliver_to_orchestrator(ids[0], text, tuple(getattr(view, "stories", ())))
         composer.record(label, text, ids, datetime.now().astimezone())
         self.write_log(f"👤 User → {label}: {text}")
-        self.write_log("queued — applies on the target's next iteration")
+        if composer.target != "orch":
+            self.write_log("queued — applies on the target's next iteration")
         inp.value = ""
         inp.focus()
+
+    def _deliver_to_orchestrator(
+        self, note_id: str, text: str, stories: tuple[StoryRow, ...]
+    ) -> None:
+        from splinter.models.roster import load_ladder
+
+        def _ask() -> None:
+            answer = ask_orchestrator(text, stories, load_ladder())
+            self.call_from_thread(self._orchestrator_answered, note_id, answer)
+
+        self.run_worker(_ask, thread=True, exit_on_error=False, name="orchestrator-note")
+
+    def _orchestrator_answered(self, note_id: str, answer: OrchestratorAnswer) -> None:
+        from splinter import procreg
+
+        self.session.write_receipt(note_id)
+        self.session.append("events.md", f"[ORCHESTRATOR REPLY] {answer.reply}")
+        self.write_log(f"🧠 Orchestrator: {answer.reply}")
+        self.notify(answer.reply or "The orchestrator read your note.")
+        ended = False
+        for number, action in answer.actions:
+            self.session.queue_story_control(number, action)
+            if self._live_now(number):
+                procreg.kill_story(number)
+            else:
+                ended = True
+        if ended and _run_state(self.session) == "RUNNING":
+            self._do_pause_kill()
 
     def action_composer_target(self, target: str) -> None:
         self.query_one(Composer).select_target(target)

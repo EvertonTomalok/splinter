@@ -69,6 +69,10 @@ class Strategy(ABC):
     aliases: list[str] = []
     summary: str = ""
 
+    def run_order(self, tasks: list[Task]) -> list[Task]:
+        """The order tasks run in; their position names the per-task session files."""
+        return list(tasks)
+
     @abstractmethod
     def execute(
         self,

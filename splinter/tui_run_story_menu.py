@@ -35,7 +35,7 @@ INTERVENTIONS: tuple[tuple[str, str, str], ...] = (
 INTERVENTION_IDS = tuple(action for action, _key, _label in INTERVENTIONS)
 ACTIVE_STATES = ("live", "fail", "paused", "asked")
 _CONSEQUENCE = {
-    "orchestrator": "The orchestrator finishes it in the same worktree, on the premium tier.",
+    "orchestrator": "The orchestrator finishes it in the same worktree, on the planner's tier.",
     "reroute": "It continues on the next model of this tier. That model is skipped for a while.",
     "tier_up": "It continues one tier up, with a fresh session.",
 }

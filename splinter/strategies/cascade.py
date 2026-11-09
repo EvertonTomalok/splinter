@@ -586,6 +586,9 @@ class CascadeStrategy(DirectStrategy):
 
         return result, outcome.passed
 
+    def run_order(self, tasks: list[Task]) -> list[Task]:
+        return self._topo_sort(tasks)
+
     @staticmethod
     def _topo_sort(tasks: list[Task]) -> list[Task]:
         """Kahn's algorithm over task.deps. Cycle → warn + fallback to original order."""

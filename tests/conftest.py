@@ -27,6 +27,15 @@ def _isolate_ui_prefs(
 
 
 @pytest.fixture(autouse=True)
+def _block_orchestrator_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A note sent from the composer must never reach a real model."""
+    monkeypatch.setattr(
+        "splinter.orchestrator_chat.run_text",
+        lambda *args, **kwargs: '{"reply": "ok", "actions": []}',
+    )
+
+
+@pytest.fixture(autouse=True)
 def _mock_cursor_list_models(monkeypatch: pytest.MonkeyPatch) -> None:
     """Prevent tests from spawning ``agent --list-models`` subprocess."""
     from splinter.providers import cursor as _cursor

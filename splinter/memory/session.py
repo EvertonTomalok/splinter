@@ -518,6 +518,10 @@ class Session:
         self._ensure_dir()
         (self.dir / f"control.task-{task_no}.txt").write_text(action)
 
+    def set_story_tier(self, task_no: int, tier: int) -> None:
+        """Note the tier a story runs on now, before its iteration has a result."""
+        (self.dir / f"tier.task-{task_no}.txt").write_text(str(tier))
+
     def take_story_control(self, task_no: int) -> str | None:
         """The story's pending decision, once; ``None`` when there is none."""
         path = self.dir / f"control.task-{task_no}.txt"

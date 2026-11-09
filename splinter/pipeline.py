@@ -452,6 +452,7 @@ def _localize_and_filter(
     resume: bool,
     resume_round: int,
     max_concurrency: int | None = None,
+    run_order: list[Task] | None = None,
 ) -> tuple[str, list[CodeAnchor]]:
     """Run localization then per-task context filtering. Mutates task.filtered_context."""
     localization = ""
@@ -539,7 +540,7 @@ def _localize_and_filter(
 
         asyncio.run(_run_all())
 
-    for i, task in enumerate(tasks):
+    for i, task in enumerate(run_order or tasks):
         loc_key = f"knowledge/localization-{i + 1}.md"
         if resume and session.read(loc_key).strip():
             log.info("resume: reusing per-task localization for task %d", i + 1)
@@ -821,7 +822,15 @@ def run_pipeline(
             )
         elif not rs.from_final_eval:
             localization, anchors = _localize_and_filter(
-                session, ladder, prd_text, tasks, single_shot, resume, rs.round, max_concurrency
+                session,
+                ladder,
+                prd_text,
+                tasks,
+                single_shot,
+                resume,
+                rs.round,
+                max_concurrency,
+                run_order=strat.run_order(tasks),
             )
 
         _resolve_gate(session, ladder, tasks)

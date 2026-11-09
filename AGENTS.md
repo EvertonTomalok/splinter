@@ -472,7 +472,7 @@ has three targets and shows the real delivery state of every message:
 |---|---|
 | `story` | `Session.queue_live_command(text, task_no)` → `pending_directive.task-N.txt` (the shared queue is `pending_directive.txt`) |
 | `all agents` | `Session.broadcast_live_command(text, task_nos)` → one directive per task |
-| `orchestrator only` | `Session.queue_orchestrator_note(text)` → `knowledge/orchestrator-notes.md` |
+| `orchestrator only` | `Session.queue_orchestrator_note(text)` → `knowledge/orchestrator-notes.md`, and the planner model answers at once (`orchestrator_chat.py`): its reply lands in the log and it can hand stories over, reroute them or raise their tier |
 
 Each directive carries an id; the pipeline writes a receipt under `receipts/`
 when it drains the queue, and the composer flips `queued` → `delivered` from
@@ -486,7 +486,7 @@ notes left over when the run ends are marked `(run ended)`.
 ### Intervening on one story
 
 A click on a running or failed story (rail, graph, banner) offers three interventions,
-each confirmed: send to the orchestrator (premium tier, same worktree), route to the next
+each confirmed: send to the orchestrator (the tier holding the planner model, same worktree), route to the next
 model of the tier, or raise the tier. `direct`/`cascade` only. The story's engine stops
 alone (`procreg.kill_story`), the others keep running, and no iteration is burned; the
 choice waits in `control.task-N.txt`. A story that already ended needs a restart, which

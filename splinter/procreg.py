@@ -148,6 +148,12 @@ def _kill(proc: subprocess.Popen[str]) -> None:
             pass
 
 
+def _child_env(env: dict[str, str] | None, cwd: object) -> dict[str, str] | None:
+    if cwd is None:
+        return env
+    return {**(os.environ if env is None else env), "PWD": str(cwd)}
+
+
 def run_subprocess(
     cmd: list[str],
     *,
@@ -186,7 +192,7 @@ def run_subprocess(
         stderr=subprocess.PIPE,
         text=True,
         cwd=cwd,
-        env=env,
+        env=_child_env(env, cwd),
         start_new_session=True,  # own process group so killpg reaches subagents
     )
     with _lock:
