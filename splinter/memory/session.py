@@ -513,6 +513,21 @@ class Session:
         with _RUN_LIVE_LOCK:
             p.unlink(missing_ok=True)
 
+    def queue_story_control(self, task_no: int, action: str) -> None:
+        """Ask one story to change course on its next step (see ``strategies.intervention``)."""
+        self._ensure_dir()
+        (self.dir / f"control.task-{task_no}.txt").write_text(action)
+
+    def take_story_control(self, task_no: int) -> str | None:
+        """The story's pending decision, once; ``None`` when there is none."""
+        path = self.dir / f"control.task-{task_no}.txt"
+        try:
+            action = path.read_text().strip()
+            path.unlink()
+        except OSError:
+            return None
+        return action or None
+
     def set_worktree(self, task_id: str, path: str, branch: str) -> None:
         """Persist worktree path+branch for task_id so resume can reattach.
 

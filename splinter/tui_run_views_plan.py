@@ -19,6 +19,7 @@ from rich.markup import escape
 from rich.text import Text
 
 from splinter.tui_run_palette import DIM, INK, LIME, MUTED
+from splinter.tui_run_text import _ID_PREFIX
 from splinter.tui_run_views import ViewContext
 
 _STORY_RE = re.compile(r"^#{2,4}\s+(US-\d+)\s*:\s*(.+?)\s*$", re.MULTILINE)
@@ -84,8 +85,11 @@ def localized_files(content: str) -> list[tuple[str, str, str]]:
 
 
 def _story_rule(ctx: ViewContext, number: int, extra: str = "") -> str:
-    head = f"[@click=app.select_story({number})][b {LIME}]T{number}[/][/]"
-    title = escape(_clip(_title(ctx, number), 70))
+    full = _title(ctx, number)
+    match = _ID_PREFIX.match(full)
+    ident, rest = (match.group(1), match.group(2).strip()) if match else (f"T{number}", full)
+    head = f"[@click=app.select_story({number})][b {LIME}]{escape(ident)}[/][/]"
+    title = escape(_clip(rest, 70))
     return f"{head} [{INK}]{title}[/]" + (f"  [{DIM}]{escape(extra)}[/]" if extra else "")
 
 

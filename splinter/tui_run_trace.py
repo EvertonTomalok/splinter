@@ -18,20 +18,24 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
-from textual.widgets import RichLog, TextArea, Tree
+from textual.widgets import Input, RichLog, TextArea, Tree
+from textual.widgets.text_area import Selection
 from textual.widgets.tree import TreeNode
 
-from splinter.run_trace import TraceNode
-from splinter.tui_blockword import BlockWord
+from splinter.run_trace import TraceHit, TraceNode, search_trace
 from splinter.tui_run_chrome import key_markup
 from splinter.tui_run_palette import BG, DIM, INK, LINE, LINE2, MUTED, Ink
 
 #: Rows the live log may take; it shrinks to the rows it has.
 LOG_ROWS = 6
 _KEYS = (
+    ("ctrl+f", "find", "screen.find"),
+    ("n", "next match", "screen.next_hit"),
+    ("N", "previous", "screen.previous_hit"),
     ("enter", "open", "screen.open_node"),
     ("e", "expand all", "screen.expand_all"),
     ("c", "collapse", "screen.collapse_all"),
+    ("y", "copy", "screen.copy_text"),
     ("r", "reload", "screen.reload"),
     ("esc", "back to the run", "screen.close"),
 )
@@ -41,13 +45,14 @@ def _plain(label: object) -> str:
     return label.plain if isinstance(label, Text) else Text.from_markup(str(label)).plain
 
 
-def _fill(parent: TreeNode[str], node: TraceNode) -> None:
+def _fill(parent: TreeNode[str], node: TraceNode, index: dict[int, TreeNode[str]]) -> None:
     for child in node.children:
         if child.children:
             branch = parent.add(child.label, data=child.detail, expand=child.expanded)
-            _fill(branch, child)
+            _fill(branch, child, index)
+            index[id(child)] = branch
         else:
-            parent.add_leaf(child.label, data=child.detail)
+            index[id(child)] = parent.add_leaf(child.label, data=child.detail)
 
 
 class TraceTree(Tree[str]):
@@ -61,6 +66,11 @@ class TraceScreen(Screen[None]):
     """The run as a navigable tree, the selected node's text, and the live log."""
 
     BINDINGS = [
+        Binding("ctrl+f", "find", "Find", priority=True),
+        Binding("f3", "next_hit", "Next", show=False, priority=True),
+        Binding("n", "next_hit", "Next", show=False),
+        Binding("N", "previous_hit", "Previous", show=False),
+        Binding("y", "copy_text", "Copy", show=False),
         Binding("escape", "close", "Back"),
         Binding("L", "close", "Back", show=False),
         Binding("r", "reload", "Reload"),
@@ -73,11 +83,21 @@ class TraceScreen(Screen[None]):
     TraceScreen #trace-top {{ height: 2; padding: 0 3; border-bottom: solid {LINE}; }}
     TraceScreen #trace-crumbs {{ width: 1fr; height: 1; }}
     TraceScreen #trace-stats {{ width: auto; height: 1; }}
-    TraceScreen #trace-word {{ margin: 1 3 0 3; }}
-    TraceScreen #trace-sentence {{ height: 1; margin: 1 3 1 3; }}
+    TraceScreen #trace-search {{ height: 1; padding: 0 3; margin: 1 0; }}
+    TraceScreen #trace-search-key {{ width: auto; height: 1; margin-right: 2; }}
+    TraceScreen #trace-find {{
+        width: 1fr;
+        height: 1;
+        border: none;
+        padding: 0 1;
+        background: {LINE};
+        color: {INK};
+    }}
+    TraceScreen #trace-find:focus {{ border: none; background: {LINE2}; }}
+    TraceScreen #trace-count {{ width: auto; height: 1; margin-left: 2; }}
     TraceScreen #trace-body {{ height: 1fr; padding: 0 3; border-top: solid {LINE}; }}
     TraceScreen #trace-tree {{
-        width: 42%;
+        width: 38%;
         height: 1fr;
         padding: 1 1 0 0;
         background: {BG};
@@ -133,17 +153,22 @@ class TraceScreen(Screen[None]):
         self._crumbs = crumbs
         self._stats = stats
         self._log_rows = 0
+        self._index: dict[int, TreeNode[str]] = {}
+        self._hits: list[TraceHit] = []
+        self._hit = -1
+        self._query = ""
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="trace-top"):
             yield Ink(self._crumbs, id="trace-crumbs")
             yield Ink(self._stats, id="trace-stats")
-        yield BlockWord(word="TRACE", id="trace-word")
-        yield Ink(
-            f"[{INK}]What happened in this run, story by story.[/] "
-            f"[{MUTED}]Pick a line to read it whole.[/]",
-            id="trace-sentence",
-        )
+        with Horizontal(id="trace-search"):
+            yield Ink(key_markup("ctrl+f", "find", "screen.find"), id="trace-search-key")
+            yield Input(
+                placeholder="find in the whole run: PRD, plans, iterations, logs",
+                id="trace-find",
+            )
+            yield Ink(f"[{DIM}]type to search everything[/]", id="trace-count")
         with Horizontal(id="trace-body"):
             tree = TraceTree(self._root.label, data=self._root.detail, id="trace-tree")
             tree.show_root = False
@@ -172,7 +197,8 @@ class TraceScreen(Screen[None]):
         tree.clear()
         tree.root.set_label(root.label)
         tree.root.data = root.detail
-        _fill(tree.root, root)
+        self._index = {}
+        _fill(tree.root, root, self._index)
         tree.root.expand()
         first = tree.root.children[0] if tree.root.children else None
         if first is not None:
@@ -207,7 +233,67 @@ class TraceScreen(Screen[None]):
         crumbs = f" [{DIM}]›[/] ".join(f"[{MUTED}]{part}[/]" for part in reversed(path))
         self.query_one("#trace-path", Ink).update(crumbs)
         text = node.data or "\n".join(_plain(child.label) for child in node.children)
-        self.query_one("#trace-detail", TextArea).load_text(text or "nothing recorded yet")
+        area = self.query_one("#trace-detail", TextArea)
+        shown = text or "nothing recorded yet"
+        if area.text != shown:
+            area.load_text(shown)
+
+    def action_find(self) -> None:
+        field = self.query_one("#trace-find", Input)
+        field.focus()
+        field.select_all()
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        self._search(event.value)
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        event.stop()
+        self.action_next_hit()
+
+    def _search(self, query: str) -> None:
+        self._query = query.strip()
+        self._hits = search_trace(self._root, query)
+        self._hit = -1
+        if self._hits:
+            self._go(0)
+            return
+        word = "no match" if len(self._query) >= 2 else "type to search everything"
+        self.query_one("#trace-count", Ink).update(f"[{DIM}]{word}[/]")
+
+    def _go(self, index: int) -> None:
+        self._hit = index % len(self._hits)
+        hit = self._hits[self._hit]
+        target = self._index.get(id(hit.node))
+        if target is None:
+            return
+        walk = target.parent
+        while walk is not None:
+            walk.expand()
+            walk = walk.parent
+        tree: Tree[str] = self.query_one("#trace-tree", Tree)
+        tree.move_cursor(target)
+        self._show(target)
+        area = self.query_one("#trace-detail", TextArea)
+        end = (hit.line, hit.column + len(self._query))
+        area.selection = Selection((hit.line, hit.column), end)
+        area.scroll_cursor_visible(center=True)
+        places = len({id(item.node) for item in self._hits})
+        self.query_one("#trace-count", Ink).update(
+            f"[b {INK}]{self._hit + 1}/{len(self._hits)}[/] [{MUTED}]in {places} places[/]"
+        )
+
+    def action_next_hit(self) -> None:
+        if self._hits:
+            self._go(self._hit + 1)
+
+    def action_previous_hit(self) -> None:
+        if self._hits:
+            self._go(self._hit - 1)
+
+    def action_copy_text(self) -> None:
+        area = self.query_one("#trace-detail", TextArea)
+        self.app.copy_to_clipboard(area.selected_text or area.text)
+        self.app.notify("Copied")
 
     def action_open_node(self) -> None:
         tree: Tree[str] = self.query_one("#trace-tree", Tree)
@@ -216,6 +302,11 @@ class TraceScreen(Screen[None]):
             self._show(tree.cursor_node)
 
     def action_close(self) -> None:
+        field = self.query_one("#trace-find", Input)
+        if field.has_focus or field.value:
+            field.value = ""
+            self.query_one("#trace-tree", Tree).focus()
+            return
         self.dismiss(None)
 
     def action_reload(self) -> None:
@@ -223,6 +314,7 @@ class TraceScreen(Screen[None]):
         if callable(build):
             self._root = build()
             self._load(self._root)
+            self._search(self.query_one("#trace-find", Input).value)
 
     def action_expand_all(self) -> None:
         self.query_one("#trace-tree", Tree).root.expand_all()

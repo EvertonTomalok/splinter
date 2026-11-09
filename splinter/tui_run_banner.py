@@ -177,6 +177,9 @@ class NeedsYouBanner(Vertical):
             Input(id="nb-guidance", placeholder="guidance for the retry"),
             Horizontal(
                 Button("retry with guidance", id="nb-retry", classes="nb-go"),
+                Button("send to orchestrator", id="nb-orchestrator"),
+                Button("route next model", id="nb-reroute"),
+                Button("raise tier", id="nb-tier_up"),
                 Button("copy worktree path", id="nb-open"),
                 classes="nb-row",
             ),
@@ -202,6 +205,8 @@ class NeedsYouBanner(Vertical):
             self._choose(("retry", self._text("nb-guidance")))
         elif button_id == "nb-open":
             self._choose(("open_worktree", ""))
+        elif button_id in ("nb-orchestrator", "nb-reroute", "nb-tier_up"):
+            self._choose((button_id.removeprefix("nb-"), self._text("nb-guidance")))
 
     def _asked_choice(self, button_id: str) -> None:
         text = self._text("nb-answer")

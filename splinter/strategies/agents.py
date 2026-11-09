@@ -202,8 +202,9 @@ class AgentsStrategy(DirectStrategy):
     def _integration(
         self, session: Session, slug: str, saved: dict[str, dict[str, str]]
     ) -> WorktreeHandle:
-        attached = reattach_worktree(f"{slug}-int") if saved.get(f"{slug}-int") else None
-        integration = attached or create_integration_worktree(slug)
+        name = f"{slug}-int"
+        attached = reattach_worktree(name, session_id=session.id) if saved.get(name) else None
+        integration = attached or create_integration_worktree(slug, session_id=session.id)
         session.set_worktree(f"{slug}-int", str(integration.path), integration.branch)
         return integration
 
@@ -334,8 +335,14 @@ class AgentsStrategy(DirectStrategy):
     def _worktree(self, brief: Brief, session: Session, ctx: BriefCtx) -> WorktreeHandle:
         with ctx.git_lock:
             task_id = f"{ctx.slug}-{brief.id}"
-            attached = reattach_worktree(task_id) if ctx.worktrees.get(brief.id) else None
-            wt = attached or create_worktree(task_id, base_ref=ctx.integration.branch)
+            attached = (
+                reattach_worktree(task_id, session_id=session.id)
+                if ctx.worktrees.get(brief.id)
+                else None
+            )
+            wt = attached or create_worktree(
+                task_id, base_ref=ctx.integration.branch, session_id=session.id
+            )
         session.set_worktree(brief.id, str(wt.path), wt.branch)
         return wt
 

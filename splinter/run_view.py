@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
@@ -13,6 +14,7 @@ from splinter.memory.session import Session
 from splinter.models.roster import Ladder, load_ladder
 from splinter.obs.event_reader import RunEntryReader
 from splinter.obs.trace import RunEntry
+from splinter.run_graph import run_stories
 from splinter.run_snapshot import (
     Snapshot,
     TaskRow,
@@ -30,11 +32,13 @@ from splinter.run_view_rows import (
     iteration_rows,
     ladder_rungs,
     parse_time,
+    running_state,
     stage,
     story_state,
     zero_counts,
 )
 
+_RUN_LIVE = re.compile(r"run_live\.task-(\d+)\.json")
 StoryState = Literal["pass", "fail", "paused", "live", "queued", "asked"]
 Stage = Literal["plan", "run", "gate", "eval", "done", "wait"]
 
@@ -223,8 +227,18 @@ class RunViewBuilder:
         indexed = {row.number: row for row in rows}
         current = current_task_no(snap, groups)
         grouped = entries_by_task(snap.entries)
+        titles = self._prd_titles(snap)
+        engines = _stories_with_engine(snap.session.dir)
         stories = tuple(
-            self._story(indexed.get(number), number, current, snap, grouped)
+            self._story(
+                indexed.get(number),
+                number,
+                current,
+                snap,
+                grouped,
+                titles.get(number, ""),
+                number in engines,
+            )
             for number in range(1, total + 1)
         )
         iterations = self._iterations(snap, ladder, total, groups, grouped)
@@ -254,9 +268,20 @@ class RunViewBuilder:
         current: int | None,
         snap: Snapshot,
         grouped: dict[int, list[RunEntry]],
+        prd_title: str = "",
+        engine_live: bool = False,
     ) -> StoryRow:
         entries = grouped.get(number, [])
-        key = (snap.session.dir, task, number == current, snap.status.get("state"), tuple(entries))
+        key = (
+            snap.session.dir,
+            task,
+            number == current,
+            snap.status.get("state"),
+            tuple(entries),
+            prd_title,
+            engine_live,
+            snap.state,
+        )
         if self._story_keys.get(number) == key:
             return self._stories[number]
         runs = [entry for entry in entries if entry.role == "run"]
@@ -267,10 +292,13 @@ class RunViewBuilder:
             current,
             snap,
         )
+        state = running_state(
+            state, task.verdict if task else "", task.iters if task else 0, engine_live, snap
+        )
         row = StoryRow(
             number=number,
             id=f"T{number}",
-            title=task.title if task else "",
+            title=(task.title if task else "") or prd_title,
             state=state,
             tier=f"T{runs[-1].tier}" if runs else (task.tier if task else ""),
             model=runs[-1].model if runs else "",
@@ -282,6 +310,11 @@ class RunViewBuilder:
         self._story_keys[number] = key
         self._stories[number] = row
         return row
+
+    def _prd_titles(self, snap: Snapshot) -> dict[int, str]:
+        text = self._text(snap.session.dir / "prd.md")
+        strategy = str(snap.status.get("strategy") or "")
+        return {story.number: story.title for story in run_stories(text, strategy)}
 
     def _groups_for(self, snap: Snapshot) -> list[tuple[int, str, list[tuple[int, str, str]]]]:
         key = self._groups_key_for(snap.session)
@@ -379,6 +412,11 @@ def _ladder_key(ladder: Ladder | None) -> tuple[object, ...]:
             for tier in ladder.tiers
         ),
     )
+
+
+def _stories_with_engine(session_dir: Path) -> frozenset[int]:
+    found = (_RUN_LIVE.fullmatch(path.name) for path in session_dir.glob("run_live.task-*.json"))
+    return frozenset(int(match.group(1)) for match in found if match)
 
 
 def build_run_view(

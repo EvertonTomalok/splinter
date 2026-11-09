@@ -43,16 +43,16 @@ def _text(session: Session, name: str, story: int | None = None) -> str:
 
 def test_files_lists_every_story_before_the_first_one_runs(session: Session) -> None:
     out = _text(session, "files")
-    assert "T1 US-001 Charge API  1 file" in out
+    assert "US-001 Charge API  1 file" in out
     assert "api/charge.go" in out
     assert "api/charge.go —" not in out
 
 
 def test_filters_summarise_every_story_and_open_one(session: Session) -> None:
     out = _text(session, "filter")
-    assert "T1 US-001 Charge API" in out
+    assert "US-001 Charge API" in out
     assert "Charges go through one adapter." in out
-    assert "T2 US-002 Refunds" in out
+    assert "US-002 Refunds" in out
     detail = _text(session, "filter", story=1)
     assert "knowledge/filter-1.md" in detail
     assert "api/charge.go" in detail

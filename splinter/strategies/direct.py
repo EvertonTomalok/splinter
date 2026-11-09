@@ -26,6 +26,7 @@ import logging
 import threading
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass
+from itertools import count
 from typing import Any
 
 from splinter import prd_session
@@ -38,11 +39,13 @@ from splinter.models.roster import Ladder
 from splinter.obs.agentic import agentic_scope, record_exchange
 from splinter.obs.trace import Trace
 from splinter.plan_session import task_plan_path
+from splinter.procreg import StoryInterrupted, clear_story_interrupt
 from splinter.providers.dispatch import run_text
 from splinter.scheduling import default_max_concurrency
 from splinter.skills import resolve_eval_skill
 from splinter.strategies.base import AskUserPause, EvalVerdict, GracefulPause, Strategy
 from splinter.strategies.fanout import run_bounded
+from splinter.strategies.intervention import apply_intervention
 from splinter.strategies.registry import register
 from splinter.strategies.stages import (
     EvalStage,
@@ -560,8 +563,26 @@ class DirectStrategy(Strategy):
         resume_stage = checkpoint.stage if checkpoint is not None else ""
         tier_tries = 0
 
-        for iteration in range(start_iteration, max_iterations + 1):
+        iteration_limit = max_iterations
+        for iteration in count(start_iteration):
+            if iteration > iteration_limit:
+                break
             tier_tries += 1
+
+            clear_story_interrupt(task_index + 1)
+            control = session.take_story_control(task_index + 1)
+            if control:
+                applied = apply_intervention(
+                    control, tier, ladder, premium_tier=PREMIUM_TIER, max_tier=MAX_TIER
+                )
+                log.info("story %d: %s → T%d", task_index + 1, control, applied.tier)
+                session.append(
+                    "loop.md",
+                    f"## Intervention (iter {iteration}): {control} → T{applied.tier}\n\n",
+                )
+                tier, tier_tries, oc_session, eval_session = applied.tier, 1, None, None
+                if applied.note:
+                    corrections = _merge_guidance(corrections, applied.note)
 
             live_cmd = session.pop_live_commands(task_no=task_index + 1)
             if live_cmd:
@@ -638,7 +659,12 @@ class DirectStrategy(Strategy):
                 if checkpoint.verdict is not None:
                     ctx.verdict = _deserialize_verdict(checkpoint.verdict)
 
-            chain.handle(ctx)
+            try:
+                chain.handle(ctx)
+            except StoryInterrupted:
+                log.info("story %d: engine stopped by the user", task_index + 1)
+                iteration_limit += 1
+                continue
 
             last_result = ctx.run_result
             oc_session = ctx.oc_session

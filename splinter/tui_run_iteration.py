@@ -22,7 +22,7 @@ from splinter.tui_run_palette import AMBER, DIM, INK, LIME, LINE, MUTED, RED, VE
 MAX_ACTIONS = 14
 _KIND_W = 9
 _TOKEN = re.compile(r"'?(input|output)'?\s*:\s*(\d+)")
-_WORKTREE = re.compile(r"^.*?/\.splinter/worktrees/[^/]+/")
+_WORKTREE = re.compile(r"^.*?/\.splinter/worktrees/(?:ses_[^/]+/)?[^/]+/")
 _META = re.compile(r"^-\s*(model|cost|tokens):\s*(.+)$", re.IGNORECASE)
 
 

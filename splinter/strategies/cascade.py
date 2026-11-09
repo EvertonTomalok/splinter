@@ -472,7 +472,7 @@ class CascadeStrategy(DirectStrategy):
                     log.info("parallel: reattached worktree for %s", task.id)
                 else:
                     try:
-                        handle = create_worktree(task.id)
+                        handle = create_worktree(task.id, session_id=session.id)
                         session.set_worktree(task.id, str(handle.path), handle.branch)
                         log.info("parallel: created worktree for %s at %s", task.id, handle.path)
                     except Exception as exc:

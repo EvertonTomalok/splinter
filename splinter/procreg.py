@@ -15,7 +15,8 @@ import signal
 import subprocess
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
@@ -23,6 +24,9 @@ _lock = threading.Lock()
 _active: set[subprocess.Popen[str]] = set()
 _stop_event = threading.Event()
 _WATCHDOG_TICK_S = 1.0
+_story: contextvars.ContextVar[int | None] = contextvars.ContextVar("procreg_story", default=None)
+_by_story: dict[int, set[subprocess.Popen[str]]] = {}
+_interrupted: set[int] = set()
 
 
 def request_stop() -> None:
@@ -45,6 +49,44 @@ class CompletedProcess:
     returncode: int
     stdout: str
     stderr: str
+
+
+class StoryInterrupted(RuntimeError):
+    """A person stopped this story's engine to change how the story continues."""
+
+    def __init__(self, story: int) -> None:
+        self.story = story
+        super().__init__(f"story {story} was interrupted")
+
+
+@contextmanager
+def story_scope(story: int) -> Iterator[None]:
+    """Every child started inside belongs to ``story``, so it can be stopped alone."""
+    token = _story.set(story)
+    try:
+        yield
+    finally:
+        _story.reset(token)
+
+
+def kill_story(story: int) -> int:
+    """Stop the engines of one story and refuse new ones until the story takes note."""
+    with _lock:
+        _interrupted.add(story)
+        procs = list(_by_story.get(story, ()))
+    for proc in procs:
+        _kill(proc)
+    return len(procs)
+
+
+def story_interrupted(story: int) -> bool:
+    with _lock:
+        return story in _interrupted
+
+
+def clear_story_interrupt(story: int) -> None:
+    with _lock:
+        _interrupted.discard(story)
 
 
 class IdleTimeoutError(RuntimeError):
@@ -105,6 +147,9 @@ def run_subprocess(
     """
     if _shutting_down.is_set():
         raise ShuttingDownError(f"splinter is exiting: not starting {cmd[0]}")
+    owner = _story.get()
+    if owner is not None and story_interrupted(owner):
+        raise StoryInterrupted(owner)
     if env is not None and "SPLINTER_LAUNCH_PATH" in env:
         import shutil
 
@@ -124,6 +169,8 @@ def run_subprocess(
     )
     with _lock:
         _active.add(proc)
+        if owner is not None:
+            _by_story.setdefault(owner, set()).add(proc)
     try:
         if on_line is None:
             stdout, stderr = proc.communicate(timeout=timeout)
@@ -144,6 +191,8 @@ def run_subprocess(
     finally:
         with _lock:
             _active.discard(proc)
+            if owner is not None:
+                _by_story.get(owner, set()).discard(proc)
     return CompletedProcess(returncode=proc.returncode, stdout=stdout, stderr=stderr)
 
 

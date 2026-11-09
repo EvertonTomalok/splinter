@@ -78,6 +78,10 @@ splinter/
   tui_run_banner.py   # Needs-you banner (answer, validate, retry with guidance)
   tui_run_stop.py     # Stop bar and the stop modal
   tui_run_motion.py   # Motion clock (pulses, caret) and the toast tracker
+  tui_run_graph.py    # G: node map of the stories, details beside it
+  tui_run_graph_map.py # The node map drawn on a character grid
+  tui_run_story_menu.py # What a click on a story offers (plan, logs, iterations…)
+  run_graph.py        # Stories as a graph: run order, waves, dependencies
   tui_questions_one.py # Question index in "one at a time" mode
   tui_prd_outline.py  # PRD questions screen: draft outline, nav row, spend line
   memory/
@@ -267,7 +271,10 @@ brief effort → `effort_map` start tier → that tier's ordered models; the eng
 CLI comes from the model prefix) inside
 its own git worktree forked from a dedicated integration branch
 (`splinter/<slug>-int`); splinter commits, validates and merges each brief back
-with `--no-ff`. Flow per brief:
+with `--no-ff`. Worktrees and branches belong to one session
+(`.splinter/worktrees/<session>/<task>`, `splinter/wt/<session>/<task>`), so several
+splinters can run in one repo; merges into the main checkout take a lock across
+processes. The old shared layout is only a fallback for resuming older runs. Flow per brief:
 
 1. **Refine** — LLM turns tasks into small briefs (goal, files, sketch,
    acceptance, deps, effort — rated per brief, empty takes the task's) grouped into waves
@@ -434,8 +441,7 @@ and bar is clickable and changes the screen state.
 | `tier` | `7` / `t` | the ladder, its models and their breakers |
 
 Other keys: `←`/`→` previous/next story, `i` instruct (focus the composer), `o` open
-the latest iteration, `/` find a story by id or title, `l` logs, `L` the full-screen
-trace (needs you / now / done / queued tree, selected text, live log), `g` back to
+the latest iteration, `/` find a story by id or title, `l` logs, `L` the full-screen trace (start, context, needs you / now / done / queued, full log; `ctrl+f` searches all of it), `G` the node map of the stories, `g` back to
 the live story, `b` toggle spend by cost/time, `r` reload the diff, `s` stop,
 `ctrl+k` cowabunga, `q` quit (or stop while the run lives). A view reads session
 files only — no view calls a model.
@@ -472,6 +478,15 @@ those receipts (`Session.receipt_exists`, `Session.directive_pending`).
 section. A note is applied when every consumer required by the strategy read it
 (`direct`: replan, final eval — `agents`: refine, acceptance, final eval);
 notes left over when the run ends are marked `(run ended)`.
+
+### Intervening on one story
+
+A click on a running or failed story (rail, graph, banner) offers three interventions,
+each confirmed: send to the orchestrator (premium tier, same worktree), route to the next
+model of the tier, or raise the tier. `direct`/`cascade` only. The story's engine stops
+alone (`procreg.kill_story`), the others keep running, and no iteration is burned; the
+choice waits in `control.task-N.txt`. A story that already ended needs a restart, which
+the confirmation names when other stories are running.
 
 ### Needs you and stop
 

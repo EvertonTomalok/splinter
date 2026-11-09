@@ -7,7 +7,7 @@ import threading
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import Any, Iterator
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 
@@ -178,7 +178,7 @@ class TestHappyPath:
         assert merge_calls[1].args[0].task_id == "us-101-int"
         assert len(merge_calls) == 2
         patches["create_worktree"].assert_called_once_with(
-            "us-101-q1", base_ref="splinter/us-101-int"
+            "us-101-q1", base_ref="splinter/us-101-int", session_id=ANY
         )
         checkpoint = (tmp_path / "agents-run" / "checkpoint.json").read_text()
         assert "q1" in checkpoint
@@ -371,7 +371,7 @@ def test_resume_reuses_integration_and_pending_worktree(tmp_path: Path) -> None:
         path.mkdir()
         session.set_worktree(ident, str(path), f"splinter/{ident}")
     with _mocked(tmp_path) as mocks:
-        mocks["reattach_worktree"].side_effect = lambda ident: WorktreeHandle(
+        mocks["reattach_worktree"].side_effect = lambda ident, **_kw: WorktreeHandle(
             tmp_path / ident, f"splinter/{ident}", ident
         )
         AgentsStrategy().execute(_tasks(), session, _ladder(), resume=True)
@@ -752,9 +752,11 @@ class TestResumeByBranch:
         with _mocked(tmp_path) as mocks:
             AgentsStrategy().execute(_tasks(), session, _ladder(), resume=True)
         mocks["create_worktree"].assert_called_once_with(
-            "us-101-q1", base_ref="splinter/us-101-int"
+            "us-101-q1", base_ref="splinter/us-101-int", session_id=ANY
         )
-        mocks["create_integration_worktree"].assert_called_once_with("us-101")
+        mocks["create_integration_worktree"].assert_called_once()
+        assert mocks["create_integration_worktree"].call_args.args == ("us-101",)
+        assert mocks["create_integration_worktree"].call_args.kwargs["session_id"]
         reattached = [call.args[0] for call in mocks["reattach_worktree"].call_args_list]
         assert reattached == ["us-101-int", "us-101-q1"]
 
@@ -762,7 +764,7 @@ class TestResumeByBranch:
         session = _session(tmp_path)
         self._save(session, tmp_path)
         with _mocked(tmp_path) as mocks:
-            mocks["reattach_worktree"].side_effect = lambda ident: WorktreeHandle(
+            mocks["reattach_worktree"].side_effect = lambda ident, **_kw: WorktreeHandle(
                 tmp_path / ident, f"splinter/{ident}", ident
             )
             AgentsStrategy().execute(_tasks(), session, _ladder(), resume=True)

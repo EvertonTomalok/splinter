@@ -84,8 +84,9 @@ from splinter.enums import DEFAULT_RUNNER_MODE, RunnerMode
 from splinter.memory.session import Session, delete_session, list_sessions
 from splinter.obs.events import events_path
 from splinter.question_context import Explanation, explain, explain_model, prd_excerpt
+from splinter.run_graph import RunGraph, StoryBrief, build_graph, plan_excerpt, run_stories
 from splinter.run_trace import TraceNode, build_trace
-from splinter.run_view import RunView, RunViewBuilder
+from splinter.run_view import RunView, RunViewBuilder, StoryRow
 from splinter.run_view_files import FileCache
 from splinter.tui_blockword import BlockWord
 from splinter.tui_follow import FollowLog, FollowScroll, TailChanged
@@ -110,6 +111,7 @@ from splinter.tui_run_banner import NeedsYouBanner
 from splinter.tui_run_chrome import FooterKeys, RunHeader, cowabunga_markup
 from splinter.tui_run_composer import Composer
 from splinter.tui_run_focus import FocusColumn
+from splinter.tui_run_graph import RunGraphScreen
 from splinter.tui_run_live import LiveAction, live_action
 from splinter.tui_run_log import format_line, stamp_prefix
 from splinter.tui_run_motion import MotionClock, ToastTracker
@@ -121,6 +123,7 @@ from splinter.tui_run_palette import RED as _RED
 from splinter.tui_run_palette import Ink, palette_css, palette_variables
 from splinter.tui_run_rail import RunRail
 from splinter.tui_run_stop import StopBar, StopMenuModal
+from splinter.tui_run_story_menu import INTERVENTION_IDS, ConfirmIntervention, StoryActions
 from splinter.tui_run_text import story_label
 from splinter.tui_run_trace import TraceScreen
 from splinter.tui_run_view_key import view_content_key
@@ -2965,6 +2968,7 @@ class RunApp(App[int]):
         Binding("7", "open_tier('')", "Tier", show=False),
         Binding("f", "toggle_needs_filter", "Needs you", show=False),
         Binding("L", "trace", "Trace"),
+        Binding("G", "graph", "Graph"),
         Binding("l", "set_view('logs')", "Logs", show=False),
     ]
 
@@ -3086,6 +3090,111 @@ class RunApp(App[int]):
 
     def action_select_story(self, n: int) -> None:
         self.select_story(n)
+
+    def action_story_menu(self, n: int) -> None:
+        stories = self._last_view.stories if self._last_view else ()
+        row = next((story for story in stories if story.number == n), None)
+        if row is None:
+            return
+
+        def _chosen(action: str | None) -> None:
+            if action:
+                self.call_after_refresh(self.action_story_do, n, action)
+
+        self.push_screen(StoryActions(row), _chosen)
+
+    def _story_row(self, n: int) -> StoryRow | None:
+        stories = self._last_view.stories if self._last_view else ()
+        return next((story for story in stories if story.number == n), None)
+
+    def _live_now(self, n: int) -> bool:
+        row = self._story_row(n)
+        return row is not None and row.state == "live"
+
+    def _others_running(self, n: int) -> int:
+        now = self._last_view.now if self._last_view else ()
+        return sum(1 for number in now if number != n)
+
+    def _intervene(self, n: int, action: str, guidance: str = "") -> None:
+        row = self._story_row(n)
+        if row is None:
+            return
+
+        def _decided(yes: bool | None) -> None:
+            if yes:
+                self._apply_intervention(n, action, guidance)
+
+        running = self._live_now(n)
+        restarts = self._others_running(n)
+        self.push_screen(ConfirmIntervention(row, action, restarts, running), _decided)
+
+    def _apply_intervention(self, n: int, action: str, guidance: str) -> None:
+        from splinter import procreg
+
+        if guidance:
+            self.session.queue_live_command(guidance, task_no=n)
+        self.session.queue_story_control(n, action)
+        if self._live_now(n):
+            procreg.kill_story(n)
+            self.notify("Stopping that story's engine; it continues as you chose.")
+            return
+        self._do_pause_kill()
+
+    def _retry_story(self, n: int, text: str) -> None:
+        self.session.queue_live_command(text, task_no=n)
+        if self._live_now(n):
+            self.notify("Guidance queued: it lands on the story's next iteration.")
+            return
+        others = self._others_running(n)
+        row = self._story_row(n)
+        if not others or row is None:
+            self._do_pause_kill()
+            return
+
+        def _decided(yes: bool | None) -> None:
+            if yes:
+                self._do_pause_kill()
+
+        self.push_screen(ConfirmIntervention(row, "retry", others, False), _decided)
+
+    def action_story_do(self, n: int, action: str) -> None:
+        if action in INTERVENTION_IDS:
+            self._intervene(n, action)
+            return
+        while isinstance(self.screen, RunGraphScreen):
+            self.pop_screen()
+        self.select_story(n)
+        rows = self._last_view.iterations_by_story.get(n, ()) if self._last_view else ()
+        if action == "iterations" and rows:
+            self.action_open_iteration(n, rows[-1].n)
+        elif action == "iterations":
+            self.view = "act"
+        elif action == "diff":
+            self.action_open_diff()
+        elif action == "message":
+            self.action_instruct()
+        else:
+            self.action_set_view(action)
+
+    def _run_graph(self) -> RunGraph:
+        strategy = str(self.session.read_status().get("strategy") or "")
+        stories = run_stories(self.session.read("prd.md"), strategy)
+        return build_graph(stories, self._last_view.stories if self._last_view else ())
+
+    def _story_brief(self, n: int) -> StoryBrief:
+        view = self._last_view
+        return StoryBrief(
+            plan=plan_excerpt(self.session.read(f"knowledge/plan-{n}.md")),
+            iterations=view.iterations_by_story.get(n, ()) if view else (),
+        )
+
+    def action_graph(self) -> None:
+        """G — the map of every story, what it waits for and what it unlocks."""
+        if isinstance(self.screen, RunGraphScreen):
+            self.pop_screen()
+            return
+        head, _, tail = self._trace_head()[0].rpartition("trace")
+        self.push_screen(RunGraphScreen(self._run_graph, self._story_brief, f"{head}graph{tail}"))
 
     def action_follow_live(self) -> None:
         self.follow_live = True
@@ -3430,8 +3539,9 @@ class RunApp(App[int]):
             return
         action, text = event.result
         if action == "retry":
-            self.session.queue_live_command(text, task_no=event.story)
-            self._do_pause_kill()
+            self._retry_story(event.story, text)
+        elif action in INTERVENTION_IDS:
+            self._intervene(event.story, action, text)
         elif action == "open_worktree":
             path = story_worktree(self.session, event.story, self._story_task_id(event.story))
             if path is None:
@@ -6225,6 +6335,7 @@ class PrdSessionApp(App[int | None]):
         if not instructions:
             self._say("[yellow]Please write instructions first.[/]")
             return
+        self.session.write("instructions.md", f"{instructions}\n")
         self._set_busy(True, "generating PRD from instructions…")
         self._say("[cyan]Generating PRD from instructions…[/]")
         self._spawn(self._generate_worker, instructions=instructions)

@@ -7,12 +7,13 @@ from textual.app import ComposeResult
 from textual.containers import Horizontal
 
 from splinter.run_view import RunView, StoryRow
-from splinter.tui_run_palette import DIM, INK, LIME, MUTED, Ink
+from splinter.tui_run_palette import AMBER, DIM, INK, LIME, MUTED, Ink
 from splinter.tui_run_text import story_label
 
 FOOTER_KEYS: tuple[tuple[str, str, str], ...] = (
     ("i", "instruct", "app.instruct"),
     ("d", "diff", "app.open_diff"),
+    ("G", "graph", "app.graph"),
     ("$", "spend", "app.open_spend('cost')"),
     ("q", "quit", "app.quit_or_stop"),
 )
@@ -77,6 +78,12 @@ def _crumbs(row: StoryRow | None, live: StoryRow | None, strategy: str, source: 
 
 def _progress(view: RunView, row: StoryRow | None, max_iterations: int) -> str:
     total = len(view.stories)
+    if len(view.now) > 1:
+        done = int(view.counts.get("pass", 0))
+        return (
+            f"[b {INK}]{done}/{total}[/] [{MUTED}]done[/] [{DIM}]·[/] "
+            f"[b {AMBER}]{len(view.now)}[/] [{MUTED}]running[/]"
+        )
     number = row.number if row is not None else 0
     count = len(view.iterations_by_story.get(number, ()))
     iteration = f"{count}/{max(max_iterations, count)}" if count else "—"

@@ -135,6 +135,9 @@ def test_failed_story_retry_queues_guidance_and_restarts(
             app.query_one("#nb-guidance", Input).value = "Apply the exemption"
             await pilot.click("#nb-retry")
             await pilot.pause()
+            assert killed == []
+            await pilot.press("y")
+            await pilot.pause()
 
     asyncio.run(drive())
     assert killed == [True]

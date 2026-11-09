@@ -24,6 +24,7 @@ from splinter.memory.session import Session
 from splinter.models.roster import Ladder
 from splinter.obs.agentic import agentic_scope, load_agentic_events, record_gate_marker
 from splinter.obs.trace import Trace
+from splinter.procreg import StoryInterrupted, story_interrupted, story_scope
 from splinter.skills import ResolvedSkill
 from splinter.strategies.base import EvalVerdict
 
@@ -200,7 +201,9 @@ class RunStage(Stage):
             "task_no": task_no,
         })
         try:
-            with agentic_scope(ctx.session, "run", ctx.task_index, ctx.iteration):
+            with agentic_scope(ctx.session, "run", ctx.task_index, ctx.iteration), story_scope(
+                task_no
+            ):
                 result = run_task(
                     ctx.task,
                     ctx.plan,
@@ -216,8 +219,16 @@ class RunStage(Stage):
                     task_index=ctx.task_index,
                     cwd=ctx.cwd,
                 )
+        except StoryInterrupted:
+            raise
+        except Exception as exc:
+            if story_interrupted(task_no):
+                raise StoryInterrupted(task_no) from exc
+            raise
         finally:
             ctx.session.clear_run_live(task_no)
+        if story_interrupted(task_no):
+            raise StoryInterrupted(task_no)
         log.info(
             "iter %d · ran %s · tokens=%s · $%.4f",
             ctx.iteration,

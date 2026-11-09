@@ -8,6 +8,8 @@ model is called and nothing is parsed twice per refresh.
 
 from __future__ import annotations
 
+import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -15,6 +17,8 @@ from rich.markup import escape
 from rich.text import Text
 
 from splinter.memory.session import Session
+from splinter.prd_session import list_prd_versions, prd_version_file
+from splinter.run_graph import prd_stories
 from splinter.run_view import IterationRow, RunView, StoryRow
 from splinter.run_view_files import gate_lines, iteration_lines, plan_path, review_note_name
 from splinter.tui_run_iteration import run_actions, run_meta
@@ -22,6 +26,11 @@ from splinter.tui_run_palette import AMBER, DIM, INK, LIME, MUTED, RED, VERDICT_
 from splinter.tui_run_text import story_label
 
 _STATE_TONE = {"pass": LIME, "fail": RED, "asked": RED, "paused": RED, "live": AMBER}
+_CHAT_MARKUP = re.compile(r"\[(?:/|/?(?:bold|dim|cyan|green|yellow|red|magenta)[^\]]*)\]")
+_SETUP_KEYS = ("strategy", "parallel", "max_concurrency", "tasks", "max_iterations", "budget")
+_LOG_LINES = 20_000
+_MIN_QUERY = 2
+_MAX_HITS = 2_000
 
 
 @dataclass
@@ -32,6 +41,43 @@ class TraceNode:
     detail: str = ""
     children: list[TraceNode] = field(default_factory=list)
     expanded: bool = False
+    searchable: bool = True
+
+
+@dataclass(frozen=True)
+class TraceHit:
+    """One match of a search: the node it is in and where in its text."""
+
+    node: TraceNode
+    line: int
+    column: int
+
+
+def search_trace(root: TraceNode, query: str) -> list[TraceHit]:
+    """Every match in the tree, in reading order; repeated texts count once."""
+    needle = query.strip().lower()
+    if len(needle) < _MIN_QUERY:
+        return []
+    hits: list[TraceHit] = []
+    seen: set[str] = set()
+    stack = [root]
+    while stack and len(hits) < _MAX_HITS:
+        node = stack.pop()
+        stack.extend(reversed(node.children))
+        if node.searchable and node.detail and node.detail not in seen:
+            seen.add(node.detail)
+            hits.extend(_hits_in(node, needle))
+    return hits[:_MAX_HITS]
+
+
+def _hits_in(node: TraceNode, needle: str) -> list[TraceHit]:
+    found: list[TraceHit] = []
+    for number, line in enumerate(node.detail.split("\n")):
+        lowered, column = line.lower(), 0
+        while (column := lowered.find(needle, column)) >= 0:
+            found.append(TraceHit(node, number, column))
+            column += len(needle)
+    return found
 
 
 def _read(path: Path) -> str:
@@ -44,7 +90,10 @@ def _read(path: Path) -> str:
 def _events_node(session: Session) -> TraceNode:
     lines = [line for line in session.read("events.md").splitlines() if line.strip()]
     node = TraceNode(f"[b {MUTED}]pipeline events[/] [{DIM}]{len(lines)}[/]", "\n".join(lines))
-    node.children = [TraceNode(f"[{MUTED}]{escape(line[:140])}[/]", line) for line in lines[-400:]]
+    node.children = [
+        TraceNode(f"[{MUTED}]{escape(line[:140])}[/]", line, searchable=False)
+        for line in lines[-400:]
+    ]
     return node
 
 
@@ -75,7 +124,9 @@ def _iteration_node(session: Session, story: int, row: IterationRow, loop: str) 
     if actions:
         acts = TraceNode(f"[{MUTED}]actions[/] [{DIM}]({len(actions)})[/]", run_text)
         acts.children = [
-            TraceNode(f"[{MUTED}]{kind:<6}[/] {escape(text[:120])}", f"{kind}  {text}")
+            TraceNode(
+                f"[{MUTED}]{kind:<6}[/] {escape(text[:120])}", f"{kind}  {text}", searchable=False
+            )
             for kind, text in actions
         ]
         node.children.append(acts)
@@ -111,13 +162,84 @@ def _story_node(session: Session, view: RunView, row: StoryRow, loop: str) -> Tr
 def _group(label: str, tone: str, nodes: list[TraceNode], expanded: bool) -> TraceNode:
     head = f"[b {tone}]{label}[/] [{DIM}]{len(nodes)}[/]"
     summary = "\n".join(Text.from_markup(node.label).plain for node in nodes)
-    return TraceNode(head, summary, nodes, expanded)
+    return TraceNode(head, summary, nodes, expanded, searchable=False)
+
+
+def _doc(name: str, text: str, tone: str = INK) -> TraceNode | None:
+    return TraceNode(f"[{tone}]{escape(name)}[/]", text) if text.strip() else None
+
+
+def _conversation(raw: str) -> str:
+    entries = (_CHAT_MARKUP.sub("", entry).strip() for entry in raw.split("\0"))
+    return "\n\n".join(entry for entry in entries if entry)
+
+
+def _setup(session: Session) -> str:
+    status = session.read_status()
+    known = (key for key in _SETUP_KEYS if status.get(key) not in (None, ""))
+    return "\n".join(f"{key}: {status[key]}" for key in known)
+
+
+def _start_group(session: Session) -> TraceNode | None:
+    versions = [
+        _doc(f"PRD v{v.num:03d} · {v.label}", session.read(prd_version_file(v.num)))
+        for v in list_prd_versions(session)
+    ]
+    found = [
+        _doc("instructions", session.read("instructions.md")),
+        _doc("conversation", _conversation(session.read("convo.md"))),
+        *versions,
+        _doc("final PRD", session.read("prd.md"), LIME),
+        _doc("phases", session.read("prd_phases.md"), MUTED),
+        _doc("run setup", _setup(session), MUTED),
+    ]
+    nodes = [node for node in found if node is not None]
+    return _group("start", LIME, nodes, True) if nodes else None
+
+
+def _filter_nodes(session: Session) -> list[TraceNode]:
+    stories = prd_stories(session.read("prd.md"), False)
+    nodes = []
+    for number, story in enumerate(stories, 1):
+        node = _doc(f"filter · {story.id}", session.read(f"knowledge/filter-{number}.md"), MUTED)
+        if node is not None:
+            nodes.append(node)
+    return nodes
+
+
+def _context_group(session: Session) -> TraceNode | None:
+    found = [_doc("localize", session.read("knowledge/localization.md"), MUTED)]
+    nodes = [node for node in [*found, *_filter_nodes(session)] if node is not None]
+    return _group("context", MUTED, nodes, False) if nodes else None
+
+
+def _log_line(raw: str) -> str:
+    try:
+        record = json.loads(raw)
+    except json.JSONDecodeError:
+        return ""
+    if not isinstance(record, dict) or record.get("type") != "log":
+        return ""
+    message = str((record.get("payload") or {}).get("message") or "")
+    return f"{str(record.get('ts', ''))[11:19]}  {message}" if message else ""
+
+
+def _log_node(session: Session) -> TraceNode | None:
+    raw = _read(session.dir / "events.jsonl").splitlines()
+    lines = [line for line in map(_log_line, raw) if line]
+    if not lines:
+        return None
+    shown = lines[-_LOG_LINES:]
+    return TraceNode(f"[b {MUTED}]full log[/] [{DIM}]{len(shown)} lines[/]", "\n".join(shown))
 
 
 def build_trace(session: Session, view: RunView) -> TraceNode:
     """The run's tree: what needs you, what runs now, what is done, the queue, the events."""
     loop = session.read("loop.md")
     root = TraceNode(f"[b {LIME}]run[/] [{MUTED}]{escape(session.id)}[/]", expanded=True)
+    root.children.extend(
+        node for node in (_start_group(session), _context_group(session)) if node is not None
+    )
     started = {row.number: row for row in view.stories if row.state != "queued"}
     needs = [started[n] for n in view.needs_you if n in started]
     now = [started[n] for n in view.now if n in started and started[n] not in needs]
@@ -134,15 +256,12 @@ def build_trace(session: Session, view: RunView) -> TraceNode:
             nodes = [_story_node(session, view, row, loop) for row in rows]
             root.children.append(_group(label, tone, nodes, expanded))
     if queued:
-        names = "\n".join(" ".join(story_label(row)) for row in queued)
-        leaves = [
-            TraceNode(escape(" · ".join(part for part in story_label(row) if part)), row.title)
-            for row in queued
-        ]
-        root.children.append(
-            TraceNode(f"[b {MUTED}]queued[/] [{DIM}]{len(queued)}[/]", names, leaves)
-        )
+        nodes = [_story_node(session, view, row, loop) for row in queued]
+        root.children.append(_group("queued", MUTED, nodes, False))
     events = _events_node(session)
     if events.children:
         root.children.append(events)
+    log_node = _log_node(session)
+    if log_node is not None:
+        root.children.append(log_node)
     return root

@@ -254,7 +254,7 @@ def _group_row(row: StoryRow, selected: bool, width: int, phase: bool) -> str:
     line = pad(body, width - 2)
     if selected:
         line = f"[on {SELECTED}]{line}[/]"
-    return f"[@click=app.select_story({row.number})]{line}[/]"
+    return f"[@click=app.story_menu({row.number})]{line}[/]"
 
 
 def _row_mark(row: StoryRow, phase: bool) -> tuple[str, str, str]:

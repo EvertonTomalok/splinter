@@ -24,6 +24,9 @@ def entries_by_task(entries: Sequence[RunEntry]) -> dict[int, list[RunEntry]]:
     return grouped
 
 
+_RETRYING = ("RETRY", "ESCALATE", "JUMP_PREMIUM")
+
+
 def groups(
     snap: Snapshot, read_file: Callable[[Path], str] | None = None
 ) -> list[tuple[int, str, list[tuple[int, str, str]]]]:
@@ -53,6 +56,21 @@ def story_state(
         if raw in ("awaiting_validation", "paused"):
             return "paused"
     return state
+
+
+def running_state(
+    state: StoryState, verdict: str, iterations: int, engine_live: bool, snap: Snapshot
+) -> StoryState:
+    """A parallel run's truth: an engine on the story, or a retry on its way, is live."""
+    if state not in ("queued", "fail"):
+        return state
+    if str(snap.state).upper() != "RUNNING":
+        return state
+    if engine_live:
+        return "live"
+    limit = as_int(snap.status.get("max_iterations")) or 5
+    retrying = verdict in _RETRYING and iterations < limit and bool(snap.status.get("parallel"))
+    return "live" if state == "fail" and retrying else state
 
 
 def iteration_rows(

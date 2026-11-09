@@ -420,7 +420,7 @@ class TestParallelDag:
     def test_worktree_path_threaded_as_cwd(self, tmp_path: Path) -> None:
         from splinter.vcs.worktree import WorktreeHandle
 
-        def make_handle(task_id: str, base_dir: Path | None = None) -> WorktreeHandle:
+        def make_handle(task_id: str, base_dir: Path | None = None, **_kw) -> WorktreeHandle:
             return WorktreeHandle(
                 path=tmp_path / f"wt-{task_id}",
                 branch=f"splinter/{task_id}",

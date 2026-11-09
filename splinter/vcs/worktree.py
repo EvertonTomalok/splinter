@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import fcntl
 import subprocess
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -14,6 +17,22 @@ from pathlib import Path
 #: this for the whole merge+resolve+commit keeps every merge atomic against the
 #: others regardless of which caller invokes it.
 _MERGE_SEMAPHORE = threading.Semaphore(1)
+
+
+@contextmanager
+def _merge_guard(target: Path) -> Iterator[None]:
+    """One merge at a time in this process and, on a main checkout, across processes."""
+    git_dir = target / ".git"
+    with _MERGE_SEMAPHORE:
+        if not git_dir.is_dir():
+            yield
+            return
+        with (git_dir / "splinter-merge.lock").open("a") as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle, fcntl.LOCK_UN)
 
 
 class WorktreeMergeConflict(Exception):
@@ -44,13 +63,17 @@ def worktree_supported(cwd: Path | None = None) -> bool:
         return False
 
 
-def _worktree_path(task_id: str, base_dir: Path) -> Path:
-    safe = task_id.replace("/", "_").replace("\\", "_")
-    return base_dir / ".splinter" / "worktrees" / safe
+def _safe(name: str) -> str:
+    return name.replace("/", "_").replace("\\", "_")
 
 
-def _branch_name(task_id: str) -> str:
-    return f"splinter/{task_id}"
+def _worktree_path(task_id: str, base_dir: Path, session_id: str = "") -> Path:
+    root = base_dir / ".splinter" / "worktrees"
+    return (root / _safe(session_id) if session_id else root) / _safe(task_id)
+
+
+def _branch_name(task_id: str, session_id: str = "") -> str:
+    return f"splinter/wt/{session_id}/{task_id}" if session_id else f"splinter/{task_id}"
 
 
 _DEP_DIR = "node_modules"
@@ -120,17 +143,22 @@ def _link_deps_from_main(main_dir: Path, wt_dir: Path) -> None:
 
 
 def create_worktree(
-    task_id: str, base_dir: Path | None = None, base_ref: str | None = None
+    task_id: str,
+    base_dir: Path | None = None,
+    base_ref: str | None = None,
+    session_id: str = "",
 ) -> WorktreeHandle:
     """Create a git worktree for task_id; return its handle.
 
     ``base_ref`` is the start-point the new branch forks from — the integration
     branch for brief worktrees; default HEAD (the previous behaviour).
+    ``session_id`` keeps concurrent runs apart: the branch is
+    ``splinter/wt/<session>/<task>``. Without it the old shared layout is used.
     """
     cwd = base_dir or Path.cwd()
-    path = _worktree_path(task_id, cwd)
+    path = _worktree_path(task_id, cwd, session_id)
     path.parent.mkdir(parents=True, exist_ok=True)
-    branch = _branch_name(task_id)
+    branch = _branch_name(task_id, session_id)
     cmd = ["git", "worktree", "add", str(path), "-b", branch]
     if base_ref:
         cmd.append(base_ref)
@@ -151,14 +179,19 @@ def create_worktree(
 
 
 def create_integration_worktree(
-    slug: str, base_dir: Path | None = None, base_ref: str | None = None
+    slug: str,
+    base_dir: Path | None = None,
+    base_ref: str | None = None,
+    session_id: str = "",
 ) -> WorktreeHandle:
-    """Create the run's integration worktree (branch ``splinter/<slug>-int``).
+    """Create the run's integration worktree (branch ``splinter/wt/<session>/<slug>-int``).
 
     Brief worktrees fork from this branch and merge back into it with ``--no-ff``,
     so main history only ever sees one merge per run.
     """
-    return create_worktree(f"{slug}-int", base_dir=base_dir, base_ref=base_ref)
+    return create_worktree(
+        f"{slug}-int", base_dir=base_dir, base_ref=base_ref, session_id=session_id
+    )
 
 
 def merge_no_ff(
@@ -175,7 +208,7 @@ def merge_no_ff(
     if not branch_has_unmerged_commits(handle, base_dir=target_dir):
         return False
     msg = message or f"merge: {handle.task_id}"
-    with _MERGE_SEMAPHORE:
+    with _merge_guard(target_dir):
         result = subprocess.run(
             ["git", "merge", "--no-ff", handle.branch, "-m", msg],
             cwd=target_dir,
@@ -332,7 +365,7 @@ def squash_merge(
         )
         base_branch = r.stdout.strip()
 
-    with _MERGE_SEMAPHORE:
+    with _merge_guard(cwd):
         result = subprocess.run(
             ["git", "merge", "--squash", handle.branch],
             cwd=cwd,
@@ -406,13 +439,27 @@ def teardown_worktree(handle: WorktreeHandle, base_dir: Path | None = None) -> N
     )
 
 
-def reattach_worktree(task_id: str, base_dir: Path | None = None) -> WorktreeHandle | None:
-    """Return a handle for an existing worktree (pause/resume), or None if absent."""
+def reattach_worktree(
+    task_id: str, base_dir: Path | None = None, session_id: str = ""
+) -> WorktreeHandle | None:
+    """Return a handle for an existing worktree (pause/resume), or None if absent.
+
+    The session's own worktree comes first; the old shared layout is the fallback
+    for runs started before worktrees were per session.
+    """
     cwd = base_dir or Path.cwd()
-    path = _worktree_path(task_id, cwd)
+    for owner in ([session_id, ""] if session_id else [""]):
+        handle = _listed_worktree(task_id, cwd, owner)
+        if handle is not None:
+            return handle
+    return None
+
+
+def _listed_worktree(task_id: str, cwd: Path, session_id: str) -> WorktreeHandle | None:
+    path = _worktree_path(task_id, cwd, session_id)
     if not path.exists():
         return None
-    branch = _branch_name(task_id)
+    branch = _branch_name(task_id, session_id)
     try:
         result = subprocess.run(
             ["git", "worktree", "list", "--porcelain"],
