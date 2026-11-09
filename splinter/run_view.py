@@ -401,6 +401,11 @@ class RunViewBuilder:
         return spend_rows(snap, ladder)
 
 
+def story_running(view: RunView, story: int | None) -> bool:
+    """Whether an engine works on ``story`` now; a parallel run has several."""
+    return any(row.number == story and row.state == "live" for row in view.stories)
+
+
 def _ladder_key(ladder: Ladder | None) -> tuple[object, ...]:
     if ladder is None:
         return ()

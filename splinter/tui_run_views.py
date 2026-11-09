@@ -10,7 +10,7 @@ from rich.text import Text
 
 from splinter.memory.session import Session
 from splinter.run_snapshot import fmt_span
-from splinter.run_view import IterationRow, RunView
+from splinter.run_view import IterationRow, RunView, story_running
 from splinter.run_view_files import (
     FileCache,
     gate_lines,
@@ -141,7 +141,7 @@ def _iteration_header(
 
 def act_view(ctx: ViewContext) -> RenderableType:
     rows = _iteration_paths(ctx)
-    live_story = ctx.story is not None and ctx.story == ctx.view.live_story
+    live_story = _running(ctx)
     if not rows:
         if live_story and actions_for(ctx.live, ctx.story, 1):
             return Group(_starting_header(1), _live_feed(ctx, 1))
@@ -188,9 +188,13 @@ def _detail(ctx: ViewContext, row: IterationRow) -> Text:
     return iteration_detail(run_text, review, gate, verdict, ctx.width or 100)
 
 
+def _running(ctx: ViewContext) -> bool:
+    return story_running(ctx.view, ctx.story)
+
+
 def _queued_note(ctx: ViewContext) -> Text:
     live = ctx.view.live_story
-    if ctx.story is None or live is None or ctx.story == live:
+    if ctx.story is None or live is None or _running(ctx):
         return _empty("no iterations yet")
     return Text(
         "Not started. Runs after the live story merges, starting on T0. "
@@ -343,7 +347,7 @@ def relevant_paths(ctx: ViewContext, name: str) -> tuple[Path, ...]:
         rows = _iteration_paths(ctx)
         expanded = tuple(
             row for index, row in enumerate(rows)
-            if not (ctx.story == ctx.view.live_story and index == len(rows) - 1 and not row.verdict)
+            if not (_running(ctx) and index == len(rows) - 1 and not row.verdict)
             and (
                 (index == len(rows) - 1 and row.verdict == "FAIL")
                 != ((ctx.story, row.n) in ctx.opened)

@@ -11,8 +11,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from splinter import procreg
 from splinter.agents.runner import RunResult, Task
 from splinter.memory.session import Session
+from splinter.strategies.base import AskUserPause, GracefulPause
 from splinter.strategies.cascade import CascadeStrategy
 
 # ---------------------------------------------------------------------------
@@ -399,8 +401,67 @@ class TestParallelDag:
             # never set outcome.passed → not a genuine PASS
             return _fake_result()
 
-        self._run(tmp_path, [_task("US-001"), _task("US-002", deps=["US-001"])], fake_loop)
+        with pytest.raises(GracefulPause) as paused:
+            self._run(tmp_path, [_task("US-001"), _task("US-002", deps=["US-001"])], fake_loop)
+        assert "did not finish" in paused.value.reason
         assert ran == ["US-001"]  # dependent blocked, never dispatched
+
+    def test_a_pause_inside_a_story_pauses_the_run(self, tmp_path: Path) -> None:
+        ran: list[str] = []
+
+        def fake_loop(task: Task, *a: Any, **kw: Any) -> RunResult | None:
+            ran.append(task.id)
+            raise GracefulPause(reason="paused here", stage="gate")
+
+        with pytest.raises(GracefulPause) as paused:
+            self._run(tmp_path, [_task("US-001"), _task("US-002", deps=["US-001"])], fake_loop)
+        assert "paused here" in paused.value.reason
+        assert ran == ["US-001"]
+
+    def test_ask_user_inside_a_story_reaches_the_pipeline(self, tmp_path: Path) -> None:
+        def fake_loop(task: Task, *a: Any, **kw: Any) -> RunResult | None:
+            raise AskUserPause(reason="which one?")
+
+        with pytest.raises(AskUserPause):
+            self._run(tmp_path, [_task("US-001"), _task("US-002")], fake_loop)
+
+    def test_engines_killed_by_the_user_pause_the_run(self, tmp_path: Path) -> None:
+        ran: list[str] = []
+
+        def fake_loop(task: Task, *a: Any, **kw: Any) -> RunResult | None:
+            ran.append(task.id)
+            procreg.request_stop()
+            raise RuntimeError("engine exited 143")
+
+        try:
+            with pytest.raises(GracefulPause) as paused:
+                self._run(
+                    tmp_path, [_task("US-001"), _task("US-002", deps=["US-001"])], fake_loop
+                )
+            assert "Stopped" in paused.value.reason
+        finally:
+            procreg.clear_stop()
+        assert ran == ["US-001"]
+
+    def test_no_story_starts_after_a_stop(self, tmp_path: Path) -> None:
+        ran: list[str] = []
+
+        def fake_loop(task: Task, *a: Any, **kw: Any) -> RunResult | None:
+            ran.append(task.id)
+            procreg.request_stop()
+            outcome = kw.get("outcome")
+            if outcome is not None:
+                outcome.passed = True
+            return _fake_result()
+
+        try:
+            with pytest.raises(GracefulPause):
+                self._run(
+                    tmp_path, [_task("US-001"), _task("US-002", deps=["US-001"])], fake_loop
+                )
+        finally:
+            procreg.clear_stop()
+        assert ran == ["US-001"]
 
     def test_idless_task_runs_in_parallel_mode(self, tmp_path: Path) -> None:
         ran: list[str] = []

@@ -55,6 +55,14 @@ LOG_HEAD = (
 )
 
 
+def _live_stage(view: RunView, row: StoryRow | None) -> str:
+    """The run's stage, or the story's own when several stories run at once."""
+    if row is None or sum(story.state == "live" for story in view.stories) < 2:
+        return view.stage
+    iterations = view.iterations_by_story.get(row.number, ())
+    return "eval" if iterations and not iterations[-1].verdict else "run"
+
+
 class FocusColumn(Vertical):
     """Render selected story context without rebuilding the activity log."""
 
@@ -113,7 +121,7 @@ class FocusColumn(Vertical):
         row = self._row(view, story)
         iterations = view.iterations_by_story.get(row.number, ()) if row else ()
         last = iterations[-1] if iterations else None
-        live = row is not None and row.number == view.live_story
+        live = row is not None and row.state == "live"
         width = self.size.width
         self._update("word", self._word_and_role(view, row, live), self._apply_word)
         sentence = (self._sentence(view, row, last, live), self._streaming(view, row))
@@ -198,7 +206,8 @@ class FocusColumn(Vertical):
     @staticmethod
     def _stage_index(view: RunView, row: StoryRow | None, live: bool) -> int:
         if row is None or live:
-            return _STAGES.index(view.stage) if view.stage in _STAGES else 1
+            stage = _live_stage(view, row)
+            return _STAGES.index(stage) if stage in _STAGES else 1
         return {"pass": 5, "queued": -1}.get(row.state, 4)
 
     @staticmethod

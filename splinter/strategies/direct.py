@@ -30,8 +30,10 @@ from itertools import count
 from typing import Any
 
 from splinter import prd_session
+from splinter.agents.acceptance import parse_acceptance_mode
 from splinter.agents.evaluator import PREMIUM_TIER, Evaluator, is_stuck_premium
 from splinter.agents.runner import RunResult, Task
+from splinter.configure import configured_agents_options
 from splinter.enums import Decision
 from splinter.memory.knowledge import KnowledgeStore
 from splinter.memory.session import Session
@@ -559,6 +561,7 @@ class DirectStrategy(Strategy):
 
         resolved = resolve_eval_skill(eval_skill or task.eval_skill)
         evaluator = Evaluator(ladder)
+        acceptance = parse_acceptance_mode(configured_agents_options().acceptance_check)
         last_result: RunResult | None = None
         resume_stage = checkpoint.stage if checkpoint is not None else ""
         tier_tries = 0
@@ -647,6 +650,7 @@ class DirectStrategy(Strategy):
                 eval_history=eval_history,
                 task_index=task_index,
                 skip_eval=skip_eval,
+                acceptance=acceptance,
                 lock=lock,
                 cwd=cwd,
             )

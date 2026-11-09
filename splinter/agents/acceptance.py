@@ -110,6 +110,74 @@ def _parse_verdict(text: str) -> EvalVerdict:
     return EvalVerdict(decision=Decision.RETRY, reason=detail, corrections=detail, raw=text)
 
 
+def _judge_diff(
+    goal: str,
+    acceptance: Sequence[str],
+    mode: AcceptanceMode,
+    ladder: Ladder | None,
+    diff: str,
+    trace: Trace | None,
+    task_index: int,
+    orchestrator_notes: str,
+) -> EvalVerdict:
+    """Ask the mode's model whether the diff meets the acceptance lines."""
+    if mode is AcceptanceMode.GATE_ORCHESTRATOR:
+        role, step = "orchestrator", "planner"
+        model = ladder.planner_model if ladder else "sonnet"
+        variant = (ladder.planner_effort if ladder else "") or "low"
+        timeout: int | None = ladder.planner_timeout if ladder else None
+    else:
+        role, step = "eval", "eval"
+        model = ladder.eval_model if ladder else "sonnet"
+        variant = "low"
+        timeout = ladder.eval_timeout if ladder else None
+    prompt = render(
+        "acceptance_eval",
+        goal=goal,
+        acceptance=_acceptance_text(acceptance),
+        diff=diff,
+        orchestrator_notes_section=orchestrator_notes,
+    )
+    raw = run_text(
+        prompt,
+        model,
+        variant=variant,
+        output_format="json",
+        timeout=timeout,
+        trace=trace,
+        task_index=task_index,
+        role=role,
+        pool=ladder.step_pool(step) if ladder is not None else None,
+    )
+    return _parse_verdict(raw)
+
+
+def orchestrator_review(
+    *,
+    goal: str,
+    acceptance: Sequence[str],
+    ladder: Ladder,
+    diff_source: Callable[[], str],
+    trace: Trace | None = None,
+    task_index: int = 0,
+) -> EvalVerdict:
+    """The orchestrator's judgement of a diff; any failure is a RETRY, never a crash."""
+    try:
+        return _judge_diff(
+            goal,
+            acceptance,
+            AcceptanceMode.GATE_ORCHESTRATOR,
+            ladder,
+            diff_source(),
+            trace,
+            task_index,
+            "",
+        )
+    except Exception as exc:
+        detail = _clip(f"orchestrator acceptance check failed: {exc}")
+        return EvalVerdict(decision=Decision.RETRY, reason=detail, corrections=detail, raw="")
+
+
 def check_acceptance(
     *,
     goal: str,
@@ -141,36 +209,11 @@ def check_acceptance(
         )
     if mode is AcceptanceMode.GATE:
         return AcceptanceResult(passed=True, mode=mode, gate_passed=True)
-    if mode is AcceptanceMode.GATE_ORCHESTRATOR:
-        role = "orchestrator"
-        model = ladder.planner_model if ladder else "sonnet"
-        variant = (ladder.planner_effort if ladder else "") or "low"
-        timeout: int | None = ladder.planner_timeout if ladder else None
-    else:
-        role = "eval"
-        model = ladder.eval_model if ladder else "sonnet"
-        variant = "low"
-        timeout = ladder.eval_timeout if ladder else None
-    prompt = render(
-        "acceptance_eval",
-        goal=goal,
-        acceptance=_acceptance_text(acceptance),
-        diff=diff_source() if diff_source else diff,
-        orchestrator_notes_section=orchestrator_notes,
-    )
+    role = "orchestrator" if mode is AcceptanceMode.GATE_ORCHESTRATOR else "eval"
+    text = diff_source() if diff_source else diff
     try:
-        raw = run_text(
-            prompt,
-            model,
-            variant=variant,
-            output_format="json",
-            timeout=timeout,
-            trace=trace,
-            task_index=task_index,
-            role=role,
-            pool=ladder.step_pool(
-                "planner" if mode == AcceptanceMode.GATE_ORCHESTRATOR else "eval"
-            ) if ladder is not None else None,
+        verdict = _judge_diff(
+            goal, acceptance, mode, ladder, text, trace, task_index, orchestrator_notes
         )
     except Exception as exc:
         return AcceptanceResult(
@@ -179,7 +222,6 @@ def check_acceptance(
             gate_passed=True,
             detail=_clip(f"{role} acceptance check failed: {exc}"),
         )
-    verdict = _parse_verdict(raw)
     return AcceptanceResult(
         passed=verdict.passed,
         mode=mode,

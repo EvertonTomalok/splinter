@@ -27,6 +27,9 @@ _WATCHDOG_TICK_S = 1.0
 _story: contextvars.ContextVar[int | None] = contextvars.ContextVar("procreg_story", default=None)
 _by_story: dict[int, set[subprocess.Popen[str]]] = {}
 _interrupted: set[int] = set()
+_log_story: contextvars.ContextVar[int | None] = contextvars.ContextVar(
+    "procreg_log_story", default=None
+)
 
 
 def request_stop() -> None:
@@ -67,6 +70,25 @@ def story_scope(story: int) -> Iterator[None]:
         yield
     finally:
         _story.reset(token)
+
+
+def bind_log_story(story: int) -> None:
+    """Mark what this worker logs from here on as belonging to ``story``."""
+    _log_story.set(story)
+
+
+@contextmanager
+def log_story_scope(story: int) -> Iterator[None]:
+    """Mark what is logged inside as belonging to ``story``."""
+    token = _log_story.set(story)
+    try:
+        yield
+    finally:
+        _log_story.reset(token)
+
+
+def current_log_story() -> int | None:
+    return _log_story.get()
 
 
 def kill_story(story: int) -> int:

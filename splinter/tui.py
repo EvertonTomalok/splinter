@@ -83,10 +83,11 @@ from splinter.analyze import (
 from splinter.enums import DEFAULT_RUNNER_MODE, RunnerMode
 from splinter.memory.session import Session, delete_session, list_sessions
 from splinter.obs.events import events_path
+from splinter.procreg import current_log_story
 from splinter.question_context import Explanation, explain, explain_model, prd_excerpt
 from splinter.run_graph import RunGraph, StoryBrief, build_graph, plan_excerpt, run_stories
 from splinter.run_trace import TraceNode, build_trace
-from splinter.run_view import RunView, RunViewBuilder, StoryRow
+from splinter.run_view import RunView, RunViewBuilder, StoryRow, story_running
 from splinter.run_view_files import FileCache
 from splinter.tui_blockword import BlockWord
 from splinter.tui_follow import FollowLog, FollowScroll, TailChanged
@@ -114,6 +115,7 @@ from splinter.tui_run_focus import FocusColumn
 from splinter.tui_run_graph import RunGraphScreen
 from splinter.tui_run_live import LiveAction, live_action
 from splinter.tui_run_log import format_line, stamp_prefix
+from splinter.tui_run_logs import StoryLog, belongs
 from splinter.tui_run_motion import MotionClock, ToastTracker
 from splinter.tui_run_palette import DIM as _DIM
 from splinter.tui_run_palette import INK as _INK
@@ -1511,7 +1513,8 @@ class _TextualLogHandler(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
         msg = self.format(record)
         try:
-            self.app.call_from_thread(self.app.write_log, msg, record.levelno)
+            story = current_log_story()
+            self.app.call_from_thread(self.app.write_log, msg, record.levelno, story)
         except Exception:
             pass  # app shutting down
 
@@ -3005,6 +3008,8 @@ class RunApp(App[int]):
         self._view_place: tuple[str, int | None] | None = None
         self._live_actions: list[LiveAction] = []
         self._log_history: list[str] = []
+        self._story_log = StoryLog()
+        self._log_story: int | None = None
         self._motion_phase = False
         self._diff_runner: Runner = git_runner
         budget = self.run_kwargs.get("budget")
@@ -3026,6 +3031,7 @@ class RunApp(App[int]):
         if not self.is_running:
             return
         story = self._story_number(view)
+        self._show_story_log(story)
         focus = self.query_one("#focus", FocusColumn)
         focus.available_views = tuple(view_registry())
         focus.current_view = self.view
@@ -3055,7 +3061,7 @@ class RunApp(App[int]):
         row = next((item for item in view.stories if item.number == story), None)
         if row is not None:
             composer = self.query_one(Composer)
-            composer.set_story(row.number, story_label(row)[0], row.number == view.live_story)
+            composer.set_story(row.number, story_label(row)[0], row.state == "live")
 
     def action_toggle_needs_filter(self) -> None:
         self.query_one("#rail", RunRail).toggle_needs()
@@ -3816,6 +3822,7 @@ class RunApp(App[int]):
     def _do_pause_kill(self) -> None:
         from splinter import procreg
 
+        procreg.request_stop()
         procreg.terminate_all()
         cur = self.session.read_status()
         self.session.set_status(
@@ -3832,6 +3839,7 @@ class RunApp(App[int]):
     def _do_kill_exit(self) -> None:
         from splinter import procreg
 
+        procreg.request_stop()
         procreg.terminate_all()
         cur = self.session.read_status()
         self.session.set_status(
@@ -3846,17 +3854,19 @@ class RunApp(App[int]):
     def _work(self) -> None:
         self._run_pipeline_worker(resume=bool(self.run_kwargs.get("resume", False)))
 
-    def write_log(self, msg: str, level: int = logging.INFO) -> None:
+    def write_log(self, msg: str, level: int = logging.INFO, story: int | None = None) -> None:
         # Streamed model text/tool args are arbitrary — format_line escapes them so
         # stray `[` markup (e.g. "fix [bug]") never raises MarkupError.
-        self._log_line(format_line(msg, level, self._log_prefix(msg)))
-        self._record_action(msg)
+        self._log_line(format_line(msg, level, self._log_prefix(msg)), story)
+        self._record_action(msg, story)
 
-    def _record_action(self, msg: str) -> None:
+    def _record_action(self, msg: str, owner: int | None = None) -> None:
         """Keep a streamed tool call or thought for the live feed of the activity view."""
         view = getattr(self, "_last_view", None)
         task = _TASK_NO_RE.search(msg)
-        story = int(task.group(1)) if self._parallel and task else None
+        story = owner
+        if story is None and self._parallel and task:
+            story = int(task.group(1))
         if story is None and view is not None:
             story = view.live_story
         rows = view.iterations_by_story.get(story, ()) if view and story is not None else ()
@@ -3884,13 +3894,25 @@ class RunApp(App[int]):
         if self.view == "act":
             self._render_view()
 
-    def _log_line(self, markup: str) -> None:
+    def _show_story_log(self, story: int | None) -> None:
+        """Repaint the log pane when the screen moves to another story."""
+        if story == self._log_story:
+            return
+        self._log_story = story
+        pane = self.query_one("#log", RichLog)
+        pane.clear()
+        for markup in self._story_log.visible(story):
+            pane.write(markup)
+
+    def _log_line(self, markup: str, story: int | None = None) -> None:
         """Write one formatted line to the log, keep it for the trace screen."""
         history = self._log_history
         history.append(markup)
         if len(history) > 5000:
             del history[:1000]
-        self.query_one("#log", RichLog).write(markup)
+        self._story_log.add(story, markup)
+        if belongs(story, self._log_story):
+            self.query_one("#log", RichLog).write(markup)
         screen = self.screen
         if isinstance(screen, TraceScreen):
             screen.write(markup)
@@ -4032,7 +4054,7 @@ class RunApp(App[int]):
             phase=self.__dict__.get("_motion_phase", False),
             now=time.monotonic(),
         )
-        streaming = self.view == "act" and story is not None and story == view.live_story
+        streaming = self.view == "act" and story_running(view, story)
         base = (
             self.view,
             *view_content_key(ctx, self.view),

@@ -311,6 +311,10 @@ live while one of its attempts is open, in sequential and parallel runs alike.
 
 ### Config (`agents:` in `.splinter/config.yaml`)
 
+`acceptance_check` also drives the iteration review of `direct` and `cascade`:
+`gate` skips the review, `gate+orchestrator` has the planner model judge the diff
+against the acceptance lines instead of the eval model.
+
 Only run knobs live here — the model is never configured per engine; edit the
 effort tiers (`models.tiers`) instead. Legacy `engines`/`engine_models`/
 `engine_efforts` keys are dropped on the next write.

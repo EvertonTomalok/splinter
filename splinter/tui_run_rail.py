@@ -240,7 +240,7 @@ class RunRail(Vertical):
             widget.add_class(*rung_classes(shown, rung.tier == picked))
 
     def _iterations(self, value: object) -> None:
-        row, iterations, live_story, stage, width, limit = cast(
+        row, iterations, _, stage, width, limit = cast(
             tuple[StoryRow | None, tuple[IterationRow, ...], int | None, str, int, int], value
         )
         if row is None:
@@ -248,7 +248,7 @@ class RunRail(Vertical):
             self.query_one("#iter-bars", Ink).update("")
             return
         self.query_one("#iter-cap", Ink).update(f"iterations · {story_id(row)}")
-        live = row.number == live_story
+        live = row.state == "live"
         markup = bars_markup(
             row.number, iterations, live, stage, width, limit, self._motion_phase
         )

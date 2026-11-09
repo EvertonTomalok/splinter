@@ -223,3 +223,22 @@ def test_retry_of_a_running_story_never_restarts_the_run(
     asyncio.run(drive())
     assert restarts == []
     assert "use another approach" in session.pop_live_commands(task_no=1)
+
+
+@pytest.mark.parametrize("stopper", ["_do_pause_kill", "_do_kill_exit"])
+def test_killing_the_run_also_stops_new_work(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stopper: str
+) -> None:
+    from splinter.tui import RunApp
+
+    session = _run_session(tmp_path, monkeypatch)
+    app = RunApp(session, {})
+    monkeypatch.setattr(procreg, "terminate_all", lambda: None)
+    monkeypatch.setattr(app, "write_log", lambda *_a, **_k: None)
+    monkeypatch.setattr(app, "exit", lambda *_a, **_k: None)
+    try:
+        getattr(app, stopper)()
+        assert procreg.stop_requested()
+    finally:
+        procreg.clear_stop()
+

@@ -15,7 +15,10 @@ import logging
 import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from pathlib import Path
 
+from splinter.agents.acceptance import AcceptanceMode, orchestrator_review
+from splinter.agents.brief_io import worktree_diff
 from splinter.agents.evaluator import Evaluator
 from splinter.agents.gate import run_gate, task_languages
 from splinter.agents.runner import RunResult, Task, run_task
@@ -56,6 +59,7 @@ class IterationContext:
     eval_history: list[str] = field(default_factory=list)
     task_index: int = 0
     skip_eval: bool = False
+    acceptance: AcceptanceMode = AcceptanceMode.GATE_EVAL
     #: Optional lock for concurrent parallel tasks sharing session/trace writes.
     lock: threading.Lock | None = None
     #: Working directory the run/gate/eval execute in — a git worktree for parallel
@@ -364,25 +368,22 @@ class EvalStage(Stage):
         self._evaluator = evaluator
         self._resolved_skill = resolved_skill
 
-    def process(self, ctx: IterationContext) -> bool:
+    def _orchestrator_verdict(self, ctx: IterationContext) -> EvalVerdict:
+        log.info(
+            "iter %d · orchestrator reviewing with %s", ctx.iteration, ctx.ladder.planner_model
+        )
+        with agentic_scope(ctx.session, "eval", ctx.task_index, ctx.iteration):
+            return orchestrator_review(
+                goal=ctx.task.description,
+                acceptance=ctx.task.acceptance.splitlines(),
+                ladder=ctx.ladder,
+                diff_source=lambda: worktree_diff(Path(ctx.cwd or ".")),
+                trace=ctx.trace,
+                task_index=ctx.task_index,
+            )
+
+    def _eval_verdict(self, ctx: IterationContext) -> EvalVerdict:
         assert ctx.run_result is not None
-
-        if ctx.skip_eval:
-            from splinter.enums import Decision
-
-            ctx.verdict = EvalVerdict(
-                decision=Decision.PASS,
-                reason="eval skipped by user",
-                corrections="",
-            )
-            ctx._loop_lines.append("- verdict: PASS (eval skipped)")
-            ctx.flush_loop()
-            ctx._locked_append(
-                "eval.md",
-                f"### Iter {ctx.iteration}: PASS (skipped)\n**Reason:** eval skipped by user\n\n",
-            )
-            return True
-
         evaluator = self._evaluator or Evaluator(ctx.ladder)
         eval_effort = evaluator.eval_effort_for(ctx.tier)
         log.info(
@@ -394,7 +395,7 @@ class EvalStage(Stage):
         )
 
         with agentic_scope(ctx.session, "eval", ctx.task_index, ctx.iteration):
-            verdict = evaluator.judge(
+            return evaluator.judge(
                 ctx.task,
                 ctx.run_result.text,
                 eval_model=ctx.ladder.eval_model,
@@ -413,6 +414,31 @@ class EvalStage(Stage):
                 task_index=ctx.task_index,
                 cwd=ctx.cwd,
             )
+
+    def process(self, ctx: IterationContext) -> bool:
+        assert ctx.run_result is not None
+
+        if ctx.skip_eval or ctx.acceptance is AcceptanceMode.GATE:
+            from splinter.enums import Decision
+
+            ctx.verdict = EvalVerdict(
+                decision=Decision.PASS,
+                reason="eval skipped by user",
+                corrections="",
+            )
+            ctx._loop_lines.append("- verdict: PASS (eval skipped)")
+            ctx.flush_loop()
+            ctx._locked_append(
+                "eval.md",
+                f"### Iter {ctx.iteration}: PASS (skipped)\n**Reason:** eval skipped by user\n\n",
+            )
+            return True
+
+        verdict = (
+            self._orchestrator_verdict(ctx)
+            if ctx.acceptance is AcceptanceMode.GATE_ORCHESTRATOR
+            else self._eval_verdict(ctx)
+        )
         ctx.verdict = verdict
         ctx.eval_session = verdict.eval_session
         log.info(

@@ -18,6 +18,7 @@ import re
 import threading
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 
+from splinter import procreg
 from splinter.agents.evaluator import is_premium_task
 from splinter.agents.runner import RunResult, Task
 from splinter.memory.knowledge import KnowledgeStore
@@ -31,6 +32,7 @@ from splinter.scheduling import (
     default_max_concurrency,
     topo_order,
 )
+from splinter.strategies.base import AskUserPause, GracefulPause, ManualValidationPause
 from splinter.strategies.direct import DirectStrategy, TaskOutcome
 from splinter.strategies.registry import register
 
@@ -281,7 +283,10 @@ class CascadeStrategy(DirectStrategy):
 
         with ThreadPoolExecutor(max_workers=cap) as executor:
             stop_dispatch = False
+            pause: Exception | None = None
             while not scheduler.is_done() or futures:
+                if procreg.stop_requested():
+                    stop_dispatch = True
                 if not stop_dispatch and budget_pool.exhausted(trace.total_cost):
                     log.info("parallel: budget exhausted — draining in-flight, no new dispatch")
                     stop_dispatch = True
@@ -338,6 +343,11 @@ class CascadeStrategy(DirectStrategy):
                     task = futures.pop(future)
                     try:
                         result, passed = future.result()
+                    except (AskUserPause, GracefulPause, ManualValidationPause) as exc:
+                        log.info("parallel task %s paused the run", task.id)
+                        pause = pause or exc
+                        stop_dispatch = True
+                        continue
                     except Exception as exc:
                         log.error("parallel task %s failed: %s", task.id, exc)
                         scheduler.mark_failed(task.id)
@@ -369,6 +379,8 @@ class CascadeStrategy(DirectStrategy):
         # Id-less tasks: no worktree (create_worktree needs an id), no DAG slot — run
         # them sequentially in the main repo, respecting the running budget.
         for task in no_id_pending:
+            if pause is not None or procreg.stop_requested():
+                break
             if budget is not None and trace.total_cost >= budget:
                 session.append("loop.md", f"## Budget exhausted (${trace.total_cost:.4f})\n")
                 break
@@ -413,6 +425,20 @@ class CascadeStrategy(DirectStrategy):
                     "## Blocked tasks\n" + "\n".join(f"- {r}" for r in reasons) + "\n\n",
                 )
 
+        if pause is not None:
+            raise pause
+        if procreg.stop_requested():
+            raise GracefulPause(reason="Stopped by the user.", stage="run", task_index=len(done))
+        unfinished = sum(
+            1
+            for state in scheduler.all_states().values()
+            if state in (TaskState.FAILED, TaskState.BLOCKED)
+        )
+        if unfinished:
+            raise GracefulPause(
+                reason=f"{unfinished} stories did not finish.", stage="run", task_index=len(done)
+            )
+
         return results
 
     def _run_parallel_task(
@@ -446,6 +472,7 @@ class CascadeStrategy(DirectStrategy):
             teardown_worktree,
         )
 
+        procreg.bind_log_story(task_index + 1)
         handle = None
         with session_lock:
             _append_task_header_once(

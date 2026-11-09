@@ -40,9 +40,11 @@ def test_live_logger_routes_into_richlog(tmp_path: Path, monkeypatch: "pytest.Mo
         monkeypatch.setattr(app, "write_log", lambda *a, **k: None)
         original_write_log = app.write_log
 
-        def spy_write_log(msg: str, level: int = logging.INFO) -> None:
+        def spy_write_log(
+            msg: str, level: int = logging.INFO, story: int | None = None
+        ) -> None:
             captured.append((msg, level))
-            original_write_log(msg, level)
+            original_write_log(msg, level, story)
 
         app.write_log = spy_write_log  # type: ignore[method-assign]
 
@@ -93,9 +95,11 @@ def test_no_double_logging(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") ->
         app = RunApp(session, {})
         original_write_log = app.write_log
 
-        def spy_write_log(msg: str, level: int = logging.INFO) -> None:
+        def spy_write_log(
+            msg: str, level: int = logging.INFO, story: int | None = None
+        ) -> None:
             captured.append(msg)
-            original_write_log(msg, level)
+            original_write_log(msg, level, story)
 
         app.write_log = spy_write_log  # type: ignore[method-assign]
 

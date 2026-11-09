@@ -156,7 +156,7 @@ def test_restart_button_kills_and_restarts_from_checkpoint(
     app.write_log = lambda *a, **k: None  # type: ignore[method-assign]
     _drive(app, body)
 
-    assert calls == ["terminate"], f"restart button did not terminate — {calls}"
+    assert calls == ["pause", "terminate"], f"restart button did not terminate — {calls}"
     status = session.read_status()
     assert status["state"] == "paused"
     assert status["reason"] == "user_kill_restart"
@@ -190,7 +190,7 @@ def test_kill_button_terminates_and_exits(
     app.write_log = lambda *a, **k: None  # type: ignore[method-assign]
     _drive(app, body)
 
-    assert calls == ["terminate"], f"kill button did not terminate — {calls}"
+    assert calls == ["pause", "terminate"], f"kill button did not terminate — {calls}"
     status = session.read_status()
     assert status["state"] == "paused"
     assert status["reason"] == "user_kill"
